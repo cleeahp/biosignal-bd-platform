@@ -136,7 +136,7 @@ async function fetchStudies(pageToken = null) {
       'OfficialTitle',
       'OverallStatus',
       'Phase',
-      'SponsorsAndCollaborators', // includes leadSponsor.name AND leadSponsor.class
+      'LeadSponsor',              // includes leadSponsor.name AND leadSponsor.class (SponsorsAndCollaborators is invalid in v2)
       'LastUpdatePostDate',        // lastUpdatePostDateStruct.date
       'PrimaryCompletionDate',
       'ContactsLocationsModule',

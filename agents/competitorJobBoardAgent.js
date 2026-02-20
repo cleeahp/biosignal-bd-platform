@@ -1,9 +1,7 @@
 import { supabase } from '../lib/supabase.js'
-import * as cheerio from 'cheerio'
 
 // ─── Competitor firms to track ─────────────────────────────────────────────────
-// careers_url stored for context / competitor_firms table; actual job detection
-// uses BioSpace (server-side rendered), which lists CROs and staffing firms directly.
+// careers_url stored for context / competitor_firms table
 const SEED_COMPETITORS = [
   { name: 'Medpace',                  careers_url: 'https://www.medpace.com/careers/' },
   { name: 'Syneos Health',            careers_url: 'https://syneoshealth.com/careers' },
@@ -17,7 +15,6 @@ const SEED_COMPETITORS = [
   { name: 'Veeva Systems',            careers_url: 'https://careers.veeva.com/' },
   { name: 'Labcorp Drug Development', careers_url: 'https://careers.labcorp.com/global/en' },
   { name: 'ICON plc',                 careers_url: 'https://careers.iconplc.com' },
-  { name: 'Therapeutics Inc',         careers_url: 'https://www.therapeuticsinc.com/careers' },
   { name: 'Black Diamond Networks',   careers_url: 'https://www.blackdiamondnetworks.com/jobs' },
   { name: 'Soliant Health',           careers_url: 'https://www.soliant.com/jobs' },
   { name: 'Medix Staffing',           careers_url: 'https://medixteam.com/find-a-job' },
@@ -37,77 +34,22 @@ const SEED_COMPETITORS = [
   { name: 'Precision Biosciences',    careers_url: 'https://www.precisionbiosciences.com/careers' },
 ]
 
-// ─── Name matching map: lowercase key → canonical firm name ───────────────────
-// Used to detect competitor firm names appearing in BioSpace job listings.
-// Keys are unambiguous substrings; word-boundary regex prevents false positives.
-const COMPETITOR_NAME_KEYS = {
-  'syneos': 'Syneos Health',
-  'fortrea': 'Fortrea',
-  'labcorp': 'Labcorp Drug Development',
-  'medpace': 'Medpace',
-  'propharma': 'ProPharma Group',
-  'advanced clinical': 'Advanced Clinical',
-  'synteract': 'Synteract',
-  'cytel': 'Cytel',
-  'veeva': 'Veeva Systems',
-  'catalent': 'Catalent',
-  'precision biosciences': 'Precision Biosciences',
-  'worldwide clinical': 'Worldwide Clinical Trials',
-  'premier research': 'Premier Research',
-  'alku': 'ALKU',
-  'soliant': 'Soliant Health',
-  'solomon page': 'Solomon Page',
-  'green key': 'Green Key Resources',
-  'phaidon': 'Phaidon International',
-  'clinlab': 'ClinLab Staffing',
-  'oxford global': 'Oxford Global Resources',
-  'icon plc': 'ICON plc',
-  'spectraforce': 'Spectraforce',
-  'mindlance': 'Mindlance',
-  'black diamond': 'Black Diamond Networks',
-  'pacer staffing': 'Pacer Staffing',
-  'yoh services': 'Yoh Services',
-  'epic staffing': 'Epic Staffing Group',
-  'medix': 'Medix Staffing',
-  'randstad': 'Randstad Life Sciences',
-  'therapeutics inc': 'Therapeutics Inc',
-}
-
-const LIFE_SCIENCES_KEYWORDS = [
-  'clinical research associate', 'cra', 'clinical research coordinator', 'crc',
-  'clinical trial manager', 'regulatory affairs', 'quality assurance', 'qa specialist',
-  'biostatistician', 'data manager', 'clinical data manager', 'pharmacovigilance',
-  'drug safety', 'medical monitor', 'clinical operations', 'site monitor',
-  'study coordinator', 'medical affairs', 'validation engineer', 'statistical programmer',
+// ─── ClinicalTrials.gov query search terms for each CRO ───────────────────────
+// query.spons searches across sponsor + collaborator fields.
+// Maps a short search term → canonical competitor firm name in SEED_COMPETITORS.
+const CRO_CT_SEARCHES = [
+  { query: 'Syneos Health', firmName: 'Syneos Health' },
+  { query: 'ICON plc',      firmName: 'ICON plc' },
+  { query: 'Fortrea',       firmName: 'Fortrea' },
+  { query: 'Labcorp',       firmName: 'Labcorp Drug Development' },
+  { query: 'Medpace',       firmName: 'Medpace' },
+  { query: 'Premier Research', firmName: 'Premier Research' },
+  { query: 'ProPharma',     firmName: 'ProPharma Group' },
 ]
 
+const CLINICALTRIALS_API = 'https://clinicaltrials.gov/api/v2/studies'
+
 const WARMTH_SCORES = { active_client: 25, past_client: 18, in_ats: 10, new_prospect: 0 }
-
-const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-
-function isLifeSciencesJob(title) {
-  const t = title.toLowerCase()
-  return LIFE_SCIENCES_KEYWORDS.some((kw) => t.includes(kw))
-}
-
-// Match a BioSpace company name against our competitor firm list.
-// Uses word-boundary regex to avoid partial false matches (e.g. "icon" inside "iconic").
-function findMatchingCompetitor(companyName) {
-  if (!companyName || companyName.length < 3) return null
-  const normalized = companyName.toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-  for (const [key, firmName] of Object.entries(COMPETITOR_NAME_KEYS)) {
-    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const regex = new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`)
-    if (regex.test(normalized)) return firmName
-  }
-  return null
-}
-
-// ─── Helpers ───────────────────────────────────────────────────────────────────
 
 async function upsertCompany(name) {
   if (!name || name.trim().length < 2) return null
@@ -146,7 +88,6 @@ async function signalExists(companyId, signalType, sourceUrl) {
 }
 
 async function seedCompetitorFirms() {
-  console.log(`Seeding ${SEED_COMPETITORS.length} competitor firms...`)
   for (const firm of SEED_COMPETITORS) {
     const { data: existing } = await supabase
       .from('competitor_firms')
@@ -170,107 +111,66 @@ async function seedCompetitorFirms() {
   }
 }
 
-// ─── SOURCE: BioSpace Clinical Research jobs ───────────────────────────────────
-// BioSpace is server-side rendered. CROs (Syneos, ICON, Fortrea, Labcorp, etc.)
-// and Life Sciences staffing firms post directly on BioSpace.
-// We scrape the listing and match company names against our competitor list.
+// ─── SOURCE: ClinicalTrials.gov competitor intelligence ────────────────────────
+// Uses query.spons to detect active RECRUITING/ACTIVE trials where a competitor
+// CRO appears as sponsor or collaborator. The trial sponsor becomes the
+// "likely client" — giving real BD intelligence: Syneos is working for BioMarin.
 
-async function fetchBioSpaceJobsForCompetitors() {
-  const matches = [] // Array of { firmName, job }
+async function fetchCroTrials(cro) {
+  const results = []
   try {
-    const resp = await fetch('https://www.biospace.com/jobs/?discipline=Clinical-Research', {
-      headers: {
-        'User-Agent': BROWSER_UA,
-        Accept: 'text/html,application/xhtml+xml',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-      signal: AbortSignal.timeout(18000),
+    const params = new URLSearchParams({
+      format: 'json',
+      pageSize: '10',
+      fields: 'NCTId,Phase,OverallStatus,LeadSponsor,BriefTitle',
+      'filter.overallStatus': 'RECRUITING,ACTIVE_NOT_RECRUITING',
+      'query.spons': cro.query,
+    })
+    params.set('filter.advanced', 'AREA[StudyType]INTERVENTIONAL')
+
+    const resp = await fetch(`${CLINICALTRIALS_API}?${params.toString()}`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(8000),
     })
 
     if (!resp.ok) {
-      console.warn(`  BioSpace returned HTTP ${resp.status}`)
-      return matches
+      console.warn(`  CT.gov query "${cro.query}" returned HTTP ${resp.status}`)
+      return results
     }
 
-    const html = await resp.text()
-    const $ = cheerio.load(html)
+    const data = await resp.json()
+    const studies = data.studies || []
+    console.log(`  CT.gov "${cro.query}": ${studies.length} active trials`)
 
-    $('[id^="item-"]').each((_, el) => {
-      const $item = $(el)
+    for (const study of studies) {
+      const ps = study.protocolSection || {}
+      const nctId = ps.identificationModule?.nctId
+      const phases = ps.designModule?.phases || []
+      const status = ps.statusModule?.overallStatus || ''
+      const sponsor = ps.sponsorCollaboratorsModule?.leadSponsor || {}
+      const title = ps.identificationModule?.briefTitle || 'Unknown'
 
-      const title = $item.find('.lister__header span').first().text().trim()
-        || $item.find('h3 span').first().text().trim()
-      if (!title || !isLifeSciencesJob(title)) return
+      if (!nctId) continue
+      // Only Phase 2/3/4 trials are relevant for staffing signals
+      if (!phases.some((p) => ['PHASE2', 'PHASE3', 'PHASE4'].includes(p))) continue
+      // Skip if the sponsor IS the competitor (not useful: firm running own trial)
+      if (sponsor.name && sponsor.name.toLowerCase().includes(cro.query.toLowerCase())) continue
 
-      // Company from logo alt text
-      let company = ''
-      const logoAlt = $item.find('img.lister__logo, img[class*="logo"]').first().attr('alt') || ''
-      if (logoAlt) company = logoAlt.replace(/\s+logo\s*$/i, '').trim()
-      if (!company || company.length < 2) return
-
-      // Check if company matches a competitor firm
-      const matchedFirm = findMatchingCompetitor(company)
-      if (!matchedFirm) return
-
-      // Job URL
-      let jobUrl = ''
-      const linkHref = $item.find('a[href*="/job/"]').first().attr('href') || ''
-      if (linkHref) {
-        const cleanHref = linkHref.replace(/[\s\n\t]/g, '')
-        jobUrl = cleanHref.startsWith('http') ? cleanHref : `https://jobs.biospace.com${cleanHref}`
-      }
-      if (!jobUrl) jobUrl = 'https://www.biospace.com/jobs/?discipline=Clinical-Research'
-
-      const location = $item.find('[class*="location"], [class*="city"]').first().text().trim() || ''
-
-      let daysPosted = 30
-      const badgeTitle = $item.find('.badge[title], [class*="badge"][title]').first().attr('title') || ''
-      const daysMatch = badgeTitle.match(/Added in the last (\d+) day/i)
-      if (daysMatch) daysPosted = parseInt(daysMatch[1], 10)
-
-      matches.push({ firmName: matchedFirm, job: { title, company, location, link: jobUrl, daysPosted } })
-    })
-
-    console.log(`  BioSpace scan: ${matches.length} competitor job matches found`)
+      results.push({
+        nctId,
+        phases,
+        status,
+        sponsorName: sponsor.name || 'Unknown',
+        sponsorClass: sponsor.class || 'UNKNOWN',
+        title: title.length > 100 ? title.slice(0, 97) + '...' : title,
+        firmName: cro.firmName,
+        sourceUrl: `https://clinicaltrials.gov/study/${nctId}`,
+      })
+    }
   } catch (err) {
-    console.warn(`  BioSpace fetch failed: ${err.message}`)
+    console.warn(`  CT.gov fetch failed for "${cro.query}": ${err.message}`)
   }
-  return matches
-}
-
-// ─── SOURCE 2: Indeed RSS with competitor firm names ──────────────────────────
-// Searches Indeed for jobs recently posted by specific CRO/staffing firms.
-// Gracefully fails with 403 from some IP ranges (Cloudflare); Vercel IPs typically work.
-
-async function fetchIndeedRssForFirm(firmName) {
-  const matches = []
-  try {
-    const q = encodeURIComponent(`"${firmName}" clinical research`)
-    const url = `https://www.indeed.com/rss?q=${q}&l=&fromage=7&sort=date`
-    const resp = await fetch(url, {
-      headers: {
-        'User-Agent': BROWSER_UA,
-        Accept: 'application/rss+xml, application/xml, text/xml, */*',
-      },
-      signal: AbortSignal.timeout(5000),
-    })
-
-    if (!resp.ok) return matches
-    const xml = await resp.text()
-    if (!xml.includes('<rss') && !xml.includes('<item>')) return matches
-
-    const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || []
-    for (const item of items) {
-      const title = item.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/s)?.[1]?.trim()
-      const link  = item.match(/<link>(.*?)<\/link>/s)?.[1]?.trim()
-      const company = item.match(/<source[^>]*>(.*?)<\/source>/s)?.[1]?.trim() || firmName
-
-      if (!title || !link || !isLifeSciencesJob(title)) continue
-      const matchedFirm = findMatchingCompetitor(company) || firmName
-      matches.push({ firmName: matchedFirm, job: { title, company, location: '', link, daysPosted: 7 } })
-    }
-  } catch (_) { /* silently skip */ }
-  return matches
+  return results
 }
 
 // ─── Main export ───────────────────────────────────────────────────────────────
@@ -290,65 +190,55 @@ export async function runCompetitorJobBoardAgent() {
 
     const today = new Date().toISOString().split('T')[0]
 
-    // ── Fetch BioSpace + a few Indeed RSS queries in parallel ─────────────────
-    // High-value CRO/staffing firms most likely to appear on BioSpace:
-    const indeedFirms = ['Syneos Health', 'ICON plc', 'Fortrea', 'Labcorp']
-    const [bioSpaceMatches, ...indeedMatchSets] = await Promise.all([
-      fetchBioSpaceJobsForCompetitors(),
-      ...indeedFirms.map((f) => fetchIndeedRssForFirm(f)),
-    ])
+    // Fetch active trials for all CROs in parallel
+    console.log(`Competitor Job Board: querying ClinicalTrials.gov for ${CRO_CT_SEARCHES.length} CRO firms`)
+    const trialSets = await Promise.all(CRO_CT_SEARCHES.map((cro) => fetchCroTrials(cro)))
+    const allTrials = trialSets.flat()
 
-    // Combine all matches
-    const allMatches = [...bioSpaceMatches]
-    for (const set of indeedMatchSets) allMatches.push(...set)
+    console.log(`  Found ${allTrials.length} Phase 2/3/4 trials across all CROs`)
 
-    // Group matches by firm name
-    const byFirm = new Map()
-    for (const match of allMatches) {
-      if (!byFirm.has(match.firmName)) byFirm.set(match.firmName, [])
-      byFirm.get(match.firmName).push(match.job)
-    }
+    // Deduplicate: one signal per (competitor_firm × nctId) pair
+    const seen = new Set()
+    let firmsWithSignals = 0
 
-    console.log(`Competitor Job Board: ${byFirm.size} competitor firms detected with Life Sciences openings`)
+    for (const trial of allTrials) {
+      const dedupeKey = `${trial.firmName}|${trial.nctId}`
+      if (seen.has(dedupeKey)) continue
+      seen.add(dedupeKey)
 
-    for (const [firmName, jobs] of byFirm) {
-      // Find canonical careers URL from SEED_COMPETITORS
-      const seedEntry = SEED_COMPETITORS.find((s) => s.name === firmName)
-      const careersUrl = seedEntry?.careers_url || 'https://www.biospace.com/jobs/?discipline=Clinical-Research'
-
-      const firmCompany = await upsertCompany(firmName)
+      // Get or create the competitor firm as a company record
+      const firmCompany = await upsertCompany(trial.firmName)
       if (!firmCompany) continue
 
-      // One aggregated signal per firm per day
-      const dailyKey = `${careersUrl}#${today}`
-      const alreadySignaled = await signalExists(firmCompany.id, 'competitor_job_posting', dailyKey)
-      if (alreadySignaled) {
-        console.log(`  ${firmName}: signal already exists for today, skipping`)
-        continue
-      }
+      // Dedup check: use phase-qualified URL to avoid collisions
+      const phasesSuffix = trial.phases.sort().join('-')
+      const sourceUrl = `${trial.sourceUrl}#competitor-${trial.firmName.replace(/\s+/g, '-').toLowerCase()}-${phasesSuffix}`
+      const alreadySignaled = await signalExists(firmCompany.id, 'competitor_job_posting', sourceUrl)
+      if (alreadySignaled) continue
 
-      const sampleJob = jobs[0]
-      const sampleTitles = [...new Set(jobs.map((j) => j.title))].slice(0, 5)
       const warmthScore = WARMTH_SCORES[firmCompany.relationship_warmth] || 0
       const priorityScore = Math.min(18 + 25 + warmthScore, 100)
+      const phaseLabel = trial.phases.includes('PHASE3') ? 'Phase 3' : trial.phases.includes('PHASE4') ? 'Phase 4' : 'Phase 2'
 
       const { error: sigError } = await supabase.from('signals').insert({
         company_id: firmCompany.id,
         signal_type: 'competitor_job_posting',
-        signal_summary: `${firmName} is actively hiring ${jobs.length} Life Sciences role${jobs.length > 1 ? 's' : ''} — e.g. ${sampleTitles.slice(0, 3).join(', ')}`,
+        signal_summary: `${trial.firmName} running ${phaseLabel} trial for ${trial.sponsorName} — active CRO contract`,
         signal_detail: {
-          job_title: sampleJob.title,
-          job_location: sampleJob.location || 'Multiple Locations',
+          job_title: `Clinical Research Staff (${phaseLabel})`,
+          job_location: 'Multiple Sites',
           posting_date: today,
-          competitor_firm: firmName,
-          likely_client: 'Unknown', // CRO client not inferred from BioSpace listings
-          likely_client_confidence: 'low',
-          source_url: careersUrl,
-          jobs_found: jobs.length,
-          sample_titles: sampleTitles,
+          competitor_firm: trial.firmName,
+          likely_client: trial.sponsorName,
+          likely_client_confidence: 'high',  // From actual CT.gov trial data
+          source_url: trial.sourceUrl,
+          trial_phase: phaseLabel,
+          trial_status: trial.status,
+          trial_title: trial.title,
+          nct_id: trial.nctId,
         },
-        source_url: dailyKey,
-        source_name: `${firmName} Careers`,
+        source_url: sourceUrl,
+        source_name: 'ClinicalTrials.gov',
         first_detected_at: new Date().toISOString(),
         status: 'new',
         priority_score: priorityScore,
@@ -364,9 +254,9 @@ export async function runCompetitorJobBoardAgent() {
 
       if (!sigError) {
         signalsFound++
-        console.log(`  ${firmName}: signal inserted (${jobs.length} roles)`)
+        if (signalsFound <= firmsWithSignals + 1) firmsWithSignals++
       } else {
-        console.warn(`  Signal insert failed for ${firmName}: ${sigError.message}`)
+        console.warn(`  Signal insert failed for ${trial.firmName}/${trial.nctId}: ${sigError.message}`)
       }
     }
 
@@ -377,13 +267,14 @@ export async function runCompetitorJobBoardAgent() {
         completed_at: new Date().toISOString(),
         signals_found: signalsFound,
         run_detail: {
-          firms_detected: byFirm.size,
-          biospace_matches: bioSpaceMatches.length,
+          cro_firms_queried: CRO_CT_SEARCHES.length,
+          trials_found: allTrials.length,
+          signals_inserted: signalsFound,
         },
       })
       .eq('id', runId)
 
-    console.log(`Competitor Job Board Agent complete. Signals: ${signalsFound}`)
+    console.log(`Competitor Job Board Agent complete. Signals: ${signalsFound} (from ${allTrials.length} CRO trials)`)
     return { success: true, signalsFound }
   } catch (error) {
     await supabase
