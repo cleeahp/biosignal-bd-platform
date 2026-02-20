@@ -177,6 +177,7 @@ async function fetchCroTrials(cro) {
 
 export async function runCompetitorJobBoardAgent() {
   let signalsFound = 0
+  let insertErrorCount = 0
 
   const { data: runLog } = await supabase
     .from('agent_runs')
@@ -256,6 +257,7 @@ export async function runCompetitorJobBoardAgent() {
         signalsFound++
         if (signalsFound <= firmsWithSignals + 1) firmsWithSignals++
       } else {
+        insertErrorCount++
         console.warn(`  Signal insert failed for ${trial.firmName}/${trial.nctId}: ${sigError.message}`)
       }
     }
@@ -270,12 +272,13 @@ export async function runCompetitorJobBoardAgent() {
           cro_firms_queried: CRO_CT_SEARCHES.length,
           trials_found: allTrials.length,
           signals_inserted: signalsFound,
+          insert_errors: insertErrorCount,
         },
       })
       .eq('id', runId)
 
     console.log(`Competitor Job Board Agent complete. Signals: ${signalsFound} (from ${allTrials.length} CRO trials)`)
-    return { success: true, signalsFound }
+    return { success: true, signalsFound, trialsFound: allTrials.length, insertErrors: insertErrorCount }
   } catch (error) {
     await supabase
       .from('agent_runs')

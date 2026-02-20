@@ -322,7 +322,10 @@ export async function runStaleJobTracker() {
       }
     }
 
-    const uniqueJobs = Array.from(jobMap.values())
+    // Cap to MAX_JOBS_PER_RUN to stay within Vercel's 30s function limit.
+    // Each job requires 3-4 sequential DB calls; >25 jobs risks timeout.
+    const MAX_JOBS_PER_RUN = 20
+    const uniqueJobs = Array.from(jobMap.values()).slice(0, MAX_JOBS_PER_RUN)
     console.log(`Stale Job Tracker: processing ${uniqueJobs.length} unique jobs (${allJobs.length} total from all sources)`)
 
     for (const job of uniqueJobs) {
@@ -346,7 +349,7 @@ export async function runStaleJobTracker() {
       .eq('id', runId)
 
     console.log(`Stale Job Tracker complete. Signals: ${signalsFound}`)
-    return { success: true, signalsFound }
+    return { success: true, signalsFound, jobsFound: allJobs.length, jobsProcessed: uniqueJobs.length }
   } catch (error) {
     await supabase
       .from('agent_runs')
