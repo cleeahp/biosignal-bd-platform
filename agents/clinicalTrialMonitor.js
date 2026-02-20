@@ -114,7 +114,7 @@ async function fetchStudies(pageToken = null) {
       'Phase',
       'LeadSponsorName',
       'PrimaryCompletionDate',
-      'LocationCount',
+      'ContactsLocationsModule',
       'StartDate',
     ].join(','),
   })
