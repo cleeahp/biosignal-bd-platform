@@ -193,7 +193,6 @@ function classifyStudy(study) {
 
 export async function runClinicalTrialMonitor() {
   let signalsFound = 0
-  const runDetail = {}
 
   const { data: runLog } = await supabase
     .from('agent_runs')
@@ -203,15 +202,33 @@ export async function runClinicalTrialMonitor() {
   const runId = runLog?.id
 
   try {
-    const today = new Date().toISOString().split('T')[0]
     let pageToken = null
     let pagesFetched = 0
-    const MAX_PAGES = 5 // cap at 500 studies to stay within time limits
+    let studiesProcessed = 0
+    let studiesWithSignals = 0
+
+    // Process 2 pages (200 studies) per run — enough signal coverage while
+    // staying well within Vercel's function timeout (~8-10s per page).
+    // 5 pages was the previous value but caused ~1,040 sequential DB calls
+    // (~42s) which reliably exceeded the serverless timeout.
+    const MAX_PAGES = 2
+
+    // In-run company cache: avoids a redundant SELECT for the same sponsor
+    // appearing across multiple studies on the same page.
+    const companyCache = new Map()
+
+    async function getOrUpsertCompany(sponsorName) {
+      if (companyCache.has(sponsorName)) return companyCache.get(sponsorName)
+      const company = await upsertCompany(sponsorName)
+      if (company) companyCache.set(sponsorName, company)
+      return company
+    }
 
     do {
       const { studies, nextPageToken } = await fetchStudies(pageToken)
       pageToken = nextPageToken
       pagesFetched++
+      studiesProcessed += studies.length
 
       for (const study of studies) {
         const sponsorName = extractSponsorName(study)
@@ -222,8 +239,9 @@ export async function runClinicalTrialMonitor() {
         const signals = classifyStudy(study)
 
         if (signals.length === 0) continue
+        studiesWithSignals++
 
-        const company = await upsertCompany(sponsorName)
+        const company = await getOrUpsertCompany(sponsorName)
         if (!company) continue
 
         for (const sig of signals) {
@@ -236,7 +254,7 @@ export async function runClinicalTrialMonitor() {
 
           const priorityScore = calculatePriorityScore(
             sig.type,
-            true, // treat as detected today
+            true,
             company.relationship_warmth
           )
 
@@ -275,7 +293,10 @@ export async function runClinicalTrialMonitor() {
         }
       }
 
-      await new Promise((r) => setTimeout(r, 500))
+      // Small pause between pages to be a polite API citizen.
+      if (pageToken && pagesFetched < MAX_PAGES) {
+        await new Promise((r) => setTimeout(r, 200))
+      }
     } while (pageToken && pagesFetched < MAX_PAGES)
 
     await supabase
@@ -284,7 +305,11 @@ export async function runClinicalTrialMonitor() {
         status: 'completed',
         completed_at: new Date().toISOString(),
         signals_found: signalsFound,
-        run_detail: { pages_fetched: pagesFetched, ...runDetail },
+        run_detail: {
+          pages_fetched: pagesFetched,
+          studies_processed: studiesProcessed,
+          studies_with_signals: studiesWithSignals,
+        },
       })
       .eq('id', runId)
 
