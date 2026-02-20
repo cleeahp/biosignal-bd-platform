@@ -294,9 +294,13 @@ export async function runClinicalTrialMonitor() {
         if (!company) continue
 
         for (const sig of signals) {
-          const sourceUrl = nctId
-            ? `https://clinicaltrials.gov/study/${nctId}`
-            : 'https://clinicaltrials.gov'
+          // For phase-transition signals, scope dedup key by phase combination so
+        // existing bare-URL signals don't block re-detection when a study advances
+        // (e.g. PHASE2 → PHASE3 generates a new signal despite same NCT ID).
+        const studyPhases = extractPhase(study).slice().sort().join('-') // e.g. "PHASE2" or "PHASE2-PHASE3"
+          const sourceUrl = (sig.type === 'clinical_trial_phase_transition' && nctId)
+            ? `https://clinicaltrials.gov/study/${nctId}#${studyPhases}`
+            : (nctId ? `https://clinicaltrials.gov/study/${nctId}` : 'https://clinicaltrials.gov')
 
           const alreadyExists = await signalExists(company.id, sig.type, sourceUrl)
           if (alreadyExists) continue

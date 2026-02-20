@@ -91,7 +91,7 @@ async function fetchIndeedRss(keyword) {
         'User-Agent': BROWSER_UA,
         Accept: 'application/rss+xml, application/xml, text/xml, */*',
       },
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(5000),
     })
 
     if (!resp.ok) {
@@ -163,7 +163,7 @@ async function fetchBioSpaceJobs() {
         Accept: 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.9',
       },
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(15000),
     })
 
     if (!resp.ok) {
@@ -293,18 +293,25 @@ export async function runStaleJobTracker() {
   try {
     const allJobs = []
 
-    // ── Source 1: Indeed RSS (fromage=30 = jobs at least 30 days old) ─────────
-    for (const keyword of SEARCH_KEYWORDS.slice(0, 5)) {
-      const jobs = await fetchIndeedRss(keyword)
-      allJobs.push(...jobs)
-      if (jobs.length > 0) {
-        await new Promise((r) => setTimeout(r, 1000))
-      }
+    // ── Sources: Indeed RSS (3 keywords) + BioSpace in parallel ─────────────
+    // Parallel fetch keeps total wall-clock time within Vercel's 30s function limit.
+    // Indeed uses fromage=30 (30+ day old jobs); BioSpace is always available.
+    const [indeedResults, bioSpaceResult] = await Promise.allSettled([
+      Promise.all(SEARCH_KEYWORDS.slice(0, 3).map((kw) => fetchIndeedRss(kw))),
+      fetchBioSpaceJobs(),
+    ])
+
+    if (indeedResults.status === 'fulfilled') {
+      for (const jobs of indeedResults.value) allJobs.push(...jobs)
+    } else {
+      console.warn(`Indeed RSS batch failed: ${indeedResults.reason?.message}`)
     }
 
-    // ── Source 2: BioSpace (server-rendered, always available) ────────────────
-    const bioSpaceJobs = await fetchBioSpaceJobs()
-    allJobs.push(...bioSpaceJobs)
+    if (bioSpaceResult.status === 'fulfilled') {
+      allJobs.push(...bioSpaceResult.value)
+    } else {
+      console.warn(`BioSpace fetch failed: ${bioSpaceResult.reason?.message}`)
+    }
 
     // Deduplicate by (company, title) to avoid processing same role twice from different sources
     const jobMap = new Map()
