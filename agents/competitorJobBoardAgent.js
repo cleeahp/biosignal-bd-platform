@@ -2,10 +2,11 @@ import { supabase } from '../lib/supabase.js'
 import * as cheerio from 'cheerio'
 
 const SEED_COMPETITORS = [
-  { name: 'Medpace', careers_url: 'https://www.medpace.com/careers' },
+  { name: 'Medpace', careers_url: 'https://www.medpace.com/careers/' },
   { name: 'Syneos Health', careers_url: 'https://syneoshealth.com/careers' },
   { name: 'Fortrea', careers_url: 'https://careers.fortrea.com' },
-  { name: 'Halloran Consulting', careers_url: 'https://hallorangroup.com/careers' },
+  // Correct domain — hallorangroup.com is an unrelated real-estate company
+  { name: 'Halloran Consulting', careers_url: 'https://www.halloran-consulting.com/careers' },
   { name: 'Premier Research', careers_url: 'https://premierresearch.com/careers' },
   { name: 'Worldwide Clinical Trials', careers_url: 'https://worldwideclinicaltrials.com/careers' },
 ]
@@ -83,15 +84,6 @@ async function signalExists(companyId, signalType, sourceUrl) {
   return !!data
 }
 
-async function jobPostingExists(jobUrl) {
-  const { data } = await supabase
-    .from('job_postings')
-    .select('id')
-    .eq('job_url', jobUrl)
-    .maybeSingle()
-  return !!data
-}
-
 async function seedCompetitorFirms() {
   console.log('Seeding competitor firms table...')
   for (const firm of SEED_COMPETITORS) {
@@ -109,6 +101,12 @@ async function seedCompetitorFirms() {
       })
       if (error) console.warn(`Failed to seed ${firm.name}: ${error.message}`)
       else console.log(`Seeded competitor: ${firm.name}`)
+    } else {
+      // Update URL in case the stored URL is stale (e.g. old Halloran domain)
+      await supabase
+        .from('competitor_firms')
+        .update({ careers_url: firm.careers_url })
+        .eq('id', existing.id)
     }
   }
 }
@@ -118,7 +116,7 @@ async function scrapeJobListings(firm) {
   try {
     const resp = await fetch(firm.careers_url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; BioSignalBot/1.0; +https://biosignal.example)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
       signal: AbortSignal.timeout(15000),
@@ -132,14 +130,19 @@ async function scrapeJobListings(firm) {
     const html = await resp.text()
     const $ = cheerio.load(html)
 
-    // Common selectors for job listing pages
+    // Try structured selectors — do NOT break early; accumulate from all selectors
+    // so that more specific selectors can add to results from broader ones.
     const selectors = [
+      '.job-title a',
+      '.position-title a',
+      '[class*="job-title"] a',
+      '[class*="jobtitle"] a',
+      '[class*="position"] a',
+      'a[href*="/jobs/"]',
       'a[href*="job"]',
       'a[href*="career"]',
       'a[href*="position"]',
       'a[href*="opening"]',
-      '.job-title a',
-      '.position-title a',
       '[class*="job"] a',
       '[class*="career"] a',
       'li a',
@@ -168,17 +171,19 @@ async function scrapeJobListings(firm) {
         seen.add(title.toLowerCase())
         jobs.push({ title, url: href, description: '' })
       })
-
-      if (jobs.length > 0) break // stop at first working selector
     }
 
-    // If structured selectors found nothing, fallback to text scanning for job titles
+    // If structured selectors found nothing, fall back to body-text line scanning.
+    // This handles WordPress/static pages that embed job category text in marketing copy.
     if (jobs.length === 0) {
       const bodyText = $('body').text()
       const lines = bodyText.split('\n').map((l) => l.trim()).filter((l) => l.length > 5)
       for (const line of lines) {
         if (isLifeSciencesJob(line) && line.length < 150) {
-          jobs.push({ title: line, url: firm.careers_url, description: '' })
+          if (!seen.has(line.toLowerCase())) {
+            seen.add(line.toLowerCase())
+            jobs.push({ title: line, url: firm.careers_url, description: '' })
+          }
           if (jobs.length >= 20) break
         }
       }
@@ -201,15 +206,8 @@ export async function runCompetitorJobBoardAgent() {
   const runId = runLog?.id
 
   try {
-    // Auto-populate competitor_firms if empty
-    const { data: existingFirms } = await supabase
-      .from('competitor_firms')
-      .select('id')
-      .limit(1)
-
-    if (!existingFirms || existingFirms.length === 0) {
-      await seedCompetitorFirms()
-    }
+    // Always re-seed so corrected URLs propagate to the DB
+    await seedCompetitorFirms()
 
     // Fetch all active competitor firms
     const { data: firms, error: firmsError } = await supabase
@@ -223,35 +221,74 @@ export async function runCompetitorJobBoardAgent() {
     }
 
     console.log(`Competitor Job Board: scanning ${firms.length} firms`)
+    const today = new Date().toISOString().split('T')[0]
 
     for (const firm of firms) {
       const jobs = await scrapeJobListings(firm)
-      console.log(`${firm.name}: found ${jobs.length} relevant job listings`)
+      console.log(`${firm.name}: found ${jobs.length} Life Sciences job references`)
 
-      for (const job of jobs) {
-        // Track the job posting itself
-        const alreadyTracked = await jobPostingExists(job.url)
+      // ─── Primary signal: competitor firm hiring activity ───────────────────
+      // Emit one aggregated signal per firm per day whenever Life Sciences jobs
+      // are found.  Using the competitor firm itself as the tracked company means
+      // we always surface competitor-activity signals without needing to identify
+      // an end-client from the job description (which is rarely present).
+      if (jobs.length > 0) {
+        const firmCompany = await upsertCompany(firm.name)
+        if (firmCompany) {
+          // Deduplicate by firm + date so we emit at most one signal per firm/day
+          const dailyKey = `${firm.careers_url}#${today}`
+          const alreadySignaled = await signalExists(
+            firmCompany.id,
+            'competitor_job_posting',
+            dailyKey
+          )
 
-        if (!alreadyTracked) {
-          await supabase.from('job_postings').insert({
-            job_title: job.title,
-            job_url: job.url,
-            job_board: 'competitor_careers_page',
-            source_type: 'competitor',
-            competitor_firm: firm.name,
-            first_seen_at: new Date().toISOString(),
-            last_seen_at: new Date().toISOString(),
-            days_posted: 0,
-            is_active: true,
-          })
-        } else {
-          await supabase
-            .from('job_postings')
-            .update({ last_seen_at: new Date().toISOString(), is_active: true })
-            .eq('job_url', job.url)
+          if (!alreadySignaled) {
+            const sampleTitles = jobs
+              .slice(0, 3)
+              .map((j) => j.title)
+              .join(', ')
+            const warmthScore = WARMTH_SCORES[firmCompany.relationship_warmth] || 0
+            const priorityScore = Math.min(18 + 25 + warmthScore, 100)
+
+            const { error: sigError } = await supabase.from('signals').insert({
+              company_id: firmCompany.id,
+              signal_type: 'competitor_job_posting',
+              signal_summary: `${firm.name} is actively hiring ${jobs.length} Life Sciences role${jobs.length > 1 ? 's' : ''} — e.g. ${sampleTitles}`,
+              signal_detail: {
+                competitor_firm: firm.name,
+                jobs_found: jobs.length,
+                sample_titles: jobs.slice(0, 10).map((j) => j.title),
+                careers_url: firm.careers_url,
+              },
+              source_url: dailyKey,
+              source_name: `${firm.name} Careers`,
+              first_detected_at: new Date().toISOString(),
+              status: 'new',
+              priority_score: priorityScore,
+              score_breakdown: {
+                signal_strength: 18,
+                recency: 25,
+                relationship_warmth: warmthScore,
+                actionability: 0,
+              },
+              days_in_queue: 0,
+              is_carried_forward: false,
+            })
+
+            if (!sigError) {
+              signalsFound++
+            } else {
+              console.warn(`Signal insert failed for ${firm.name}: ${sigError.message}`)
+            }
+          }
         }
+      }
 
-        // Try to identify the client company from the job description
+      // ─── Bonus signal: identified client company ───────────────────────────
+      // If a job description mentions a specific client company, emit an
+      // additional signal attributed to that client.
+      for (const job of jobs) {
         const clientName = extractClientCompany(job.description || job.title)
         if (!clientName) continue
 
@@ -266,7 +303,7 @@ export async function runCompetitorJobBoardAgent() {
         if (alreadySignaled) continue
 
         const warmthScore = WARMTH_SCORES[clientCompany.relationship_warmth] || 0
-        const priorityScore = Math.min(18 + 25 + warmthScore, 100) // base 18 + recency 25
+        const priorityScore = Math.min(18 + 25 + warmthScore, 100)
 
         const { error: sigError } = await supabase.from('signals').insert({
           company_id: clientCompany.id,

@@ -119,9 +119,11 @@ async function fetchStudies(pageToken = null) {
     ].join(','),
   })
 
-  // Filter for interventional Life Sciences studies updated recently
+  // Filter for interventional Life Sciences studies updated recently.
+  // ClinicalTrials.gov v2 uses Essie expression syntax for study type;
+  // filter.studyType is not a valid v2 parameter (returns 400).
   params.set('filter.overallStatus', 'RECRUITING,ACTIVE_NOT_RECRUITING,COMPLETED,NOT_YET_RECRUITING')
-  params.set('filter.studyType', 'INTERVENTIONAL')
+  params.set('filter.advanced', 'AREA[StudyType]INTERVENTIONAL')
 
   if (pageToken) {
     params.set('pageToken', pageToken)
