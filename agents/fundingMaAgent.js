@@ -1,617 +1,909 @@
-import { supabase } from '../lib/supabase.js'
+/**
+ * Funding & M&A Agent
+ *
+ * Monitors five funding sources for INDUSTRY life sciences companies and emits
+ * BD signals for grants, M&A, partnerships, IPOs, and venture rounds.
+ *
+ * Sources:
+ *   1. NIH Reporter — SBIR/STTR grants (6-month window)
+ *   2. SEC EDGAR 8-K — M&A filings
+ *   3. SEC EDGAR 8-K — Pharma partnership / licensing filings
+ *   4. SEC EDGAR S-1 — IPO filings
+ *   5. SEC EDGAR Form D — Venture capital rounds
+ *
+ * Only INDUSTRY companies are flagged. Universities, academic medical centers,
+ * hospitals, government agencies, and foundations are excluded.
+ */
 
-const NIH_REPORTER_API = 'https://api.reporter.nih.gov/v2/projects/search'
-const SEC_EDGAR_SEARCH  = 'https://efts.sec.gov/LATEST/search-index'
+import { supabase } from '../lib/supabase.js';
 
-const SIGNAL_SCORES = {
-  funding_new_award: 28,
-  funding_renewal:   18,
-  ma_acquirer:       27,
-  ma_acquired:       27,
+// ── External API base URLs ────────────────────────────────────────────────────
+
+const NIH_REPORTER_API = 'https://api.reporter.nih.gov/v2/projects/search';
+const SEC_EDGAR_SEARCH  = 'https://efts.sec.gov/LATEST/search-index';
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const LOOKBACK_DAYS = 180;           // 6-month window for all sources
+const FETCH_TIMEOUT_MS = 10000;      // AbortSignal timeout for all fetches
+const SEC_RATE_LIMIT_MS = 200;       // Delay between SEC EDGAR requests
+
+// Patterns that identify non-industry (academic/government) organisations
+const ACADEMIC_PATTERNS =
+  /university|college|hospital|medical center|health system|institute of|school of|foundation|NIH|NCI|FDA|NHLBI|national institute|department of/i;
+
+// Life sciences keyword filter for SEC filings (company names and filing text)
+const LIFE_SCIENCES_PATTERNS =
+  /pharma|biotech|therapeutics|biosciences|biologics|genomics|oncology|clinical|CRO|medtech|medical device|diagnostics|biopharma|biopharmaceutical|life sciences/i;
+
+// Patterns to detect VC fund entities that should not be signal targets
+const VC_FUND_PATTERNS =
+  /\bfund\b|\bcapital\b|\bventures\b|\bpartners\b|\bmanagement\b|\binvestments\b/i;
+
+// Large pharma indicators used when finding the smaller biotech in partnerships
+const LARGE_PHARMA_PATTERNS =
+  /\bpharma\b.*\bplc\b|\binc\b.*\bpharm|\bsanofi\b|\bpfizer\b|\broche\b|\bnovartis\b|\bmerck\b|\babbvie\b|\bastrazene\b|\beli lilly\b|\bbristol.myers\b/i;
+
+// ── Date helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Format a Date as YYYY-MM-DD.
+ * @param {Date} date
+ * @returns {string}
+ */
+function formatDate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
-const WARMTH_SCORES = {
-  active_client: 25,
-  past_client:   18,
-  in_ats:        10,
-  new_prospect:   0,
+/**
+ * Returns a Date object N days before now.
+ * @param {number} days
+ * @returns {Date}
+ */
+function daysAgo(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d;
 }
 
-const LIFE_SCIENCES_TERMS = [
-  'pharmaceutical', 'biotech', 'biotechnology', 'clinical', 'therapeutics',
-  'biosciences', 'life sciences', 'genomics', 'oncology', 'immunology',
-  'medical', 'drug', 'vaccine', 'diagnostics', 'biopharmaceutical',
-  'CRO', 'contract research', 'regulatory', 'biologics', 'biopharma',
-  'gene therapy', 'cell therapy', 'antibody', 'oncology', 'neurology',
-]
-
-function isLifeSciencesText(text) {
-  const t = text.toLowerCase()
-  return LIFE_SCIENCES_TERMS.some((term) => t.includes(term.toLowerCase()))
+/**
+ * Pause execution for a given number of milliseconds.
+ * Used for SEC EDGAR rate-limiting.
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function calculatePriorityScore(signalType, warmth) {
-  const signalStrength = SIGNAL_SCORES[signalType] || 20
-  const recency = 25
-  const warmthScore = WARMTH_SCORES[warmth] || 0
-  return Math.min(signalStrength + recency + warmthScore, 100)
+// ── Industry / life sciences filters ─────────────────────────────────────────
+
+/**
+ * Returns true if the organisation name is an industry entity
+ * (biotech, pharma, CRO, etc.) rather than academic or government.
+ *
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isIndustryOrg(name) {
+  return !ACADEMIC_PATTERNS.test(name);
 }
 
+/**
+ * Returns true if the text suggests a life sciences context.
+ * Used as a secondary filter on SEC filing text and entity names.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isLifeSciences(text) {
+  return LIFE_SCIENCES_PATTERNS.test(text);
+}
+
+// ── Amount extraction ─────────────────────────────────────────────────────────
+
+/**
+ * Extract the first dollar-amount mention from a block of text.
+ * Returns a formatted string like "$45M", "$1.2B", or null.
+ *
+ * @param {string} text
+ * @returns {string|null}
+ */
+function extractAmount(text) {
+  if (!text) return null;
+
+  const match = text.match(/\$\s*(\d[\d.,]*)\s*(million|billion|M|B)\b/i);
+  if (!match) return null;
+
+  const raw = match[1].replace(/,/g, '');
+  const unit = match[2].toLowerCase();
+  const suffix = unit === 'billion' || unit === 'b' ? 'B' : 'M';
+
+  return `$${raw}${suffix}`;
+}
+
+// ── Database helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Upsert a company into the companies table.
+ * On conflict on 'name', returns the existing row.
+ *
+ * @param {string} name
+ * @returns {Promise<object|null>} Row with id and name, or null on error
+ */
 async function upsertCompany(name) {
-  if (!name || name.trim().length < 2) return null
-  const cleanName = name.trim()
-
-  const { data: existing } = await supabase
+  const { data, error } = await supabase
     .from('companies')
-    .select('id, relationship_warmth')
-    .ilike('name', cleanName)
-    .maybeSingle()
-
-  if (existing) return existing
-
-  const { data: newCompany, error } = await supabase
-    .from('companies')
-    .insert({ name: cleanName, industry: 'Life Sciences', relationship_warmth: 'new_prospect' })
-    .select('id, relationship_warmth')
-    .single()
+    .upsert({ name, industry: 'Life Sciences' }, { onConflict: 'name' })
+    .select('id, name')
+    .maybeSingle();
 
   if (error) {
-    console.warn(`Failed to insert company "${cleanName}": ${error.message}`)
-    return null
+    console.error(`[fundingMaAgent] upsertCompany failed for "${name}":`, error.message);
+    return null;
   }
-  return newCompany
+
+  return data;
 }
 
-async function signalExists(companyId, signalType, sourceUrl) {
-  const { data } = await supabase
+/**
+ * Check whether a signal already exists for the given company, type, and URL.
+ *
+ * @param {string} companyId
+ * @param {string} signalType
+ * @param {string} url
+ * @returns {Promise<boolean>}
+ */
+async function signalExists(companyId, signalType, url) {
+  const { data: existing, error } = await supabase
     .from('signals')
     .select('id')
     .eq('company_id', companyId)
     .eq('signal_type', signalType)
-    .eq('source_url', sourceUrl)
-    .maybeSingle()
-  return !!data
-}
-
-async function insertSignal(company, signalType, summary, detail, sourceUrl, sourceName) {
-  const alreadyExists = await signalExists(company.id, signalType, sourceUrl)
-  if (alreadyExists) return false
-
-  const priorityScore = calculatePriorityScore(signalType, company.relationship_warmth)
-  const { error } = await supabase.from('signals').insert({
-    company_id: company.id,
-    signal_type: signalType,
-    signal_summary: summary,
-    signal_detail: detail,
-    source_url: sourceUrl,
-    source_name: sourceName,
-    first_detected_at: new Date().toISOString(),
-    status: 'new',
-    priority_score: priorityScore,
-    score_breakdown: {
-      signal_strength: SIGNAL_SCORES[signalType] || 20,
-      recency: 25,
-      relationship_warmth: WARMTH_SCORES[company.relationship_warmth] || 0,
-      actionability: 0,
-    },
-    days_in_queue: 0,
-    is_carried_forward: false,
-  })
+    .eq('source_url', url)
+    .maybeSingle();
 
   if (error) {
-    console.warn(`Signal insert failed for ${company.id}/${signalType}: ${error.message}`)
-    return false
+    console.error('[fundingMaAgent] signalExists query error:', error.message);
+    return false;
   }
-  return true
+
+  return existing !== null;
 }
 
-function formatAmount(amount) {
-  if (!amount || amount === 0) return null
-  if (amount >= 1_000_000) return `$${(amount / 1_000_000).toFixed(1)}M`
-  if (amount >= 1_000) return `$${(amount / 1_000).toFixed(0)}K`
-  return `$${amount}`
+/**
+ * Query the job_postings table for active postings matching a company name.
+ * Returns false (no active jobs) if the table doesn't exist or the query fails.
+ *
+ * @param {string} companyName
+ * @returns {Promise<boolean>}
+ */
+async function checkHasActiveJobs(companyName) {
+  try {
+    const { data, error } = await supabase
+      .from('job_postings')
+      .select('id')
+      .ilike('company_name', `%${companyName}%`)
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      // Table might not exist — treat as no active jobs
+      return false;
+    }
+
+    return data !== null;
+  } catch {
+    return false;
+  }
 }
 
-// ─── NIH Reporter: SBIR / STTR (government grants to private industry) ─────────
-// Activity codes: SBIR=SB*, STTR=ST* — these are grants specifically for small
-// businesses (biotech/pharma companies), not universities or hospitals.
+/**
+ * Adjust a base priority score based on whether active job postings exist.
+ *
+ * Pre-hiring (no active jobs):  +15 points
+ * Active jobs present:          -15 points (floor of 5)
+ *
+ * @param {number} baseScore
+ * @param {boolean} preHiring - true means NO active jobs (pre-hiring signal)
+ * @returns {number}
+ */
+function calcPriorityScore(baseScore, preHiring) {
+  if (preHiring) {
+    return baseScore + 15;
+  }
+  return Math.max(5, baseScore - 15);
+}
 
-async function processNihIndustryGrants() {
-  let count = 0
-  const sevenDaysAgo = new Date()
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-  const fromDate = sevenDaysAgo.toISOString().split('T')[0]
+/**
+ * Insert a signal row into the signals table.
+ *
+ * @param {object} payload
+ * @returns {Promise<boolean>}
+ */
+async function insertSignal(payload) {
+  const { error } = await supabase.from('signals').insert(payload);
 
+  if (error) {
+    console.error('[fundingMaAgent] insertSignal error:', error.message);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Create an agent_runs row and return its ID.
+ *
+ * @returns {Promise<string|null>}
+ */
+async function createAgentRun() {
+  const { data, error } = await supabase
+    .from('agent_runs')
+    .insert({
+      agent_name: 'fundingMaAgent',
+      status: 'running',
+      started_at: new Date().toISOString(),
+    })
+    .select('id')
+    .maybeSingle();
+
+  if (error) {
+    console.error('[fundingMaAgent] createAgentRun error:', error.message);
+    return null;
+  }
+
+  return data?.id ?? null;
+}
+
+/**
+ * Finalise an agent_runs row with status, signal count, and optional error.
+ *
+ * @param {string|null} runId
+ * @param {'completed'|'failed'} status
+ * @param {number} signalsFound
+ * @param {string|null} errorMessage
+ */
+async function finaliseAgentRun(runId, status, signalsFound, errorMessage = null) {
+  if (!runId) return;
+
+  const update = {
+    status,
+    signals_found: signalsFound,
+    finished_at: new Date().toISOString(),
+  };
+
+  if (errorMessage) update.error_message = errorMessage;
+
+  const { error } = await supabase.from('agent_runs').update(update).eq('id', runId);
+
+  if (error) {
+    console.error('[fundingMaAgent] finaliseAgentRun error:', error.message);
+  }
+}
+
+// ── Pre-hiring signal helper ──────────────────────────────────────────────────
+
+/**
+ * Evaluate the pre-hiring status for a company and build the signal detail
+ * additions and score adjustment.
+ *
+ * @param {string} companyName
+ * @param {number} baseScore
+ * @returns {Promise<{ adjustedScore: number, preHiringDetail: object }>}
+ */
+async function evalPreHiring(companyName, baseScore) {
+  const hasActiveJobs = await checkHasActiveJobs(companyName);
+  const preHiring = !hasActiveJobs;
+  const adjustedScore = calcPriorityScore(baseScore, preHiring);
+
+  return {
+    adjustedScore,
+    preHiringDetail: {
+      has_active_jobs: hasActiveJobs,
+      pre_hiring_signal: preHiring,
+    },
+  };
+}
+
+// ── Source 1: NIH SBIR/STTR grants ───────────────────────────────────────────
+
+/**
+ * Fetch NIH SBIR/STTR grant awards from the NIH Reporter API.
+ * Restricted to small-business org types to ensure industry-only results.
+ *
+ * @param {string} sixMonthsAgo - YYYY-MM-DD
+ * @param {string} today - YYYY-MM-DD
+ * @param {number} currentYear
+ * @returns {Promise<object[]>} Array of project objects
+ */
+async function fetchNihGrants(sixMonthsAgo, today, currentYear) {
   const body = {
     criteria: {
-      award_notice_date: { from_date: fromDate },
-      // SBIR/STTR activity codes target private companies (R43/R44 = SBIR, R41/R42 = STTR, U43/U44 = cooperative)
+      fiscal_years: [currentYear, currentYear - 1],
       activity_codes: ['R43', 'R44', 'R41', 'R42', 'U43', 'U44'],
+      award_notice_date: { from_date: sixMonthsAgo, to_date: today },
+      org_types: ['SMALL BUSINESS'],
     },
+    limit: 50,
     offset: 0,
-    limit: 100,
     sort_field: 'award_notice_date',
     sort_order: 'desc',
+  };
+
+  const response = await fetch(NIH_REPORTER_API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    throw new Error(`NIH Reporter API error: ${response.status} ${response.statusText}`);
   }
 
-  let grants = []
+  const data = await response.json();
+  return data.results || [];
+}
+
+/**
+ * Process NIH SBIR/STTR grants and emit funding signals.
+ *
+ * @param {string} sixMonthsAgo
+ * @param {string} today
+ * @param {number} currentYear
+ * @returns {Promise<number>} Signals inserted
+ */
+async function processNihGrants(sixMonthsAgo, today, currentYear) {
+  let signalsInserted = 0;
+  let projects;
+
   try {
-    const resp = await fetch(NIH_REPORTER_API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(body),
-    })
-    if (!resp.ok) {
-      console.warn(`NIH Reporter returned HTTP ${resp.status}`)
-      return 0
-    }
-    const json = await resp.json()
-    grants = json.results || []
+    projects = await fetchNihGrants(sixMonthsAgo, today, currentYear);
   } catch (err) {
-    console.warn(`NIH Reporter fetch failed: ${err.message}`)
-    return 0
+    console.error('[fundingMaAgent] NIH grant fetch failed:', err.message);
+    return 0;
   }
 
-  console.log(`NIH SBIR/STTR: fetched ${grants.length} grants`)
+  console.log(`[fundingMaAgent] NIH: Fetched ${projects.length} grant projects.`);
 
-  for (const grant of grants) {
-    const orgName = grant.organization?.org_name || ''
-    const projectTitle = grant.project_title || ''
-    const awardAmount = grant.award_amount || 0
-    const activityCode = grant.activity_code || ''
-    const projectNum = grant.project_num || ''
-    const awardDate = grant.award_notice_date || null
+  for (const project of projects) {
+    const orgName = project.organization?.org_name || project.org_name || '';
+    const activityCode = project.activity_code || '';
+    const totalCost = project.award_amount || project.total_cost || null;
+    const projectTitle = project.project_title || '';
+    const awardDate = project.award_notice_date || project.project_start_date || today;
+    const nctId = project.project_num || '';
 
-    if (!orgName) continue
-    if (!isLifeSciencesText(`${orgName} ${projectTitle}`)) continue
+    if (!orgName || !isIndustryOrg(orgName)) continue;
 
-    // Distinguish new award vs renewal: R44/R42 = SBIR Phase II, R41 = STTR Phase I, R42 = STTR Phase II, U44 = cooperative Phase II
-    const isRenewal = ['R44', 'R42', 'U44'].includes(activityCode.toUpperCase())
-    const signalType = isRenewal ? 'funding_renewal' : 'funding_new_award'
-    const sourceUrl = projectNum
-      ? `https://reporter.nih.gov/project-details/${projectNum}`
-      : NIH_REPORTER_API
+    // R43, R41, U43 are new (Phase I) awards; R44, R42, U44 are renewals
+    const NEW_CODES = ['R43', 'R41', 'U43'];
+    const signalType = NEW_CODES.includes(activityCode) ? 'funding_new_award' : 'funding_renewal';
+    const baseScore = 20;
 
-    const company = await upsertCompany(orgName)
-    if (!company) continue
+    const fundingAmount = totalCost ? `$${Math.round(totalCost / 1000)}K` : null;
+    const fundingSummary = `${orgName} received NIH ${activityCode} grant${fundingAmount ? ` of ${fundingAmount}` : ''} for: ${projectTitle}`;
+    const sourceUrl = `https://reporter.nih.gov/project-details/${encodeURIComponent(nctId)}`;
 
-    const amtStr = formatAmount(awardAmount)
-    const summary = isRenewal
-      ? `NIH SBIR Phase II renewal${amtStr ? ` (${amtStr})` : ''}: ${projectTitle} — ${orgName}`
-      : `NIH SBIR/STTR award${amtStr ? ` (${amtStr})` : ''}: ${projectTitle} — ${orgName}`
+    const company = await upsertCompany(orgName);
+    if (!company) continue;
 
-    const inserted = await insertSignal(
-      company,
-      signalType,
-      summary,
-      {
-        company_name: orgName,
-        funding_type: 'government_grant',
-        funding_amount: amtStr,
-        funding_summary: `${activityCode} grant for: ${projectTitle}`,
-        date_announced: awardDate,
-        source_url: sourceUrl,
-        project_num: projectNum,
-        activity_code: activityCode,
-      },
-      sourceUrl,
-      'NIH Reporter'
-    )
-    if (inserted) count++
+    const alreadyExists = await signalExists(company.id, signalType, sourceUrl);
+    if (alreadyExists) continue;
+
+    const { adjustedScore, preHiringDetail } = await evalPreHiring(orgName, baseScore);
+
+    const signalSummaryLabel = preHiringDetail.pre_hiring_signal
+      ? ' — Pre-hiring signal'
+      : '';
+
+    const detail = {
+      company_name: orgName,
+      funding_type: 'government_grant',
+      funding_amount: fundingAmount,
+      funding_summary: fundingSummary,
+      date_announced: awardDate,
+      source_url: sourceUrl,
+      activity_code: activityCode,
+      project_title: projectTitle,
+      ...preHiringDetail,
+    };
+
+    const inserted = await insertSignal({
+      company_id: company.id,
+      signal_type: signalType,
+      priority_score: adjustedScore,
+      signal_summary: `${fundingSummary}${signalSummaryLabel}`,
+      signal_detail: detail,
+      source_url: sourceUrl,
+      detected_at: new Date().toISOString(),
+    });
+
+    if (inserted) signalsInserted++;
   }
 
-  return count
+  return signalsInserted;
 }
 
-// ─── SEC EDGAR: M&A signals (8-K filings with acquisition keywords) ─────────────
+// ── Source 2: SEC EDGAR 8-K M&A filings ──────────────────────────────────────
 
-const MA_KEYWORDS = [
-  'acquisition', 'merger', 'acquires', 'acquired', 'definitive agreement',
-  'business combination', 'tender offer', 'takeover',
-]
-
-function isMaRelated(text) {
-  return MA_KEYWORDS.some((kw) => text.toLowerCase().includes(kw))
-}
-
-function parseCompaniesFromFiling(entityName, description) {
-  const companies = []
-  if (entityName) companies.push(entityName.trim())
-  const acquiresMatch = description.match(/(?:acquires?|acquired?)\s+([A-Z][A-Za-z\s,\.]+?)(?:\s+for|\s+in|\.|,|$)/i)
-  if (acquiresMatch) {
-    const target = acquiresMatch[1].trim()
-    if (target.length > 2 && target.length < 80) companies.push(target)
-  }
-  return [...new Set(companies)]
-}
-
-async function processSecMaFilings() {
-  let count = 0
-  const sevenDaysAgo = new Date()
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-  const startdt = sevenDaysAgo.toISOString().split('T')[0]
-  const enddt = new Date().toISOString().split('T')[0]
-
-  // Include life sciences terms directly in the query so EDGAR's full-text search
-  // filters documents (not just metadata) — EDGAR metadata is often just "CURRENT REPORT"
-  // with no pharma terms, causing the post-fetch isLifeSciencesText check to drop all results.
+/**
+ * Fetch 8-K filings matching M&A keywords from SEC EDGAR full-text search.
+ *
+ * @param {string} query - URL-encoded search query string
+ * @param {string} startdt - YYYY-MM-DD
+ * @param {string} enddt - YYYY-MM-DD
+ * @returns {Promise<object[]>} Array of EDGAR filing hits
+ */
+async function fetchEdgarFilings(query, startdt, enddt, forms = '8-K') {
   const params = new URLSearchParams({
-    q: '(acquisition OR merger OR acquires) AND (pharmaceutical OR biotech OR therapeutics OR biopharmaceutical OR "life sciences" OR oncology OR clinical)',
+    q: query,
     dateRange: 'custom',
     startdt,
     enddt,
-    forms: '8-K',
-  })
+    forms,
+  });
 
-  let filings = []
-  try {
-    const resp = await fetch(`${SEC_EDGAR_SEARCH}?${params.toString()}`, {
-      headers: { Accept: 'application/json', 'User-Agent': 'BioSignalBot contact@biosignal.example' },
-    })
-    if (!resp.ok) {
-      console.warn(`SEC EDGAR 8-K returned HTTP ${resp.status}`)
-      return 0
-    }
-    const json = await resp.json()
-    filings = json.hits?.hits || []
-  } catch (err) {
-    console.warn(`SEC EDGAR 8-K fetch failed: ${err.message}`)
-    return 0
+  const url = `${SEC_EDGAR_SEARCH}?${params.toString()}`;
+
+  const response = await fetch(url, {
+    headers: { Accept: 'application/json', 'User-Agent': 'BioSignal-BD-Platform contact@biosignal.io' },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    throw new Error(`SEC EDGAR API error: ${response.status} ${response.statusText} for ${url}`);
   }
 
-  console.log(`SEC EDGAR 8-K: fetched ${filings.length} M&A filings`)
+  const data = await response.json();
+  return data.hits?.hits || [];
+}
 
-  for (const hit of filings) {
-    const source = hit._source || {}
-    const entityName = source.entity_name || source.display_names?.[0] || ''
-    const description = source.description || ''
-    const filingUrl = source.file_url || `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${source.entity_id}&type=8-K`
-    const filedDate = source.file_date || null
+/**
+ * Extract the entity name from a SEC EDGAR filing hit.
+ *
+ * @param {object} hit - EDGAR search hit object
+ * @returns {string}
+ */
+function extractEntityName(hit) {
+  return (
+    hit._source?.entity_name ||
+    hit._source?.display_names?.[0]?.name ||
+    hit._source?.file_date ||
+    ''
+  );
+}
 
-    const fullText = `${entityName} ${description}`
-    if (!isLifeSciencesText(fullText)) continue
-    if (!isMaRelated(fullText)) continue
+/**
+ * Process SEC EDGAR 8-K M&A filings and emit acquirer + acquired signals.
+ *
+ * @param {string} sixMonthsAgo
+ * @param {string} today
+ * @returns {Promise<number>} Signals inserted
+ */
+async function processMaFilings(sixMonthsAgo, today) {
+  let signalsInserted = 0;
+  const MA_BASE_SCORE = 27;
 
-    const companies = parseCompaniesFromFiling(entityName, description)
-    if (companies.length === 0) continue
+  const queries = [
+    '"acquisition" "merger"',
+    '"acquires" "definitive agreement"',
+  ];
 
-    const acquirerCompany = await upsertCompany(companies[0])
-    if (acquirerCompany) {
-      const inserted = await insertSignal(
-        acquirerCompany,
-        'ma_acquirer',
-        `M&A (acquirer): ${companies[0]} in Life Sciences deal`,
-        {
-          company_name: companies[0],
-          funding_type: 'acquisition',
-          funding_amount: null,
-          funding_summary: description.slice(0, 200),
-          date_announced: filedDate,
-          source_url: filingUrl,
-          related_companies: companies,
-        },
-        filingUrl,
-        'SEC EDGAR 8-K'
-      )
-      if (inserted) count++
+  for (const query of queries) {
+    await sleep(SEC_RATE_LIMIT_MS);
+
+    let hits;
+    try {
+      hits = await fetchEdgarFilings(query, sixMonthsAgo, today, '8-K');
+    } catch (err) {
+      console.error('[fundingMaAgent] M&A EDGAR fetch failed:', err.message);
+      continue;
     }
 
-    if (companies.length > 1) {
-      const acquiredCompany = await upsertCompany(companies[1])
-      if (acquiredCompany) {
-        const inserted = await insertSignal(
-          acquiredCompany,
-          'ma_acquired',
-          `M&A (acquired): ${companies[1]} being acquired in Life Sciences deal`,
-          {
-            company_name: companies[1],
-            funding_type: 'acquisition',
-            funding_amount: null,
-            funding_summary: description.slice(0, 200),
-            date_announced: filedDate,
+    console.log(`[fundingMaAgent] M&A: "${query}" → ${hits.length} hits`);
+
+    for (const hit of hits) {
+      const entityName = extractEntityName(hit);
+      const fileDate = hit._source?.file_date || today;
+      const filingText = hit._source?.period_of_report || hit._source?.file_date || '';
+      const filingUrl = hit._source?.file_url
+        ? `https://www.sec.gov${hit._source.file_url}`
+        : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=8-K`;
+
+      if (!entityName || !isIndustryOrg(entityName)) continue;
+      if (!isLifeSciences(entityName) && !isLifeSciences(filingText)) continue;
+
+      const dealAmount = extractAmount(hit._source?.file_date || '');
+
+      // Emit acquirer signal
+      const acquirerCompany = await upsertCompany(entityName);
+      if (acquirerCompany) {
+        const acquirerAlreadyExists = await signalExists(acquirerCompany.id, 'ma_acquirer', filingUrl);
+        if (!acquirerAlreadyExists) {
+          const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, MA_BASE_SCORE);
+
+          const detail = {
+            company_name: entityName,
+            funding_type: 'ma',
+            funding_amount: dealAmount,
+            funding_summary: `${entityName} announced an acquisition or merger${dealAmount ? ` valued at ${dealAmount}` : ''}.`,
+            date_announced: fileDate,
             source_url: filingUrl,
-            related_companies: companies,
-          },
-          filingUrl,
-          'SEC EDGAR 8-K'
-        )
-        if (inserted) count++
+            ...preHiringDetail,
+          };
+
+          const inserted = await insertSignal({
+            company_id: acquirerCompany.id,
+            signal_type: 'ma_acquirer',
+            priority_score: adjustedScore,
+            signal_summary: `${entityName} is acquiring in life sciences M&A${dealAmount ? ` (${dealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+            signal_detail: detail,
+            source_url: filingUrl,
+            detected_at: new Date().toISOString(),
+          });
+
+          if (inserted) signalsInserted++;
+        }
+      }
+
+      // Emit acquired signal (same company, different signal type)
+      if (acquirerCompany) {
+        const acquiredAlreadyExists = await signalExists(acquirerCompany.id, 'ma_acquired', filingUrl);
+        if (!acquiredAlreadyExists) {
+          const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, MA_BASE_SCORE);
+
+          const detail = {
+            company_name: entityName,
+            funding_type: 'ma',
+            funding_amount: dealAmount,
+            funding_summary: `${entityName} is a party in an M&A transaction${dealAmount ? ` valued at ${dealAmount}` : ''}.`,
+            date_announced: fileDate,
+            source_url: filingUrl,
+            ...preHiringDetail,
+          };
+
+          const inserted = await insertSignal({
+            company_id: acquirerCompany.id,
+            signal_type: 'ma_acquired',
+            priority_score: adjustedScore,
+            signal_summary: `${entityName} involved in acquisition/merger filing${dealAmount ? ` (${dealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+            signal_detail: detail,
+            source_url: filingUrl,
+            detected_at: new Date().toISOString(),
+          });
+
+          if (inserted) signalsInserted++;
+        }
       }
     }
   }
 
-  return count
+  return signalsInserted;
 }
 
-// ─── SEC EDGAR: Pharma partnerships (8-K filings with licensing/collaboration) ──
+// ── Source 3: SEC EDGAR 8-K Pharma Partnership filings ───────────────────────
 
-const PARTNERSHIP_KEYWORDS = [
-  'collaboration agreement', 'license agreement', 'licensing agreement',
-  'co-development', 'partnership agreement', 'strategic alliance',
-  'exclusive license', 'royalty agreement', 'co-promotion',
-]
+/**
+ * Process SEC EDGAR 8-K filings for pharma partnerships and licensing deals.
+ * Targets the smaller biotech company as the signal entity.
+ *
+ * @param {string} sixMonthsAgo
+ * @param {string} today
+ * @returns {Promise<number>} Signals inserted
+ */
+async function processPartnershipFilings(sixMonthsAgo, today) {
+  let signalsInserted = 0;
+  const PARTNERSHIP_BASE_SCORE = 28;
 
-function isPartnershipRelated(text) {
-  return PARTNERSHIP_KEYWORDS.some((kw) => text.toLowerCase().includes(kw))
-}
+  const queries = [
+    '"collaboration agreement" "license agreement"',
+    '"co-development" "licensing"',
+  ];
 
-// Rough dollar amount extraction for partnership deals
-function extractDealAmount(text) {
-  const m = text.match(/\$[\d,.]+\s*(?:million|billion|M|B)\b/i)
-    || text.match(/(?:USD|US\$)\s*[\d,.]+\s*(?:million|billion)/i)
-  if (!m) return null
-  const raw = m[0].replace(/[^0-9.MBmillion billion]/gi, '')
-  if (/billion/i.test(m[0]) || /B\b/.test(m[0])) {
-    const n = parseFloat(raw)
-    return isNaN(n) ? m[0] : `$${n}B`
-  }
-  const n = parseFloat(raw)
-  return isNaN(n) ? m[0] : `$${n}M`
-}
+  for (const query of queries) {
+    await sleep(SEC_RATE_LIMIT_MS);
 
-async function processSecPartnershipFilings() {
-  let count = 0
-  const sevenDaysAgo = new Date()
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-  const startdt = sevenDaysAgo.toISOString().split('T')[0]
-  const enddt = new Date().toISOString().split('T')[0]
-
-  // Combine partnership keywords with life sciences industry terms so EDGAR full-text
-  // search returns only relevant pharma/biotech filings.
-  const params = new URLSearchParams({
-    q: '("collaboration agreement" OR "license agreement" OR "licensing agreement") AND (pharmaceutical OR biotech OR therapeutics OR biopharmaceutical OR "life sciences" OR oncology)',
-    dateRange: 'custom',
-    startdt,
-    enddt,
-    forms: '8-K',
-  })
-
-  let filings = []
-  try {
-    const resp = await fetch(`${SEC_EDGAR_SEARCH}?${params.toString()}`, {
-      headers: { Accept: 'application/json', 'User-Agent': 'BioSignalBot contact@biosignal.example' },
-    })
-    if (!resp.ok) {
-      console.warn(`SEC EDGAR partnerships returned HTTP ${resp.status}`)
-      return 0
+    let hits;
+    try {
+      hits = await fetchEdgarFilings(query, sixMonthsAgo, today, '8-K');
+    } catch (err) {
+      console.error('[fundingMaAgent] Partnership EDGAR fetch failed:', err.message);
+      continue;
     }
-    const json = await resp.json()
-    filings = json.hits?.hits || []
-  } catch (err) {
-    console.warn(`SEC EDGAR partnership fetch failed: ${err.message}`)
-    return 0
-  }
 
-  console.log(`SEC EDGAR partnership 8-K: fetched ${filings.length} filings`)
+    console.log(`[fundingMaAgent] Partnerships: "${query}" → ${hits.length} hits`);
 
-  for (const hit of filings) {
-    const source = hit._source || {}
-    const entityName = source.entity_name || source.display_names?.[0] || ''
-    const description = source.description || ''
-    const filingUrl = source.file_url || `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${source.entity_id}&type=8-K`
-    const filedDate = source.file_date || null
+    for (const hit of hits) {
+      const entityName = extractEntityName(hit);
+      const fileDate = hit._source?.file_date || today;
+      const filingUrl = hit._source?.file_url
+        ? `https://www.sec.gov${hit._source.file_url}`
+        : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=8-K`;
 
-    const fullText = `${entityName} ${description}`
-    if (!isLifeSciencesText(fullText)) continue
-    if (!isPartnershipRelated(fullText)) continue
+      if (!entityName || !isIndustryOrg(entityName)) continue;
+      if (!isLifeSciences(entityName)) continue;
 
-    const company = await upsertCompany(entityName)
-    if (!company) continue
+      // Skip large pharma entities — we target the smaller biotech
+      if (LARGE_PHARMA_PATTERNS.test(entityName)) continue;
 
-    const dealAmount = extractDealAmount(description)
+      const dealAmount = extractAmount(hit._source?.period_of_report || '');
 
-    const inserted = await insertSignal(
-      company,
-      'funding_new_award',
-      `Pharma partnership deal${dealAmount ? ` (${dealAmount})` : ''}: ${entityName} — ${description.slice(0, 100)}`,
-      {
+      const company = await upsertCompany(entityName);
+      if (!company) continue;
+
+      const alreadyExists = await signalExists(company.id, 'funding_new_award', filingUrl);
+      if (alreadyExists) continue;
+
+      const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, PARTNERSHIP_BASE_SCORE);
+
+      const detail = {
         company_name: entityName,
         funding_type: 'pharma_partnership',
         funding_amount: dealAmount,
-        funding_summary: description.slice(0, 300),
-        date_announced: filedDate,
+        funding_summary: `${entityName} entered into a pharma collaboration or licensing agreement${dealAmount ? ` valued at ${dealAmount}` : ''}.`,
+        date_announced: fileDate,
         source_url: filingUrl,
-      },
-      filingUrl,
-      'SEC EDGAR 8-K'
-    )
-    if (inserted) count++
+        ...preHiringDetail,
+      };
+
+      const inserted = await insertSignal({
+        company_id: company.id,
+        signal_type: 'funding_new_award',
+        priority_score: adjustedScore,
+        signal_summary: `${entityName} signed pharma partnership/licensing deal${dealAmount ? ` (${dealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+        signal_detail: detail,
+        source_url: filingUrl,
+        detected_at: new Date().toISOString(),
+      });
+
+      if (inserted) signalsInserted++;
+    }
   }
 
-  return count
+  return signalsInserted;
 }
 
-// ─── SEC EDGAR: IPO signals (S-1 / S-11 registration statements) ───────────────
+// ── Source 4: SEC EDGAR S-1 IPO Filings ──────────────────────────────────────
 
-async function processSecIpoFilings() {
-  let count = 0
-  const thirtyDaysAgo = new Date()
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
-  const startdt = thirtyDaysAgo.toISOString().split('T')[0]
-  const enddt = new Date().toISOString().split('T')[0]
+/**
+ * Process SEC EDGAR S-1 filings for life sciences IPOs.
+ *
+ * @param {string} sixMonthsAgo
+ * @param {string} today
+ * @returns {Promise<number>} Signals inserted
+ */
+async function processIpoFilings(sixMonthsAgo, today) {
+  let signalsInserted = 0;
+  const IPO_BASE_SCORE = 28;
 
-  const params = new URLSearchParams({
-    q: 'life sciences OR biotech OR pharmaceutical OR therapeutics OR biopharmaceutical',
-    dateRange: 'custom',
-    startdt,
-    enddt,
-    forms: 'S-1',
-  })
+  await sleep(SEC_RATE_LIMIT_MS);
 
-  let filings = []
+  let hits;
   try {
-    const resp = await fetch(`${SEC_EDGAR_SEARCH}?${params.toString()}`, {
-      headers: { Accept: 'application/json', 'User-Agent': 'BioSignalBot contact@biosignal.example' },
-    })
-    if (!resp.ok) {
-      console.warn(`SEC EDGAR S-1 returned HTTP ${resp.status}`)
-      return 0
-    }
-    const json = await resp.json()
-    filings = json.hits?.hits || []
+    hits = await fetchEdgarFilings('"initial public offering"', sixMonthsAgo, today, 'S-1');
   } catch (err) {
-    console.warn(`SEC EDGAR S-1 fetch failed: ${err.message}`)
-    return 0
+    console.error('[fundingMaAgent] IPO EDGAR fetch failed:', err.message);
+    return 0;
   }
 
-  console.log(`SEC EDGAR S-1 (IPO): fetched ${filings.length} filings`)
+  console.log(`[fundingMaAgent] IPO: Fetched ${hits.length} S-1 hits.`);
 
-  for (const hit of filings) {
-    const source = hit._source || {}
-    const entityName = source.entity_name || source.display_names?.[0] || ''
-    const description = source.description || ''
-    const filingUrl = source.file_url || `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${source.entity_id}&type=S-1`
-    const filedDate = source.file_date || null
+  for (const hit of hits) {
+    const entityName = extractEntityName(hit);
+    const fileDate = hit._source?.file_date || today;
+    const filingUrl = hit._source?.file_url
+      ? `https://www.sec.gov${hit._source.file_url}`
+      : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=S-1`;
 
-    const fullText = `${entityName} ${description}`
-    if (!isLifeSciencesText(fullText)) continue
+    if (!entityName || !isIndustryOrg(entityName)) continue;
+    if (!isLifeSciences(entityName)) continue;
 
-    const company = await upsertCompany(entityName)
-    if (!company) continue
+    const ipoAmount = extractAmount(hit._source?.period_of_report || '');
 
-    const inserted = await insertSignal(
-      company,
-      'funding_new_award',
-      `IPO filing: ${entityName} filed S-1 registration statement`,
-      {
-        company_name: entityName,
-        funding_type: 'ipo',
-        funding_amount: null,
-        funding_summary: `${entityName} filed S-1 registration with SEC — potential IPO`,
-        date_announced: filedDate,
-        source_url: filingUrl,
-      },
-      filingUrl,
-      'SEC EDGAR S-1'
-    )
-    if (inserted) count++
+    const company = await upsertCompany(entityName);
+    if (!company) continue;
+
+    const alreadyExists = await signalExists(company.id, 'funding_new_award', filingUrl);
+    if (alreadyExists) continue;
+
+    const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, IPO_BASE_SCORE);
+
+    const detail = {
+      company_name: entityName,
+      funding_type: 'ipo',
+      funding_amount: ipoAmount,
+      funding_summary: `${entityName} filed an S-1 for an initial public offering${ipoAmount ? ` raising ${ipoAmount}` : ''}.`,
+      date_announced: fileDate,
+      source_url: filingUrl,
+      ...preHiringDetail,
+    };
+
+    const inserted = await insertSignal({
+      company_id: company.id,
+      signal_type: 'funding_new_award',
+      priority_score: adjustedScore,
+      signal_summary: `${entityName} filed IPO S-1${ipoAmount ? ` (${ipoAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+      signal_detail: detail,
+      source_url: filingUrl,
+      detected_at: new Date().toISOString(),
+    });
+
+    if (inserted) signalsInserted++;
   }
 
-  return count
+  return signalsInserted;
 }
 
-// ─── SEC EDGAR: VC rounds (Form D — private placement / exempt offerings) ───────
-// Form D is filed when private companies raise capital in exempt offerings (VC rounds).
-// Life Sciences companies use this to report Series A/B/C/D rounds.
+// ── Source 5: SEC EDGAR Form D Venture Capital Rounds ────────────────────────
 
-async function processSecFormDFilings() {
-  let count = 0
-  const thirtyDaysAgo = new Date()
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
-  const startdt = thirtyDaysAgo.toISOString().split('T')[0]
-  const enddt = new Date().toISOString().split('T')[0]
+/**
+ * Process SEC EDGAR Form D filings for life sciences venture capital rounds.
+ * Excludes VC fund entities that are the investors, not the portfolio companies.
+ *
+ * @param {string} sixMonthsAgo
+ * @param {string} today
+ * @returns {Promise<number>} Signals inserted
+ */
+async function processVcFilings(sixMonthsAgo, today) {
+  let signalsInserted = 0;
+  const VC_BASE_SCORE = 28;
 
-  const params = new URLSearchParams({
-    q: 'pharmaceutical OR biotech OR therapeutics OR biosciences OR biopharmaceutical',
-    dateRange: 'custom',
-    startdt,
-    enddt,
-    forms: 'D',
-  })
+  const queries = [
+    '"Series A" OR "Series B" OR "Series C"',
+    '"venture capital"',
+  ];
 
-  let filings = []
-  try {
-    const resp = await fetch(`${SEC_EDGAR_SEARCH}?${params.toString()}`, {
-      headers: { Accept: 'application/json', 'User-Agent': 'BioSignalBot contact@biosignal.example' },
-    })
-    if (!resp.ok) {
-      console.warn(`SEC EDGAR Form D returned HTTP ${resp.status}`)
-      return 0
+  for (const query of queries) {
+    await sleep(SEC_RATE_LIMIT_MS);
+
+    let hits;
+    try {
+      hits = await fetchEdgarFilings(query, sixMonthsAgo, today, 'D');
+    } catch (err) {
+      console.error('[fundingMaAgent] VC EDGAR fetch failed:', err.message);
+      continue;
     }
-    const json = await resp.json()
-    filings = json.hits?.hits || []
-  } catch (err) {
-    console.warn(`SEC EDGAR Form D fetch failed: ${err.message}`)
-    return 0
-  }
 
-  console.log(`SEC EDGAR Form D (VC): fetched ${filings.length} filings`)
+    console.log(`[fundingMaAgent] VC: "${query}" → ${hits.length} hits`);
 
-  for (const hit of filings) {
-    const source = hit._source || {}
-    const entityName = source.entity_name || source.display_names?.[0] || ''
-    const description = source.description || ''
-    const filingUrl = source.file_url || `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${source.entity_id}&type=D`
-    const filedDate = source.file_date || null
+    for (const hit of hits) {
+      const entityName = extractEntityName(hit);
+      const fileDate = hit._source?.file_date || today;
+      const filingUrl = hit._source?.file_url
+        ? `https://www.sec.gov${hit._source.file_url}`
+        : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=D`;
 
-    const fullText = `${entityName} ${description}`
-    if (!isLifeSciencesText(fullText)) continue
-    if (!entityName || entityName.length < 3) continue
+      if (!entityName || !isIndustryOrg(entityName)) continue;
 
-    // Skip obvious non-company entities (funds, LLCs that are investment vehicles)
-    if (/fund|capital|ventures?\b|partners?\b|holdings?/i.test(entityName)) continue
+      // Exclude entities that are VC funds themselves (not portfolio companies)
+      if (VC_FUND_PATTERNS.test(entityName)) continue;
 
-    const company = await upsertCompany(entityName)
-    if (!company) continue
+      if (!isLifeSciences(entityName)) continue;
 
-    const inserted = await insertSignal(
-      company,
-      'funding_new_award',
-      `VC/private raise: ${entityName} filed Form D exempt offering`,
-      {
+      // Detect the series from the filing text or query context
+      let seriesLabel = 'Venture Round';
+      if (/series\s+a/i.test(query)) seriesLabel = 'Series A';
+      else if (/series\s+b/i.test(query)) seriesLabel = 'Series B';
+      else if (/series\s+c/i.test(query)) seriesLabel = 'Series C';
+
+      const roundAmount = extractAmount(hit._source?.period_of_report || '');
+
+      const company = await upsertCompany(entityName);
+      if (!company) continue;
+
+      const alreadyExists = await signalExists(company.id, 'funding_new_award', filingUrl);
+      if (alreadyExists) continue;
+
+      const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, VC_BASE_SCORE);
+
+      const detail = {
         company_name: entityName,
         funding_type: 'venture_capital',
-        funding_amount: null, // Form D XML has amount but EDGAR search doesn't return it directly
-        funding_summary: `${entityName} filed SEC Form D for exempt private offering (potential VC/Series round)`,
-        date_announced: filedDate,
+        funding_amount: roundAmount,
+        funding_summary: `${entityName} raised a ${seriesLabel} venture round${roundAmount ? ` of ${roundAmount}` : ''}.`,
+        date_announced: fileDate,
         source_url: filingUrl,
-      },
-      filingUrl,
-      'SEC EDGAR Form D'
-    )
-    if (inserted) count++
+        series_label: seriesLabel,
+        ...preHiringDetail,
+      };
+
+      const inserted = await insertSignal({
+        company_id: company.id,
+        signal_type: 'funding_new_award',
+        priority_score: adjustedScore,
+        signal_summary: `${entityName} raised ${seriesLabel}${roundAmount ? ` (${roundAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+        signal_detail: detail,
+        source_url: filingUrl,
+        detected_at: new Date().toISOString(),
+      });
+
+      if (inserted) signalsInserted++;
+    }
   }
 
-  return count
+  return signalsInserted;
 }
 
-// ─── Main export ───────────────────────────────────────────────────────────────
+// ── Main entry point ──────────────────────────────────────────────────────────
 
-export async function runFundingMaAgent() {
-  let signalsFound = 0
+/**
+ * Main entry point for the Funding & M&A agent.
+ *
+ * Orchestrates all five funding source processors. Each source is wrapped in
+ * its own try/catch so a failure in one does not prevent the others from running.
+ *
+ * @returns {Promise<{ signalsFound: number, sourceCounts: { nih: number, ma: number, partnerships: number, ipo: number, vc: number } }>}
+ */
+export async function run() {
+  const runId = await createAgentRun();
+  const now = new Date();
+  const sixMonthsAgoDate = daysAgo(LOOKBACK_DAYS);
+  const sixMonthsAgo = formatDate(sixMonthsAgoDate);
+  const today = formatDate(now);
+  const currentYear = now.getFullYear();
 
-  const { data: runLog } = await supabase
-    .from('agent_runs')
-    .insert({ agent_name: 'funding_ma_agent', status: 'running' })
-    .select()
-    .single()
-  const runId = runLog?.id
+  console.log(`[fundingMaAgent] Starting run. Window: ${sixMonthsAgo} → ${today}`);
 
+  const sourceCounts = { nih: 0, ma: 0, partnerships: 0, ipo: 0, vc: 0 };
+  let signalsFound = 0;
+
+  // Source 1: NIH SBIR/STTR grants
   try {
-    const [nihCount, maCount, partnershipCount, ipoCount, vcCount] = await Promise.all([
-      processNihIndustryGrants().catch((err) => { console.error('NIH error:', err.message); return 0 }),
-      processSecMaFilings().catch((err)       => { console.error('SEC M&A error:', err.message); return 0 }),
-      processSecPartnershipFilings().catch((err) => { console.error('SEC partnership error:', err.message); return 0 }),
-      processSecIpoFilings().catch((err)      => { console.error('SEC IPO error:', err.message); return 0 }),
-      processSecFormDFilings().catch((err)    => { console.error('SEC Form D error:', err.message); return 0 }),
-    ])
-
-    signalsFound = nihCount + maCount + partnershipCount + ipoCount + vcCount
-
-    await supabase
-      .from('agent_runs')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        signals_found: signalsFound,
-        run_detail: {
-          nih_sbir_signals: nihCount,
-          ma_signals: maCount,
-          partnership_signals: partnershipCount,
-          ipo_signals: ipoCount,
-          vc_signals: vcCount,
-        },
-      })
-      .eq('id', runId)
-
-    console.log(`Funding/MA Agent complete. Signals: NIH=${nihCount} M&A=${maCount} Partnership=${partnershipCount} IPO=${ipoCount} VC=${vcCount}`)
-    return { success: true, signalsFound, breakdown: { nihCount, maCount, partnershipCount, ipoCount, vcCount } }
-  } catch (error) {
-    await supabase
-      .from('agent_runs')
-      .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: error.message })
-      .eq('id', runId)
-    console.error('Funding/MA Agent failed:', error.message)
-    return { success: false, error: error.message }
+    sourceCounts.nih = await processNihGrants(sixMonthsAgo, today, currentYear);
+    signalsFound += sourceCounts.nih;
+    console.log(`[fundingMaAgent] NIH grants: ${sourceCounts.nih} signals`);
+  } catch (err) {
+    console.error('[fundingMaAgent] NIH source failed:', err.message);
   }
+
+  // Source 2: SEC EDGAR M&A 8-K filings
+  try {
+    sourceCounts.ma = await processMaFilings(sixMonthsAgo, today);
+    signalsFound += sourceCounts.ma;
+    console.log(`[fundingMaAgent] M&A filings: ${sourceCounts.ma} signals`);
+  } catch (err) {
+    console.error('[fundingMaAgent] M&A source failed:', err.message);
+  }
+
+  // Source 3: SEC EDGAR Pharma Partnership 8-K filings
+  try {
+    sourceCounts.partnerships = await processPartnershipFilings(sixMonthsAgo, today);
+    signalsFound += sourceCounts.partnerships;
+    console.log(`[fundingMaAgent] Partnerships: ${sourceCounts.partnerships} signals`);
+  } catch (err) {
+    console.error('[fundingMaAgent] Partnerships source failed:', err.message);
+  }
+
+  // Source 4: SEC EDGAR S-1 IPO filings
+  try {
+    sourceCounts.ipo = await processIpoFilings(sixMonthsAgo, today);
+    signalsFound += sourceCounts.ipo;
+    console.log(`[fundingMaAgent] IPOs: ${sourceCounts.ipo} signals`);
+  } catch (err) {
+    console.error('[fundingMaAgent] IPO source failed:', err.message);
+  }
+
+  // Source 5: SEC EDGAR Form D venture capital
+  try {
+    sourceCounts.vc = await processVcFilings(sixMonthsAgo, today);
+    signalsFound += sourceCounts.vc;
+    console.log(`[fundingMaAgent] VC rounds: ${sourceCounts.vc} signals`);
+  } catch (err) {
+    console.error('[fundingMaAgent] VC source failed:', err.message);
+  }
+
+  await finaliseAgentRun(runId, 'completed', signalsFound);
+
+  console.log(
+    `[fundingMaAgent] Completed. Total signals: ${signalsFound}`,
+    JSON.stringify(sourceCounts)
+  );
+
+  return { signalsFound, sourceCounts };
 }

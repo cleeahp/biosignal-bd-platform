@@ -1,4 +1,4 @@
-import { runFundingMaAgent } from '../../../agents/fundingMaAgent.js'
+import { run as runFundingMaAgent } from '../../../agents/fundingMaAgent.js'
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
