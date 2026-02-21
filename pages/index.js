@@ -10,13 +10,13 @@ const supabase = supabaseUrl && supabaseAnonKey
 const SIGNAL_TYPE_CONFIG = {
   clinical_trial_phase_transition: { label: 'Phase Transition', color: 'bg-blue-500', tab: 'clinical' },
   clinical_trial_new_ind:          { label: 'New IND',          color: 'bg-cyan-500',  tab: 'clinical' },
-  clinical_trial_site_activation:  { label: 'Site Activation',  color: 'bg-teal-500',  tab: 'clinical' },
-  clinical_trial_completion:       { label: 'Trial Completion',  color: 'bg-purple-500', tab: 'clinical' },
+  clinical_trial_site_activation:  { label: 'Site Activation',  color: 'bg-teal-500',  tab: null },
+  clinical_trial_completion:       { label: 'Trial Completion',  color: 'bg-purple-500', tab: null },
   funding_new_award:               { label: null,                color: null,            tab: 'funding' },
   funding_renewal:                 { label: 'Renewal',           color: 'bg-lime-600',   tab: 'funding' },
   ma_transaction:                  { label: 'M&A',               color: 'bg-orange-500', tab: 'funding' },
-  ma_acquirer:                     { label: 'M&A — Acquirer',    color: 'bg-orange-500', tab: 'funding' },
-  ma_acquired:                     { label: 'M&A — Acquired',    color: 'bg-amber-500',  tab: 'funding' },
+  ma_acquirer:                     { label: 'M&A — Acquirer',    color: 'bg-orange-500', tab: null },
+  ma_acquired:                     { label: 'M&A — Acquired',    color: 'bg-amber-500',  tab: null },
   competitor_job_posting:          { label: 'Competitor Job',    color: 'bg-red-500',    tab: 'jobs' },
   stale_job_posting:               { label: 'Stale Job',         color: 'bg-gray-500',   tab: 'jobs' },
 }
@@ -330,7 +330,7 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
                 </td>
                 <td className="px-4 py-3 min-w-48">
                   <span className="text-xs text-gray-400 leading-snug">
-                    {truncate(d.study_summary, 120) || '—'}
+                    {truncate(d.study_summary || signal.signal_summary, 120) || '—'}
                   </span>
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
@@ -405,7 +405,9 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-sm font-semibold text-white whitespace-nowrap">
-                      {signal.companies?.name || d.company_name || '—'}
+                      {signal.signal_type === 'ma_transaction' && d.acquirer_name
+                        ? `${d.acquirer_name}${d.acquired_name ? ` → ${d.acquired_name}` : ''}`
+                        : signal.companies?.name || d.company_name || '—'}
                     </span>
                     {d.pre_hiring_signal && (
                       <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-semibold bg-yellow-900 text-yellow-300">
@@ -550,9 +552,9 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                 const d = parseDetail(signal.signal_detail)
                 const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
                 const daysPosted = d.days_posted || 0
-                const daysCls = daysPosted > 60
+                const daysCls = daysPosted >= 45
                   ? 'bg-red-900 text-red-300'
-                  : daysPosted > 30
+                  : daysPosted >= 30
                     ? 'bg-orange-900 text-orange-300'
                     : 'bg-gray-700 text-gray-300'
                 return (

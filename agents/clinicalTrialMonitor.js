@@ -21,9 +21,9 @@ const SIGNAL_TYPES = {
   NEW_IND:          { type: 'clinical_trial_new_ind',           score: 22 },
 };
 
-// Only emit phase_transition for these four clinically meaningful transitions.
-// Pre-clinical, Phase 4, site activations and completions are excluded.
-const ALLOWED_PHASE_TRANSITIONS = new Set(['Phase 2', 'Phase 3', 'Phase 1/2', 'Phase 2/3']);
+// Emit phase_transition for Phase 2 and Phase 3 studies (any variant).
+// Phase 4, pre-clinical, site activations and completions are excluded.
+const PHASE_TRANSITION_NUMS = new Set([2, 3]);
 
 // How many days back to look for recently updated studies
 const LOOKBACK_DAYS = 14;
@@ -88,6 +88,7 @@ function buildQueryUrl(lastUpdateGte, pageToken = null) {
     'LeadSponsorClass',
     'Phase',
     'PrimaryCompletionDate',
+    'StudyFirstPostedDate',
     'LastUpdatePostDate',
     'OverallStatus',
     'EnrollmentCount',
@@ -220,6 +221,7 @@ function extractProtocol(study) {
     leadSponsorClass: leadSponsor.class || '',
     phases,
     primaryCompletionDate: status.primaryCompletionDateStruct?.date || null,
+    studyFirstPostedDate: id.studyFirstPostedDateStruct?.date || status.studyFirstPostedDateStruct?.date || null,
     lastUpdatePostDate: status.lastUpdatePostDateStruct?.date || null,
     overallStatus: status.overallStatus || '',
     locationCount,
@@ -424,7 +426,7 @@ async function processStudy(study, now) {
 
   // Guard 2: name-based academic filter — catches misclassified sponsors
   if (CT_ACADEMIC_PATTERNS.test(proto.leadSponsorName)) {
-    console.log(`[clinicalTrialMonitor] FILTERED (academic name): ${proto.nctId} — ${proto.leadSponsorName}`);
+    console.log(`[clinicalTrialMonitor] ${proto.nctId} ACADEMIC NAME REJECTED: ${proto.leadSponsorName}`);
     return 0;
   }
 
@@ -463,31 +465,26 @@ async function processStudy(study, now) {
   };
 
   // ── Signal 1: Phase Transition ────────────────────────────────────────────
-  // Only emit for the four clinically meaningful transitions:
-  //   Phase 1 → Phase 2 | Phase 2 → Phase 3
-  //   Phase 1 → Phase 1/2 | Phase 2 → Phase 2/3
-  // Pre-clinical, Phase 4, site activations, and completions are excluded.
-  // The dedup URL includes the phase label so re-advancement emits a new signal.
-  if (ALLOWED_PHASE_TRANSITIONS.has(phaseStr)) {
-    const phaseFrom = inferPreviousPhase(phaseNum);
+  // Emit for any INDUSTRY study currently in Phase 2 or Phase 3.
+  // Combined phases (Phase 1/2, Phase 2/3) are included via phaseNum.
+  // phase_from is inferred from phaseNum; phase_to is the current phase label.
+  const phaseFrom = inferPreviousPhase(phaseNum);
+  const phaseEmit = PHASE_TRANSITION_NUMS.has(phaseNum);
+  console.log(
+    `[clinicalTrialMonitor] ${proto.nctId} PHASE CHECK: phase_from=${phaseFrom} phase_to=${phaseStr} phaseNum=${phaseNum} — ${phaseEmit ? 'PASS' : 'REJECT'}`
+  );
+
+  if (phaseEmit) {
     const dedupUrl = `${sourceUrl}#PHASE${phaseStr.replace(/\s/g, '')}`;
-
-    if (phaseDebugCount < 3) {
-      console.log(
-        `[clinicalTrialMonitor] Phase debug [${proto.nctId}]: ` +
-        `phase_from="${phaseFrom}", phase_to="${phaseStr}", ` +
-        `raw_phases=${JSON.stringify(proto.phases)}`
-      );
-      phaseDebugCount++;
-    }
-
     const alreadyExists = await signalExists(company.id, SIGNAL_TYPES.PHASE_TRANSITION.type, dedupUrl);
-    if (!alreadyExists) {
+    if (alreadyExists) {
+      console.log(`[clinicalTrialMonitor] ${proto.nctId} DEDUP: skipping (${phaseStr} signal already exists)`);
+    } else {
       const inserted = await insertSignal({
         company_id: company.id,
         signal_type: SIGNAL_TYPES.PHASE_TRANSITION.type,
         priority_score: SIGNAL_TYPES.PHASE_TRANSITION.score,
-        signal_summary: `${proto.leadSponsorName} study advanced from ${phaseFrom} to ${phaseStr}: ${proto.briefTitle}`,
+        signal_summary: `${proto.leadSponsorName} study in ${phaseStr}: ${proto.briefTitle}`,
         signal_detail: { ...baseDetail, phase_from: phaseFrom, phase_to: phaseStr },
         source_url: dedupUrl,
         created_at: new Date().toISOString(),
@@ -496,16 +493,23 @@ async function processStudy(study, now) {
     }
   }
 
-  // ── Signal 2: New IND — pure Phase 1 ONLY (no combined 1/2) ──────────────
+  // ── Signal 2: New IND — pure Phase 1 ONLY, first posted within LOOKBACK_DAYS
   const isPhase1Only =
     !isCombined &&
     proto.phases.length === 1 &&
     proto.phases[0].toUpperCase() === 'PHASE1';
 
-  if (isPhase1Only) {
+  const lookbackThreshold = new Date();
+  lookbackThreshold.setDate(lookbackThreshold.getDate() - LOOKBACK_DAYS);
+  const firstPosted = proto.studyFirstPostedDate ? new Date(proto.studyFirstPostedDate) : null;
+  const isNewStudy = firstPosted ? firstPosted >= lookbackThreshold : false;
+
+  if (isPhase1Only && isNewStudy) {
     const dedupUrl = `${sourceUrl}#IND`;
     const alreadyExists = await signalExists(company.id, SIGNAL_TYPES.NEW_IND.type, dedupUrl);
-    if (!alreadyExists) {
+    if (alreadyExists) {
+      console.log(`[clinicalTrialMonitor] ${proto.nctId} DEDUP: skipping (new_ind already exists)`);
+    } else {
       const inserted = await insertSignal({
         company_id: company.id,
         signal_type: SIGNAL_TYPES.NEW_IND.type,

@@ -400,6 +400,10 @@ async function processNihGrants(sixMonthsAgo, today, currentYear) {
 
   console.log(`[fundingMaAgent] NIH: Fetched ${projects.length} grant projects.`);
 
+  // Log first 3 org names for verification
+  const first3Orgs = projects.slice(0, 3).map((p) => p.organization?.org_name || p.org_name || '?').join(', ');
+  console.log(`[fundingMaAgent] NIH: First 3 org names: ${first3Orgs}`);
+
   for (const project of projects) {
     const orgName = project.organization?.org_name || project.org_name || '';
     const activityCode = project.activity_code || '';
@@ -411,14 +415,14 @@ async function processNihGrants(sixMonthsAgo, today, currentYear) {
     // Check .edu domain from organization website field
     const orgWebsite = project.organization?.org_url || project.org_url || '';
     if (orgWebsite && orgWebsite.includes('.edu')) {
-      console.log(`[fundingMaAgent] FILTERED (edu domain): ${orgName} [${orgWebsite}]`);
+      console.log(`[fundingMaAgent] NIH SKIP: ${orgName} — reason: academic (edu domain)`);
       continue;
     }
 
     // Post-fetch academic name filter — catches academic orgs that pass the
     // SMALL BUSINESS org_type filter (mis-coded entries in NIH Reporter)
     if (ACADEMIC_PATTERNS.test(orgName)) {
-      console.log(`[fundingMaAgent] FILTERED (academic NIH): ${orgName}`);
+      console.log(`[fundingMaAgent] NIH SKIP: ${orgName} — reason: academic`);
       continue;
     }
 
@@ -437,7 +441,10 @@ async function processNihGrants(sixMonthsAgo, today, currentYear) {
     if (!company) continue;
 
     const alreadyExists = await signalExists(company.id, signalType, sourceUrl);
-    if (alreadyExists) continue;
+    if (alreadyExists) {
+      console.log(`[fundingMaAgent] NIH SKIP: ${orgName} — reason: dedup`);
+      continue;
+    }
 
     const { adjustedScore, preHiringDetail } = await evalPreHiring(orgName, baseScore);
 
@@ -467,7 +474,11 @@ async function processNihGrants(sixMonthsAgo, today, currentYear) {
       created_at: new Date().toISOString(),
     });
 
-    if (inserted) signalsInserted++;
+    if (inserted) {
+      signalsInserted++;
+    } else {
+      console.log(`[fundingMaAgent] NIH SKIP: ${orgName} — reason: insert error`);
+    }
   }
 
   return signalsInserted;

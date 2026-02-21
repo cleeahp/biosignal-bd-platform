@@ -33,270 +33,81 @@ function computeScore(daysPosted) {
   return Math.min(score, 20)
 }
 
-// ─── SOURCE 1: PharmJobs.com ───────────────────────────────────────────────────
-// Replaces BioSpace.com, which blocks server-side requests from Vercel IPs (0 bytes returned).
-// PharmJobs uses server-rendered HTML with article.jlcol1 containers.
+// ─── SOURCE 1: BioSpace.com /jobs/ ────────────────────────────────────────────
+// Fetches BioSpace job listings filtered to a given life sciences category.
+// Returns jobs matching role keywords with US locations.
 
-async function fetchPharmaJobsJobs() {
+async function fetchBioSpaceJobsByCategory(category) {
   const jobs = []
+  const url = `https://www.biospace.com/jobs/?category=${encodeURIComponent(category)}&days=30`
   let html
+
   try {
-    const resp = await fetch('https://www.pharmajobs.com', {
+    const resp = await fetch(url, {
       headers: {
         'User-Agent': BOT_UA,
         Accept: 'text/html,application/xhtml+xml,*/*',
         'Accept-Language': 'en-US,en;q=0.9',
       },
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(14000),
     })
     if (!resp.ok) {
-      console.warn(`PharmJobs HTTP ${resp.status}`)
+      console.warn(`BioSpace [${category}]: HTTP ${resp.status}`)
       return jobs
     }
     html = await resp.text()
   } catch (err) {
-    console.warn(`PharmJobs fetch error: ${err.message}`)
-    return jobs
-  }
-
-  if (html.length < 1000) {
-    console.warn(`PharmJobs: response too short (${html.length} chars) — may be blocked`)
-    return jobs
-  }
-
-  const $ = cheerio.load(html)
-
-  // PharmJobs structure: article.jlcol1 > a.title.joblink[title] (job title + href)
-  //                                      > p.jobPostHeader span (company name)
-  //                                      > p.jobPostCity span (location)
-  $('article.jlcol1').each((_, el) => {
-    const $item = $(el)
-
-    const $titleLink = $item.find('a.title.joblink').first()
-    const title = $titleLink.attr('title') || $titleLink.text().trim()
-    if (!title || !matchesRoleKeywords(title)) return
-
-    const companyName = $item.find('p.jobPostHeader span').first().text().trim()
-    if (!companyName || companyName.length < 2) return
-
-    const rawHref = $titleLink.attr('href') || ''
-    const sourceUrl = rawHref.startsWith('http')
-      ? rawHref
-      : `https://www.pharmajobs.com${rawHref}`
-
-    const location = $item.find('p.jobPostCity span').first().text().trim()
-
-    jobs.push({
-      job_title: title.substring(0, 120),
-      company_name: companyName.substring(0, 100),
-      job_location: location,
-      date_posted: null,
-      days_posted: 30,
-      source_url: sourceUrl,
-      job_board: 'pharmajobs',
-    })
-  })
-
-  console.log(`PharmJobs: ${jobs.length} matched jobs`)
-  return jobs
-}
-
-// ─── SOURCE 2: MedZilla.com ────────────────────────────────────────────────────
-// MedZilla has shifted to a blog/news format. We still attempt it but expect
-// zero results; the function returns gracefully if content is unhelpful.
-
-async function fetchMedZillaJobs() {
-  const jobs = []
-
-  const candidateUrls = [
-    'https://www.medzilla.com/search.cfm',
-    'https://www.medzilla.com/jobs/',
-    'https://www.medzilla.com/',
-  ]
-
-  let html = null
-  let successUrl = null
-
-  for (const url of candidateUrls) {
-    try {
-      const resp = await fetch(url, {
-        headers: {
-          'User-Agent': BOT_UA,
-          Accept: 'text/html,application/xhtml+xml,*/*',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-        signal: AbortSignal.timeout(12000),
-      })
-      if (resp.ok) {
-        const text = await resp.text()
-        if (text.length > 500) {
-          html = text
-          successUrl = url
-          console.log(`MedZilla: fetched ${html.length} chars from ${url}`)
-          break
-        }
-        console.warn(`MedZilla ${url}: response too short (${text.length} chars)`)
-      } else {
-        console.warn(`MedZilla ${url}: HTTP ${resp.status}`)
-      }
-    } catch (err) {
-      console.warn(`MedZilla ${url} fetch error: ${err.message}`)
-    }
-  }
-
-  if (!html) {
-    console.warn('MedZilla: no reachable URL found — skipping source')
-    return jobs
-  }
-
-  const $ = cheerio.load(html)
-  let parsed = 0
-
-  // Strategy 1: table rows (MedZilla historically uses tables)
-  $('table tr').each((_, el) => {
-    if (parsed >= 30) return
-    const $el = $(el)
-    const $link = $el.find('a').first()
-    const title = $link.text().trim()
-    if (!title || title.length < 5 || !matchesRoleKeywords(title)) return
-
-    const href = $link.attr('href') || ''
-    const sourceUrl = href.startsWith('http')
-      ? href
-      : href
-      ? `https://www.medzilla.com${href}`
-      : successUrl
-
-    const cells = $el.find('td')
-    const companyName =
-      cells.eq(1).text().trim() ||
-      cells.eq(2).text().trim() ||
-      'Unknown Company'
-
-    jobs.push({
-      job_title: title.substring(0, 120),
-      company_name: companyName.substring(0, 100),
-      job_location: cells.eq(3)?.text().trim() || '',
-      date_posted: null,
-      days_posted: 30,
-      source_url: sourceUrl,
-      job_board: 'medzilla',
-    })
-    parsed++
-  })
-
-  // Strategy 2: scan all anchors for matching job titles
-  if (parsed === 0) {
-    $('a').each((_, el) => {
-      if (parsed >= 20) return
-      const $el = $(el)
-      const title = $el.text().trim()
-      if (!title || title.length < 5 || title.length > 120) return
-      if (!matchesRoleKeywords(title)) return
-
-      const href = $el.attr('href') || ''
-      if (!href || href === '#') return
-      const sourceUrl = href.startsWith('http')
-        ? href
-        : `https://www.medzilla.com${href}`
-
-      jobs.push({
-        job_title: title.substring(0, 120),
-        company_name: 'Unknown Company',
-        job_location: '',
-        date_posted: null,
-        days_posted: 30,
-        source_url: sourceUrl,
-        job_board: 'medzilla',
-      })
-      parsed++
-    })
-  }
-
-  console.log(`MedZilla: ${jobs.length} matched jobs`)
-  return jobs
-}
-
-// ─── SOURCE 3: ClinicalTrialsArena.com/jobs/ ──────────────────────────────────
-
-async function fetchClinicalTrialsArenaJobs() {
-  const jobs = []
-  let html
-
-  try {
-    const resp = await fetch('https://www.clinicaltrialsarena.com/jobs/', {
-      headers: {
-        'User-Agent': BOT_UA,
-        Accept: 'text/html,application/xhtml+xml,*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-      signal: AbortSignal.timeout(12000),
-    })
-    if (!resp.ok) {
-      console.warn(`ClinicalTrialsArena: HTTP ${resp.status}`)
-      return jobs
-    }
-    html = await resp.text()
-  } catch (err) {
-    console.warn(`ClinicalTrialsArena fetch error: ${err.message}`)
+    console.warn(`BioSpace [${category}] fetch error: ${err.message}`)
     return jobs
   }
 
   if (html.length < 500) {
-    console.warn(
-      `ClinicalTrialsArena: response too short (${html.length} chars) — may be blocked`
-    )
+    console.warn(`BioSpace [${category}]: response too short (${html.length} chars) — may be JS-rendered`)
     return jobs
   }
 
-  console.log(`ClinicalTrialsArena: fetched ${html.length} chars`)
+  console.log(`BioSpace [${category}]: fetched ${html.length} chars`)
   const $ = cheerio.load(html)
   let parsed = 0
 
-  // Strategy 1: article or structured job listing containers
-  $(
-    'article, .job, [class*="job-post"], [class*="job-list"] li, .jobs-list__item, [class*="vacancy"], [class*="career"]'
-  ).each((_, el) => {
-    if (parsed >= 30) return
+  // BioSpace job cards: try structured containers first
+  $('[class*="job"], article, li[class*="result"]').each((_, el) => {
+    if (parsed >= 25) return
     const $el = $(el)
 
-    const $titleLink = $el.find('h2 a, h3 a, h4 a, a[class*="title"]').first()
-    const title =
-      $titleLink.text().trim() ||
-      $el.find('h2, h3, h4').first().text().trim()
-
+    const $titleLink = $el.find('h2 a, h3 a, a[class*="title"], a[class*="job-title"]').first()
+    const title = ($titleLink.text() || $el.find('h2, h3').first().text()).trim()
     if (!title || !matchesRoleKeywords(title)) return
 
-    const $link = $titleLink.length ? $titleLink : $el.find('a').first()
-    const href = $link.attr('href') || ''
-    const sourceUrl = href.startsWith('http')
-      ? href
-      : href
-      ? `https://www.clinicaltrialsarena.com${href}`
-      : 'https://www.clinicaltrialsarena.com/jobs/'
+    const href = $titleLink.attr('href') || $el.find('a').first().attr('href') || ''
+    const sourceUrl = href.startsWith('http') ? href : href ? `https://www.biospace.com${href}` : url
 
-    const companyName =
-      $el
-        .find('[class*="company"], [class*="employer"], [class*="organisation"]')
-        .first()
-        .text()
-        .trim() || 'Unknown Company'
-    const location =
-      $el.find('[class*="location"], [class*="city"]').first().text().trim() || ''
+    const companyName = $el.find('[class*="company"], [class*="employer"]').first().text().trim() || 'Unknown'
+    const location = $el.find('[class*="location"], [class*="city"]').first().text().trim() || ''
+    const dateText = $el.find('[class*="date"], time').first().text().trim() || ''
+
+    // Estimate days_posted from relative date text ("3 days ago", "2 weeks ago")
+    let days_posted = 30
+    const daysMatch = dateText.match(/(\d+)\s+day/i)
+    const weeksMatch = dateText.match(/(\d+)\s+week/i)
+    const monthsMatch = dateText.match(/(\d+)\s+month/i)
+    if (daysMatch) days_posted = parseInt(daysMatch[1], 10)
+    else if (weeksMatch) days_posted = parseInt(weeksMatch[1], 10) * 7
+    else if (monthsMatch) days_posted = parseInt(monthsMatch[1], 10) * 30
 
     jobs.push({
-      job_title: title.substring(0, 120),
-      company_name: companyName,
+      job_title: title.slice(0, 120),
+      company_name: companyName.slice(0, 100),
       job_location: location,
       date_posted: null,
-      days_posted: 30,
+      days_posted,
       source_url: sourceUrl,
-      job_board: 'clinicaltrialsarena',
+      job_board: `biospace_${category.toLowerCase()}`,
     })
     parsed++
   })
 
-  // Strategy 2: generic anchor scan for role keyword matches
+  // Fallback: scan all anchors with matching title text
   if (parsed === 0) {
     $('a').each((_, el) => {
       if (parsed >= 20) return
@@ -304,31 +115,27 @@ async function fetchClinicalTrialsArenaJobs() {
       const title = $el.text().trim()
       if (!title || title.length < 5 || title.length > 150) return
       if (!matchesRoleKeywords(title)) return
-
       const href = $el.attr('href') || ''
       if (!href || href === '#') return
-      const sourceUrl = href.startsWith('http')
-        ? href
-        : `https://www.clinicaltrialsarena.com${href}`
-
+      const sourceUrl = href.startsWith('http') ? href : `https://www.biospace.com${href}`
       jobs.push({
-        job_title: title.substring(0, 120),
-        company_name: 'Unknown Company',
+        job_title: title.slice(0, 120),
+        company_name: 'Unknown',
         job_location: '',
         date_posted: null,
         days_posted: 30,
         source_url: sourceUrl,
-        job_board: 'clinicaltrialsarena',
+        job_board: `biospace_${category.toLowerCase()}`,
       })
       parsed++
     })
   }
 
-  console.log(`ClinicalTrialsArena: ${jobs.length} matched jobs`)
+  console.log(`BioSpace [${category}]: ${jobs.length} matched jobs`)
   return jobs
 }
 
-// ─── SOURCE 4: Career site discovery via company domain inference ──────────────
+// ─── SOURCE 2: Career site discovery via company domain inference ──────────────
 // Fetches INDUSTRY sponsor company names from the companies table (populated by
 // clinical trial signals), infers their corporate domain, tries common career
 // page URL patterns, and scans for role keyword matches.
@@ -360,20 +167,24 @@ function inferDomain(name) {
 async function discoverSponsorCareerPages() {
   const jobs = []
 
-  // Step 1: Get INDUSTRY company names from our DB (confirmed CT.gov sponsors)
+  // Step 1: Get company names from our DB — include all relevant industry types
+  // plus any company we have a warm relationship with (relationship_warmth IS NOT NULL)
   let companyNames = []
   try {
-    const { data, error } = await supabase
-      .from('companies')
-      .select('name')
-      .eq('industry', 'Life Sciences')
-      .limit(30)
-
-    if (error) {
-      console.warn(`companies table query error: ${error.message}`)
-    } else {
-      companyNames = (data || []).map((c) => c.name).filter(Boolean)
-    }
+    const [{ data: byIndustry }, { data: byRelationship }] = await Promise.all([
+      supabase
+        .from('companies')
+        .select('name')
+        .in('industry', ['Life Sciences', 'Biotechnology', 'Pharmaceuticals', 'Medical Device'])
+        .limit(25),
+      supabase
+        .from('companies')
+        .select('name')
+        .not('relationship_warmth', 'is', null)
+        .limit(10),
+    ])
+    const allData = [...(byIndustry || []), ...(byRelationship || [])]
+    companyNames = [...new Set(allData.map((c) => c.name).filter(Boolean))]
   } catch (err) {
     console.warn(`companies table fetch error: ${err.message}`)
   }
@@ -586,33 +397,26 @@ export async function run() {
   const runId = runEntry?.id
 
   let signalsFound = 0
-  const sourceCounts = { pharmajobs: 0, medzilla: 0, clinicalTrialsArena: 0, careerSites: 0 }
+  const sourceCounts = { biospace_biotech: 0, biospace_pharma: 0, careerSites: 0 }
 
   try {
     const allJobs = []
 
-    // ── Source 1: PharmJobs.com (replaces blocked BioSpace) ───────────────────
-    const pharmaJobsJobs = await fetchPharmaJobsJobs()
-    for (const job of pharmaJobsJobs) {
-      job._source = 'pharmajobs'
+    // ── Source 1: BioSpace.com Biotechnology jobs ──────────────────────────────
+    const biospaceBiotechJobs = await fetchBioSpaceJobsByCategory('Biotechnology')
+    for (const job of biospaceBiotechJobs) {
+      job._source = 'biospace_biotech'
       allJobs.push(job)
     }
 
-    // ── Source 2: MedZilla.com ─────────────────────────────────────────────────
-    const medZillaJobs = await fetchMedZillaJobs()
-    for (const job of medZillaJobs) {
-      job._source = 'medzilla'
+    // ── Source 2: BioSpace.com Pharmaceutical jobs ─────────────────────────────
+    const biospacePharmaJobs = await fetchBioSpaceJobsByCategory('Pharmaceutical')
+    for (const job of biospacePharmaJobs) {
+      job._source = 'biospace_pharma'
       allJobs.push(job)
     }
 
-    // ── Source 3: ClinicalTrialsArena.com/jobs/ ────────────────────────────────
-    const ctArenaJobs = await fetchClinicalTrialsArenaJobs()
-    for (const job of ctArenaJobs) {
-      job._source = 'clinicalTrialsArena'
-      allJobs.push(job)
-    }
-
-    // ── Source 4: Company career pages via domain inference ────────────────────
+    // ── Source 3: Company career pages via domain inference ────────────────────
     const careerSiteJobs = await discoverSponsorCareerPages()
     for (const job of careerSiteJobs) {
       job._source = 'careerSites'
@@ -637,9 +441,8 @@ export async function run() {
       const inserted = await persistJobSignal(job)
       if (inserted) {
         signalsFound++
-        if (job._source === 'pharmajobs') sourceCounts.pharmajobs++
-        else if (job._source === 'medzilla') sourceCounts.medzilla++
-        else if (job._source === 'clinicalTrialsArena') sourceCounts.clinicalTrialsArena++
+        if (job._source === 'biospace_biotech') sourceCounts.biospace_biotech++
+        else if (job._source === 'biospace_pharma') sourceCounts.biospace_pharma++
         else sourceCounts.careerSites++
       }
     }
@@ -656,9 +459,8 @@ export async function run() {
           jobs_found_total: jobsFound,
           jobs_deduped: uniqueJobs.length,
           source_counts: {
-            pharmajobs_raw: allJobs.filter((j) => j._source === 'pharmajobs').length,
-            medzilla_raw: allJobs.filter((j) => j._source === 'medzilla').length,
-            clinicaltrialsarena_raw: allJobs.filter((j) => j._source === 'clinicalTrialsArena').length,
+            biospace_biotech_raw: allJobs.filter((j) => j._source === 'biospace_biotech').length,
+            biospace_pharma_raw: allJobs.filter((j) => j._source === 'biospace_pharma').length,
             career_sites_raw: allJobs.filter((j) => j._source === 'careerSites').length,
           },
           signals_by_source: sourceCounts,

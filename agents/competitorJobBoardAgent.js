@@ -144,6 +144,10 @@ async function seedCompetitorFirms() {
  * @returns {{ type: 'greenhouse'|'lever', slug: string }|null}
  */
 function detectAtsSlug(html) {
+  // iCIMS / Workday: log and return a sentinel so callers can skip API attempts
+  if (/\.icims\.com/i.test(html)) return { type: 'icims', slug: '' }
+  if (/myworkdayjobs\.com|workday\.com\/en-us\/applications/i.test(html)) return { type: 'workday', slug: '' }
+
   // Greenhouse embed pattern: ?for=slug (most common on career pages)
   const ghEmbedMatch = html.match(/boards\.greenhouse\.io\/embed\/job_board\?for=([a-z0-9_-]+)/i)
   if (ghEmbedMatch) return { type: 'greenhouse', slug: ghEmbedMatch[1] }
@@ -157,6 +161,11 @@ function detectAtsSlug(html) {
 
   const lvMatch = html.match(/jobs\.lever\.co\/([a-z0-9_-]+)/i)
   if (lvMatch) return { type: 'lever', slug: lvMatch[1] }
+
+  // Jobvite: jobs.jobvite.com/{company-id}
+  const jvMatch = html.match(/jobs\.jobvite\.com\/([a-z0-9_-]+)/i)
+  if (jvMatch) return { type: 'jobvite', slug: jvMatch[1] }
+
   return null
 }
 
@@ -168,9 +177,34 @@ function detectAtsSlug(html) {
  * @returns {Promise<Array<{title: string, location: string, applyUrl: string}>>}
  */
 async function fetchAtsJobs(ats) {
+  // Non-API ATS systems — log and return empty
+  if (ats.type === 'icims') {
+    console.log(`iCIMS detected — skipping (iCIMS does not have a public job listing API)`)
+    return []
+  }
+  if (ats.type === 'workday') {
+    console.log(`Workday detected — skipping (Workday does not have a public job listing API)`)
+    return []
+  }
+
   try {
     let url, jobs = []
-    if (ats.type === 'greenhouse') {
+    if (ats.type === 'jobvite') {
+      url = `https://jobs.jobvite.com/api/jobs?c=${ats.slug}`
+      const resp = await fetch(url, { signal: AbortSignal.timeout(8000) })
+      console.log(`Jobvite API [${ats.slug}]: HTTP ${resp.status}`)
+      if (!resp.ok) return []
+      const data = await resp.json()
+      jobs = (data.jobs || data.requisitions || []).map((j) => ({
+        title: j.title || j.jobTitle || '',
+        location: j.location || j.jobLocation || '',
+        applyUrl: j.applyUrl || j.url || url,
+      }))
+      const matched = jobs.filter((j) => matchesRoleKeywords(j.title))
+      console.log(`Jobvite API [${ats.slug}]: ${jobs.length} total jobs, ${matched.length} matching`)
+      console.log(`Jobvite API [${ats.slug}]: all titles: ${jobs.map((j) => j.title).slice(0, 20).join(' | ')}`)
+      return matched
+    } else if (ats.type === 'greenhouse') {
       // ?content=true returns full job descriptions; needed for some boards to list all jobs
       url = `https://boards-api.greenhouse.io/v1/boards/${ats.slug}/jobs?content=true`
       const resp = await fetch(url, { signal: AbortSignal.timeout(8000) })
@@ -188,10 +222,12 @@ async function fetchAtsJobs(ats) {
         location: j.location?.name || '',
         applyUrl: j.absolute_url || url,
       }))
+      console.log(`Greenhouse API [${ats.slug}]: all titles: ${jobs.map((j) => j.title).slice(0, 20).join(' | ')}`)
       const matched = jobs.filter((j) => matchesRoleKeywords(j.title))
       console.log(`Greenhouse API [${ats.slug}]: ${jobs.length} total jobs, ${matched.length} matching keywords`)
       return matched
     } else {
+      // Lever
       url = `https://api.lever.co/v0/postings/${ats.slug}?mode=json`
       const resp = await fetch(url, { signal: AbortSignal.timeout(8000) })
       console.log(`Lever API [${ats.slug}]: HTTP ${resp.status}`)
@@ -202,6 +238,7 @@ async function fetchAtsJobs(ats) {
         location: j.categories?.location || j.workplaceType || '',
         applyUrl: j.hostedUrl || url,
       }))
+      console.log(`Lever API [${ats.slug}]: all titles: ${jobs.map((j) => j.title).slice(0, 20).join(' | ')}`)
       const matched = jobs.filter((j) => matchesRoleKeywords(j.title))
       console.log(`Lever API [${ats.slug}]: ${jobs.length} total jobs, ${matched.length} matching keywords`)
       return matched
