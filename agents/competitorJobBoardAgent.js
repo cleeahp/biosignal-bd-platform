@@ -97,12 +97,21 @@ async function seedCompetitorFirms() {
       })
       const ok = resp.status < 400 || resp.status === 405
       if (ok) {
-        await supabase
+        const { data: existingFirm } = await supabase
           .from('competitor_firms')
-          .upsert(
-            { name: firm.name, careers_url: firm.careers_url, is_active: true },
-            { onConflict: 'name' }
-          )
+          .select('id')
+          .ilike('name', firm.name)
+          .maybeSingle()
+        if (existingFirm) {
+          await supabase
+            .from('competitor_firms')
+            .update({ is_active: true })
+            .eq('id', existingFirm.id)
+        } else {
+          await supabase
+            .from('competitor_firms')
+            .insert({ name: firm.name, careers_url: firm.careers_url, is_active: true })
+        }
         seeded++
       } else {
         skippedFirms.push({ name: firm.name, reason: `HTTP ${resp.status}` })
@@ -162,7 +171,7 @@ async function inferClientFromCareerPage(careersUrl, firmName, knownCompanyNames
 // Dedup key is firm + ISO week so one signal per firm per week at most.
 
 async function persistCompetitorSignal(firmName, careersUrl, likelyClient, confidence) {
-  const firmCompany = await upsertCompany(firmName)
+  const firmCompany = await upsertCompany(supabase, { name: firmName })
   if (!firmCompany) return false
 
   // One signal per firm per calendar week
