@@ -1,60 +1,30 @@
 import { supabase } from '../lib/supabase.js'
+import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import * as cheerio from 'cheerio'
 
-// ─── Target role keywords ───────────────────────────────────────────────────────
-const SEARCH_KEYWORDS = [
-  'Clinical Research Associate',
-  'CRA',
-  'Regulatory Affairs',
-  'Quality Assurance Specialist',
-  'Biostatistician',
-  'Clinical Data Manager',
-  'Medical Affairs',
-  'Pharmacovigilance',
-  'Clinical Trial Manager',
-  'Validation Engineer',
+// ─── Indeed RSS search keywords ────────────────────────────────────────────────
+const INDEED_KEYWORDS = [
+  'Clinical Research Associate CRO',
+  'SDTM Programmer clinical',
+  'Regulatory Affairs Specialist biotech',
+  'Biostatistician pharmaceutical',
+  'Pharmacovigilance clinical trials',
+  'Clinical Data Manager CRO',
+  'Quality Assurance pharmaceutical',
+  'Clinical Trial Manager CRO',
 ]
 
-const LIFE_SCIENCES_KEYWORDS = [
-  'clinical research associate', 'cra', 'clinical research coordinator', 'crc',
-  'clinical trial manager', 'regulatory affairs', 'quality assurance', 'qa specialist',
-  'biostatistician', 'data manager', 'clinical data manager', 'pharmacovigilance',
-  'drug safety', 'medical monitor', 'clinical operations', 'site monitor',
-  'study coordinator', 'medical affairs', 'validation engineer', 'statistical programmer',
-]
+const BOT_UA = 'Mozilla/5.0 (compatible; BioSignalBot/1.0)'
 
-const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-
-function isLifeSciencesJob(title) {
-  const t = title.toLowerCase()
-  return LIFE_SCIENCES_KEYWORDS.some((kw) => t.includes(kw))
-}
-
-// ─── Helpers ───────────────────────────────────────────────────────────────────
+// ─── Shared signal helpers ─────────────────────────────────────────────────────
 
 async function upsertCompany(name) {
-  if (!name || name.trim().length < 2) return null
-  const cleanName = name.trim()
-
-  const { data: existing } = await supabase
+  const { data } = await supabase
     .from('companies')
-    .select('id, relationship_warmth')
-    .ilike('name', cleanName)
-    .maybeSingle()
-
-  if (existing) return existing
-
-  const { data: newCompany, error } = await supabase
-    .from('companies')
-    .insert({ name: cleanName, industry: 'Life Sciences', relationship_warmth: 'new_prospect' })
-    .select('id, relationship_warmth')
+    .upsert({ name, industry: 'Life Sciences' }, { onConflict: 'name' })
+    .select()
     .single()
-
-  if (error) {
-    console.warn(`Failed to insert company "${cleanName}": ${error.message}`)
-    return null
-  }
-  return newCompany
+  return data
 }
 
 async function signalExists(companyId, signalType, sourceUrl) {
@@ -68,211 +38,366 @@ async function signalExists(companyId, signalType, sourceUrl) {
   return !!data
 }
 
-function daysSince(dateStr) {
-  if (!dateStr) return null
-  const d = new Date(dateStr)
-  if (isNaN(d)) return null
-  return Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24))
+// ─── Scoring ───────────────────────────────────────────────────────────────────
+
+function computeScore(daysPosted) {
+  let score = 15
+  if (daysPosted >= 60) score += 3
+  else if (daysPosted >= 30) score += 2
+  return Math.min(score, 20)
 }
 
-// ─── SOURCE 1: Indeed RSS ───────────────────────────────────────────────────────
-// RSS format provides pubDate (original posting date) and company via <source> tag.
-// fromage=30 returns jobs posted at least 30 days ago (the "stale" definition).
-// Note: may return HTTP 403 from some IP ranges (Cloudflare blocks); agent
-// gracefully skips to BioSpace when Indeed is unavailable.
+// ─── SOURCE 1: Indeed RSS ──────────────────────────────────────────────────────
 
 async function fetchIndeedRss(keyword) {
   const jobs = []
+  const q = encodeURIComponent(keyword)
+  const url = `https://www.indeed.com/rss?q=${q}&fromage=30&sort=date`
+
+  let xml
   try {
-    const q = encodeURIComponent(keyword)
-    const url = `https://www.indeed.com/rss?q=${q}&l=&fromage=30&sort=date`
     const resp = await fetch(url, {
-      headers: {
-        'User-Agent': BROWSER_UA,
-        Accept: 'application/rss+xml, application/xml, text/xml, */*',
-      },
-      signal: AbortSignal.timeout(5000),
+      headers: { 'User-Agent': BOT_UA },
+      signal: AbortSignal.timeout(8000),
     })
-
     if (!resp.ok) {
-      console.warn(`  Indeed RSS returned HTTP ${resp.status} for "${keyword}" (may be blocked — BioSpace fallback active)`)
+      console.warn(`Indeed RSS HTTP ${resp.status} for "${keyword}"`)
       return jobs
     }
-
-    const xml = await resp.text()
-    // Verify it's RSS (not a CAPTCHA/error HTML page)
-    if (!xml.includes('<rss') && !xml.includes('<feed') && !xml.includes('<item>')) {
-      console.warn(`  Indeed RSS response is not valid XML for "${keyword}"`)
-      return jobs
-    }
-
-    const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || []
-    for (const item of items) {
-      const title = item.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/s)?.[1]?.trim()
-      const link  = item.match(/<link>(.*?)<\/link>/s)?.[1]?.trim()
-      const pubDateStr = item.match(/<pubDate>(.*?)<\/pubDate>/s)?.[1]?.trim()
-      const company = item.match(/<source[^>]*>(.*?)<\/source>/s)?.[1]?.trim()
-        || item.match(/<author>(.*?)<\/author>/s)?.[1]?.trim()
-
-      if (!title || !link) continue
-      if (!isLifeSciencesJob(title)) continue
-
-      const daysPosted = daysSince(pubDateStr) ?? 30
-      const datePosted = pubDateStr
-        ? new Date(pubDateStr).toISOString().split('T')[0]
-        : null
-
-      // Extract location from description if present
-      const descRaw = item.match(/<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/s)?.[1] || ''
-      const locMatch = descRaw.replace(/<[^>]+>/g, '').match(/([A-Z][a-zA-Z\s]+,\s*[A-Z]{2})\b/)
-      const location = locMatch?.[1] || ''
-
-      jobs.push({
-        title,
-        company: company || 'Unknown Company',
-        location,
-        link,
-        datePosted,
-        daysPosted,
-        source: 'Indeed',
-      })
-    }
-
-    console.log(`  Indeed RSS "${keyword}": ${jobs.length} stale jobs found`)
+    xml = await resp.text()
   } catch (err) {
-    console.warn(`  Indeed RSS fetch failed for "${keyword}": ${err.message}`)
+    console.warn(`Indeed RSS fetch error for "${keyword}": ${err.message}`)
+    return jobs
   }
+
+  // Validate that the response is actually RSS/XML, not a CAPTCHA/HTML page
+  if (!xml.includes('<rss') && !xml.includes('<item>')) {
+    console.warn(`Indeed RSS non-XML response for "${keyword}" — skipping`)
+    return jobs
+  }
+
+  const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || []
+  for (const item of items) {
+    const title = item.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/s)?.[1]?.trim() || ''
+    const link = item.match(/<link>(.*?)<\/link>/s)?.[1]?.trim() || ''
+    const pubDateStr = item.match(/<pubDate>(.*?)<\/pubDate>/s)?.[1]?.trim() || ''
+    const company =
+      item.match(/<source[^>]*>(.*?)<\/source>/s)?.[1]?.trim() ||
+      item.match(/<author>(.*?)<\/author>/s)?.[1]?.trim() ||
+      ''
+    const descRaw =
+      item.match(/<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/s)?.[1] || ''
+
+    if (!title || !link) continue
+    if (!matchesRoleKeywords(title)) continue
+
+    const pubDate = pubDateStr ? new Date(pubDateStr) : null
+    const daysPosted = pubDate
+      ? Math.floor((Date.now() - pubDate.getTime()) / 86400000)
+      : 30
+    const datePosted = pubDate ? pubDate.toISOString().split('T')[0] : null
+
+    // Extract "City, ST" pattern from stripped description HTML
+    const descText = descRaw.replace(/<[^>]+>/g, ' ')
+    const locMatch = descText.match(/([A-Z][a-zA-Z\s]{1,25},\s*[A-Z]{2})\b/)
+    const jobLocation = locMatch ? locMatch[1].trim() : ''
+
+    jobs.push({
+      job_title: title,
+      company_name: company || 'Unknown Company',
+      job_location: jobLocation,
+      date_posted: datePosted,
+      days_posted: daysPosted,
+      source_url: link,
+      job_board: 'indeed',
+    })
+  }
+
+  console.log(`Indeed RSS "${keyword}": ${jobs.length} matched jobs`)
   return jobs
 }
 
-// ─── SOURCE 2: BioSpace ─────────────────────────────────────────────────────────
-// BioSpace is server-side rendered. Jobs are in HTML with:
-//   - Title in <span> inside <h3 class="lister__header">
-//   - Company from <img class="lister__logo"> alt text (strip " logo" suffix)
-//   - Age badge: <p class="badge" title="Added in the last N days">
-// URL: https://www.biospace.com/jobs/?discipline=Clinical-Research
-// We emit a signal for every unique Life Sciences job found at a company not
-// already seen today; days_posted is extracted from the badge or estimated.
+// ─── SOURCE 2: BioSpace.com ────────────────────────────────────────────────────
 
 async function fetchBioSpaceJobs() {
   const jobs = []
+  let html
   try {
-    const resp = await fetch('https://www.biospace.com/jobs/?discipline=Clinical-Research', {
+    const resp = await fetch('https://www.biospace.com/jobs/?days=30', {
       headers: {
-        'User-Agent': BROWSER_UA,
-        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': BOT_UA,
+        Accept: 'text/html,application/xhtml+xml,*/*',
         'Accept-Language': 'en-US,en;q=0.9',
       },
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(12000),
     })
-
     if (!resp.ok) {
-      console.warn(`  BioSpace returned HTTP ${resp.status}`)
+      console.warn(`BioSpace HTTP ${resp.status}`)
       return jobs
     }
-
-    const html = await resp.text()
-    const $ = cheerio.load(html)
-
-    // Each job is in a div/article with id="item-{jobId}"
-    $('[id^="item-"]').each((_, el) => {
-      const $item = $(el)
-
-      // Title: first <span> inside .lister__header
-      const title = $item.find('.lister__header span').first().text().trim()
-        || $item.find('h3 span').first().text().trim()
-      if (!title || !isLifeSciencesJob(title)) return
-
-      // Company: from logo alt text, stripping " logo" suffix
-      let company = ''
-      const logoAlt = $item.find('img.lister__logo, img[class*="logo"]').first().attr('alt') || ''
-      if (logoAlt) {
-        company = logoAlt.replace(/\s+logo\s*$/i, '').trim()
-      }
-      if (!company || company.length < 2) return // skip if no company found
-
-      // Job URL: from href containing /job/
-      let jobUrl = ''
-      const linkHref = $item.find('a[href*="/job/"]').first().attr('href') || ''
-      if (linkHref) {
-        const cleanHref = linkHref.replace(/[\s\n\t]/g, '') // strip whitespace in href (BioSpace HTML quirk)
-        jobUrl = cleanHref.startsWith('http') ? cleanHref : `https://jobs.biospace.com${cleanHref}`
-      }
-      if (!jobUrl) jobUrl = 'https://www.biospace.com/jobs/?discipline=Clinical-Research'
-
-      // Days posted: from badge title "Added in the last N days"
-      let daysPosted = 30 // default: treat as at-threshold
-      const badgeTitle = $item.find('.badge[title], [class*="badge"][title]').first().attr('title') || ''
-      const daysMatch = badgeTitle.match(/Added in the last (\d+) day/i)
-      if (daysMatch) {
-        daysPosted = parseInt(daysMatch[1], 10)
-      }
-
-      // Location: from any location element
-      const location = $item.find('[class*="location"], [class*="city"]').first().text().trim() || ''
-
-      jobs.push({ title, company, location, link: jobUrl, daysPosted, source: 'BioSpace', datePosted: null })
-    })
-
-    console.log(`  BioSpace: ${jobs.length} Life Sciences jobs found`)
+    html = await resp.text()
   } catch (err) {
-    console.warn(`  BioSpace fetch failed: ${err.message}`)
+    console.warn(`BioSpace fetch error: ${err.message}`)
+    return jobs
   }
+
+  const $ = cheerio.load(html)
+
+  // Primary parsing strategy: job cards identified by id="item-{n}"
+  let parsed = 0
+  $('[id^="item-"]').each((_, el) => {
+    const $item = $(el)
+
+    const title =
+      $item.find('.lister__header span').first().text().trim() ||
+      $item.find('h2.lister__header').first().text().trim() ||
+      $item.find('h3 span').first().text().trim()
+
+    if (!title || !matchesRoleKeywords(title)) return
+
+    // Company: alt text of logo image, stripping trailing " logo"
+    const logoAlt = $item.find('img.lister__logo[alt]').first().attr('alt') || ''
+    const orgText = $item.find('.lister__organization').first().text().trim()
+    let companyName = logoAlt
+      ? logoAlt.replace(/\s+logo\s*$/i, '').trim()
+      : orgText
+    if (!companyName || companyName.length < 2) return
+
+    // Job URL: first anchor with /job/ in href
+    const rawHref = $item.find('a[href*="/job/"]').first().attr('href') || ''
+    const cleanHref = rawHref.replace(/\s+/g, '')
+    const sourceUrl = cleanHref
+      ? cleanHref.startsWith('http')
+        ? cleanHref
+        : `https://www.biospace.com${cleanHref}`
+      : 'https://www.biospace.com/jobs/?days=30'
+
+    // Days posted: badge title "Added in the last N days"
+    const badgeTitle = $item.find('.badge[title]').first().attr('title') || ''
+    const daysMatch = badgeTitle.match(/Added in the last (\d+) day/i)
+    const daysPosted = daysMatch ? parseInt(daysMatch[1], 10) : 30
+
+    // Location
+    const jobLocation =
+      $item.find('[class*="location"]').first().text().trim() ||
+      $item.find('[class*="city"]').first().text().trim() ||
+      ''
+
+    jobs.push({
+      job_title: title,
+      company_name: companyName,
+      job_location: jobLocation,
+      date_posted: null,
+      days_posted: daysPosted,
+      source_url: sourceUrl,
+      job_board: 'biospace',
+    })
+    parsed++
+  })
+
+  // Fallback: if primary selectors yielded nothing, try article.job containers
+  if (parsed === 0) {
+    $('article.job').each((_, el) => {
+      const $item = $(el)
+      const titleEl = $item.find('h2 a').first()
+      const title = titleEl.text().trim()
+      if (!title || !matchesRoleKeywords(title)) return
+
+      const companyName = $item.find('[class*="company"], [class*="employer"]').first().text().trim()
+      if (!companyName || companyName.length < 2) return
+
+      const rawHref = titleEl.attr('href') || ''
+      const sourceUrl = rawHref.startsWith('http')
+        ? rawHref
+        : `https://www.biospace.com${rawHref}`
+
+      jobs.push({
+        job_title: title,
+        company_name: companyName,
+        job_location: '',
+        date_posted: null,
+        days_posted: 30,
+        source_url: sourceUrl,
+        job_board: 'biospace',
+      })
+    })
+  }
+
+  console.log(`BioSpace: ${jobs.length} matched jobs`)
   return jobs
 }
 
-// ─── Process a single job into a signal ────────────────────────────────────────
+// ─── SOURCE 3: Career site discovery via ClinicalTrials.gov sponsors ──────────
 
-const WARMTH_SCORES = { active_client: 25, past_client: 18, in_ats: 10, new_prospect: 0 }
+async function discoverSponsorCareerPages() {
+  const jobs = []
 
-async function processJobSignal(job) {
-  const company = await upsertCompany(job.company)
+  // Step 1: Fetch unique INDUSTRY sponsors from active recruiting trials
+  let sponsors = []
+  try {
+    const params = new URLSearchParams({
+      'query.term': 'AREA[InterventionType]interventional',
+      'filter.advanced': 'AREA[LeadSponsorClass]INDUSTRY',
+      'filter.overallStatus': 'RECRUITING',
+      pageSize: '20',
+      fields: 'NCTId,LeadSponsorName',
+    })
+    const resp = await fetch(`https://clinicaltrials.gov/api/v2/studies?${params}`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (resp.ok) {
+      const json = await resp.json()
+      const seen = new Set()
+      for (const study of json.studies || []) {
+        const name =
+          study.protocolSection?.sponsorsModule?.leadSponsor?.name ||
+          study.protocolSection?.identificationModule?.leadSponsorName
+        if (name && !seen.has(name)) {
+          seen.add(name)
+          sponsors.push(name)
+        }
+      }
+    } else {
+      console.warn(`ClinicalTrials.gov sponsor query HTTP ${resp.status}`)
+    }
+  } catch (err) {
+    console.warn(`ClinicalTrials.gov sponsor query error: ${err.message}`)
+  }
+
+  // Limit sponsor list
+  sponsors = sponsors.slice(0, 10)
+  if (sponsors.length === 0) return jobs
+
+  // Step 2: For each sponsor, find their career page via DuckDuckGo HTML search
+  let careerChecks = 0
+  const MAX_CAREER_CHECKS = 5
+
+  for (const companyName of sponsors) {
+    if (careerChecks >= MAX_CAREER_CHECKS) break
+
+    // Use DuckDuckGo HTML endpoint — avoids Google bot-blocking
+    let careerUrl = null
+    try {
+      const ddgQuery = encodeURIComponent(`${companyName} careers jobs`)
+      const ddgResp = await fetch(`https://html.duckduckgo.com/html/?q=${ddgQuery}`, {
+        headers: {
+          'User-Agent': BOT_UA,
+          Accept: 'text/html',
+        },
+        signal: AbortSignal.timeout(6000),
+      })
+      if (ddgResp.ok) {
+        const ddgHtml = await ddgResp.text()
+        const $ = cheerio.load(ddgHtml)
+        // DuckDuckGo HTML results: result links are in <a class="result__a"> or similar
+        $('a.result__a, a.result__url, .result__extras__url').each((_, el) => {
+          if (careerUrl) return
+          const href = $(el).attr('href') || ''
+          // DDG wraps URLs in redirect links — extract the actual URL from uddg= param
+          const uddgMatch = href.match(/uddg=([^&]+)/)
+          const actualUrl = uddgMatch ? decodeURIComponent(uddgMatch[1]) : href
+          if (actualUrl && (actualUrl.includes('career') || actualUrl.includes('/jobs'))) {
+            careerUrl = actualUrl
+          }
+        })
+      }
+    } catch (err) {
+      console.warn(`DuckDuckGo search failed for "${companyName}": ${err.message}`)
+    }
+
+    if (!careerUrl) {
+      console.log(`No career URL found for ${companyName} via DDG`)
+      continue
+    }
+
+    // Step 3: Fetch the career page and scan for matching roles
+    careerChecks++
+    let careerPageText = ''
+    try {
+      const careerResp = await fetch(careerUrl, {
+        headers: { 'User-Agent': BOT_UA },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!careerResp.ok) {
+        console.warn(`Career page fetch HTTP ${careerResp.status} for ${companyName}`)
+        continue
+      }
+      const careerHtml = await careerResp.text()
+      const $c = cheerio.load(careerHtml)
+      // Remove nav/footer noise
+      $c('nav, footer, script, style').remove()
+      careerPageText = $c('body').text()
+    } catch (err) {
+      console.warn(`Career page fetch failed for ${companyName}: ${err.message}`)
+      continue
+    }
+
+    // Step 4: Scan text for role keyword matches line by line
+    const lines = careerPageText.split(/\n/).map((l) => l.trim()).filter(Boolean)
+    for (const line of lines) {
+      if (line.length < 5 || line.length > 200) continue
+      if (!matchesRoleKeywords(line)) continue
+
+      // Heuristic location: look for "City, ST" near the line
+      const locMatch = line.match(/([A-Z][a-zA-Z\s]{1,25},\s*[A-Z]{2})\b/)
+      const jobLocation = locMatch ? locMatch[1].trim() : ''
+
+      // Check dedup before adding (avoid duplicate source URLs)
+      jobs.push({
+        job_title: line.replace(/\s+/g, ' ').slice(0, 120),
+        company_name: companyName,
+        job_location: jobLocation,
+        date_posted: null,
+        days_posted: 30,
+        source_url: careerUrl,
+        job_board: 'company_career_site',
+      })
+      break // One signal per company career page per run
+    }
+  }
+
+  console.log(`Career site discovery: checked ${careerChecks} companies, found ${jobs.length} signals`)
+  return jobs
+}
+
+// ─── Persist a single job as a signal ─────────────────────────────────────────
+
+async function persistJobSignal(job) {
+  const company = await upsertCompany(job.company_name)
   if (!company) return false
 
-  // Deduplicate: one signal per company+role per source URL
-  const sourceUrl = job.link
-  const alreadySignaled = await signalExists(company.id, 'stale_job_posting', sourceUrl)
-  if (alreadySignaled) return false
+  const exists = await signalExists(company.id, 'stale_job_posting', job.source_url)
+  if (exists) return false
 
-  const warmthScore = WARMTH_SCORES[company.relationship_warmth] || 0
-  // Priority boosts for older postings and warmer companies
-  let signalStrength = 15
-  if (job.daysPosted >= 60) signalStrength = 20
-  else if (job.daysPosted >= 30) signalStrength = 17
-
-  const priorityScore = Math.min(signalStrength + 15 + warmthScore, 100)
+  const score = computeScore(job.days_posted)
   const today = new Date().toISOString().split('T')[0]
 
   const { error } = await supabase.from('signals').insert({
     company_id: company.id,
     signal_type: 'stale_job_posting',
-    signal_summary: `"${job.title}" at ${job.company} has been posted for ${job.daysPosted}+ days — potential staffing need`,
+    signal_summary: `"${job.job_title}" at ${job.company_name} posted for ${job.days_posted}+ days on ${job.job_board}`,
     signal_detail: {
-      company_name: job.company,
-      job_title: job.title,
-      job_location: job.location || 'Unknown',
-      date_posted: job.datePosted || today,
-      days_posted: job.daysPosted,
-      source_url: job.link,
-      job_board: job.source,
+      company_name: job.company_name,
+      job_title: job.job_title,
+      job_location: job.job_location,
+      date_posted: job.date_posted || today,
+      days_posted: job.days_posted,
+      source_url: job.source_url,
+      job_board: job.job_board,
     },
-    source_url: sourceUrl,
-    source_name: job.source,
+    source_url: job.source_url,
+    source_name: job.job_board,
     first_detected_at: new Date().toISOString(),
     status: 'new',
-    priority_score: priorityScore,
-    score_breakdown: {
-      signal_strength: signalStrength,
-      recency: 15,
-      relationship_warmth: warmthScore,
-      actionability: 0,
-    },
+    priority_score: score,
+    score_breakdown: { base: 15, days_posted_boost: score - 15 },
     days_in_queue: 0,
     is_carried_forward: false,
   })
 
   if (error) {
-    console.warn(`  Signal insert failed for ${job.company}/"${job.title}": ${error.message}`)
+    console.warn(`Signal insert failed for ${job.company_name}/"${job.job_title}": ${error.message}`)
     return false
   }
   return true
@@ -280,58 +405,73 @@ async function processJobSignal(job) {
 
 // ─── Main export ───────────────────────────────────────────────────────────────
 
-export async function runStaleJobTracker() {
-  let signalsFound = 0
-
-  const { data: runLog } = await supabase
+export async function run() {
+  const { data: runEntry } = await supabase
     .from('agent_runs')
-    .insert({ agent_name: 'stale_job_tracker', status: 'running' })
+    .insert({
+      agent_name: 'stale-job-tracker',
+      status: 'running',
+      started_at: new Date().toISOString(),
+    })
     .select()
     .single()
-  const runId = runLog?.id
+  const runId = runEntry?.id
+
+  let signalsFound = 0
+  const sourceCounts = { indeed: 0, biospace: 0, careerSites: 0 }
 
   try {
     const allJobs = []
 
-    // ── Sources: Indeed RSS (3 keywords) + BioSpace in parallel ─────────────
-    // Parallel fetch keeps total wall-clock time within Vercel's 30s function limit.
-    // Indeed uses fromage=30 (30+ day old jobs); BioSpace is always available.
-    const [indeedResults, bioSpaceResult] = await Promise.allSettled([
-      Promise.all(SEARCH_KEYWORDS.slice(0, 3).map((kw) => fetchIndeedRss(kw))),
-      fetchBioSpaceJobs(),
-    ])
-
-    if (indeedResults.status === 'fulfilled') {
-      for (const jobs of indeedResults.value) allJobs.push(...jobs)
-    } else {
-      console.warn(`Indeed RSS batch failed: ${indeedResults.reason?.message}`)
-    }
-
-    if (bioSpaceResult.status === 'fulfilled') {
-      allJobs.push(...bioSpaceResult.value)
-    } else {
-      console.warn(`BioSpace fetch failed: ${bioSpaceResult.reason?.message}`)
-    }
-
-    // Deduplicate by (company, title) to avoid processing same role twice from different sources
-    const jobMap = new Map()
-    for (const job of allJobs) {
-      const key = `${job.company.toLowerCase()}|${job.title.toLowerCase()}`
-      if (!jobMap.has(key)) {
-        jobMap.set(key, job)
+    // ── Source 1: Indeed RSS — all keywords fetched sequentially to avoid
+    //   rate-limit hammering; each fetch is independent so errors are isolated
+    for (const keyword of INDEED_KEYWORDS) {
+      const results = await fetchIndeedRss(keyword)
+      for (const job of results) {
+        job._source = 'indeed'
+        allJobs.push(job)
       }
     }
 
-    // Cap to MAX_JOBS_PER_RUN to stay within Vercel's 30s function limit.
-    // Each job requires 3-4 sequential DB calls; >25 jobs risks timeout.
-    const MAX_JOBS_PER_RUN = 20
-    const uniqueJobs = Array.from(jobMap.values()).slice(0, MAX_JOBS_PER_RUN)
-    console.log(`Stale Job Tracker: processing ${uniqueJobs.length} unique jobs (${allJobs.length} total from all sources)`)
+    // ── Source 2: BioSpace
+    const bioSpaceJobs = await fetchBioSpaceJobs()
+    for (const job of bioSpaceJobs) {
+      job._source = 'biospace'
+      allJobs.push(job)
+    }
+
+    // ── Source 3: ClinicalTrials.gov sponsor career pages
+    const careerSiteJobs = await discoverSponsorCareerPages()
+    for (const job of careerSiteJobs) {
+      job._source = 'careerSites'
+      allJobs.push(job)
+    }
+
+    // Deduplicate by (company_name, source_url) — same URL cannot produce two signals
+    const dedupMap = new Map()
+    for (const job of allJobs) {
+      const key = `${job.company_name.toLowerCase()}|${job.source_url}`
+      if (!dedupMap.has(key)) dedupMap.set(key, job)
+    }
+
+    const MAX_SIGNALS_PER_RUN = 25
+    const uniqueJobs = Array.from(dedupMap.values()).slice(0, MAX_SIGNALS_PER_RUN)
+
+    console.log(
+      `Stale Job Tracker: ${allJobs.length} raw → ${uniqueJobs.length} unique (cap ${MAX_SIGNALS_PER_RUN})`
+    )
 
     for (const job of uniqueJobs) {
-      const inserted = await processJobSignal(job)
-      if (inserted) signalsFound++
+      const inserted = await persistJobSignal(job)
+      if (inserted) {
+        signalsFound++
+        if (job._source === 'indeed') sourceCounts.indeed++
+        else if (job._source === 'biospace') sourceCounts.biospace++
+        else sourceCounts.careerSites++
+      }
     }
+
+    const jobsFound = allJobs.length
 
     await supabase
       .from('agent_runs')
@@ -340,22 +480,32 @@ export async function runStaleJobTracker() {
         completed_at: new Date().toISOString(),
         signals_found: signalsFound,
         run_detail: {
-          total_jobs_found: allJobs.length,
-          unique_jobs: uniqueJobs.length,
-          indeed_jobs: allJobs.filter((j) => j.source === 'Indeed').length,
-          biospace_jobs: allJobs.filter((j) => j.source === 'BioSpace').length,
+          jobs_found_total: jobsFound,
+          jobs_deduped: uniqueJobs.length,
+          source_counts: {
+            indeed_raw: allJobs.filter((j) => j._source === 'indeed').length,
+            biospace_raw: allJobs.filter((j) => j._source === 'biospace').length,
+            career_sites_raw: allJobs.filter((j) => j._source === 'careerSites').length,
+          },
+          signals_by_source: sourceCounts,
         },
       })
       .eq('id', runId)
 
-    console.log(`Stale Job Tracker complete. Signals: ${signalsFound}`)
-    return { success: true, signalsFound, jobsFound: allJobs.length, jobsProcessed: uniqueJobs.length }
-  } catch (error) {
+    console.log(
+      `Stale Job Tracker complete — signals: ${signalsFound}, jobs found: ${jobsFound}`
+    )
+
+    return { signalsFound, jobsFound, sourceCounts }
+  } catch (err) {
     await supabase
       .from('agent_runs')
-      .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: error.message })
+      .update({
+        status: 'failed',
+        completed_at: new Date().toISOString(),
+        error_message: err.message,
+      })
       .eq('id', runId)
-    console.error('Stale Job Tracker failed:', error.message)
-    return { success: false, error: error.message }
+    throw err
   }
 }

@@ -1,378 +1,638 @@
-import { supabase } from '../lib/supabase.js'
+/**
+ * Clinical Trial Monitor Agent
+ *
+ * Polls ClinicalTrials.gov v2 API for INDUSTRY-sponsored studies and generates
+ * BD signals for phase transitions, new INDs, site activations, and study completions.
+ *
+ * Only INDUSTRY sponsors are processed. Universities, NIH, NCI, NHLBI, and all
+ * government/academic entities are rejected at both the API query level and locally.
+ */
 
-const CLINICALTRIALS_API = 'https://clinicaltrials.gov/api/v2/studies'
+import { supabase } from '../lib/supabase.js';
 
-const SIGNAL_SCORES = {
-  clinical_trial_phase_transition: 30,
-  clinical_trial_new_ind: 22,
-  clinical_trial_site_activation: 25,
-  clinical_trial_completion: 20,
+const CT_API_BASE = 'https://clinicaltrials.gov/api/v2/studies';
+const CT_STUDY_BASE = 'https://clinicaltrials.gov/study';
+const MAX_PAGES = 2;
+const PAGE_SIZE = 100;
+
+// Signal type definitions with base priority scores
+const SIGNAL_TYPES = {
+  PHASE_TRANSITION: { type: 'clinical_trial_phase_transition', score: 30 },
+  NEW_IND:          { type: 'clinical_trial_new_ind',           score: 22 },
+  SITE_ACTIVATION:  { type: 'clinical_trial_site_activation',   score: 25 },
+  COMPLETION:       { type: 'clinical_trial_completion',         score: 20 },
+};
+
+// Minimum number of locations to trigger a site_activation signal
+const MIN_SITES_FOR_ACTIVATION = 10;
+
+// Days ahead to look for upcoming primary completions
+const COMPLETION_WINDOW_DAYS = 90;
+
+// How many days back to look for recently updated studies
+const LOOKBACK_DAYS = 14;
+
+/**
+ * Format a Date object as YYYY-MM-DD for the ClinicalTrials.gov API.
+ * @param {Date} date
+ * @returns {string}
+ */
+function formatDate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
-const WARMTH_SCORES = {
-  active_client: 25,
-  past_client: 18,
-  in_ats: 10,
-  new_prospect: 0,
+/**
+ * Returns a Date object N days before now.
+ * @param {number} days
+ * @returns {Date}
+ */
+function daysAgo(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d;
 }
 
-// Only include INDUSTRY-sponsored studies. Universities, NIH, NCI, VA, DoD,
-// and other government/academic sponsors are excluded — our firm only staffs
-// into private-sector Life Sciences companies.
-const INDUSTRY_ONLY = true
-
-function calculatePriorityScore(signalType, isToday, warmth) {
-  const signalStrength = SIGNAL_SCORES[signalType] || 15
-  const recency = isToday ? 25 : 0
-  const warmthScore = WARMTH_SCORES[warmth] || 0
-  return Math.min(signalStrength + recency + warmthScore, 100)
+/**
+ * Returns a Date object N days after now.
+ * @param {number} days
+ * @returns {Date}
+ */
+function daysFromNow(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d;
 }
 
-async function upsertCompany(sponsorName) {
-  if (!sponsorName) return null
+/**
+ * Build the ClinicalTrials.gov v2 API query URL for a given page token.
+ * Pre-filters to INDUSTRY sponsors at the API level.
+ *
+ * @param {string} lastUpdateGte - YYYY-MM-DD lower bound on lastUpdatePostDate
+ * @param {string|null} pageToken
+ * @returns {string}
+ */
+function buildQueryUrl(lastUpdateGte, pageToken = null) {
+  const fields = [
+    'NCTId',
+    'BriefTitle',
+    'OfficialTitle',
+    'LeadSponsorName',
+    'LeadSponsorClass',
+    'Phase',
+    'PrimaryCompletionDate',
+    'LastUpdatePostDate',
+    'OverallStatus',
+    'LocationCount',
+    'EnrollmentCount',
+    'ConditionMeshTerm',
+    'InterventionType',
+  ].join(',');
 
-  const { data: existing } = await supabase
+  const params = new URLSearchParams({
+    'query.term': 'AREA[InterventionType]interventional',
+    'filter.advanced': 'AREA[LeadSponsorClass]INDUSTRY',
+    'filter.lastUpdatePostDate.gte': lastUpdateGte,
+    pageSize: String(PAGE_SIZE),
+    fields,
+  });
+
+  if (pageToken) {
+    params.set('pageToken', pageToken);
+  }
+
+  return `${CT_API_BASE}?${params.toString()}`;
+}
+
+/**
+ * Fetch one page of study results from ClinicalTrials.gov v2.
+ * Returns the parsed JSON body or throws on non-2xx responses.
+ *
+ * @param {string} url
+ * @returns {Promise<object>}
+ */
+async function fetchStudiesPage(url) {
+  const response = await fetch(url, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`ClinicalTrials.gov API error: ${response.status} ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Fetch up to MAX_PAGES pages of studies from ClinicalTrials.gov.
+ * Aborts pagination on any fetch error.
+ *
+ * @param {string} lastUpdateGte - YYYY-MM-DD
+ * @returns {Promise<object[]>} Flat array of raw study objects
+ */
+async function fetchAllStudies(lastUpdateGte) {
+  const studies = [];
+  let pageToken = null;
+  let pagesFetched = 0;
+
+  while (pagesFetched < MAX_PAGES) {
+    const url = buildQueryUrl(lastUpdateGte, pageToken);
+    let data;
+
+    try {
+      data = await fetchStudiesPage(url);
+    } catch (err) {
+      console.error(`[clinicalTrialMonitor] Page fetch failed (page ${pagesFetched + 1}):`, err.message);
+      break;
+    }
+
+    const studiesInPage = data.studies || [];
+    for (const study of studiesInPage) {
+      studies.push(study);
+    }
+
+    pagesFetched++;
+
+    if (data.nextPageToken && pagesFetched < MAX_PAGES) {
+      pageToken = data.nextPageToken;
+    } else {
+      break;
+    }
+  }
+
+  return studies;
+}
+
+/**
+ * Extract a flat protocol data object from the nested ClinicalTrials.gov v2 response.
+ *
+ * @param {object} study - Raw study object from the API
+ * @returns {object} Flattened protocol fields
+ */
+function extractProtocol(study) {
+  const proto = study.protocolSection || {};
+  const id = proto.identificationModule || {};
+  const sponsor = proto.sponsorCollaboratorsModule || {};
+  const status = proto.statusModule || {};
+  const design = proto.designModule || {};
+  const conditions = proto.conditionsModule || {};
+  const interventions = proto.armsInterventionsModule || {};
+  const contacts = proto.contactsLocationsModule || {};
+
+  const leadSponsor = sponsor.leadSponsor || {};
+  const phases = design.phases || [];
+  const meshTerms = conditions.meshes || [];
+  const interventionList = interventions.interventions || [];
+
+  const conditionMeshTerm =
+    meshTerms.length > 0
+      ? meshTerms.map((m) => m.term)
+      : conditions.conditions || [];
+
+  const primaryIntervention =
+    interventionList.length > 0 ? interventionList[0].name : null;
+
+  // LocationCount may be returned as a top-level scalar on the study object
+  // when requested via the fields param, or counted from the locations array.
+  let locationCount = 0;
+  if (typeof study.locationCount === 'number') {
+    locationCount = study.locationCount;
+  } else if (Array.isArray(contacts.locations)) {
+    locationCount = contacts.locations.length;
+  }
+
+  return {
+    nctId: id.nctId || null,
+    briefTitle: id.briefTitle || '',
+    officialTitle: id.officialTitle || '',
+    leadSponsorName: leadSponsor.name || '',
+    leadSponsorClass: leadSponsor.class || '',
+    phases,
+    primaryCompletionDate: status.primaryCompletionDateStruct?.date || null,
+    lastUpdatePostDate: status.lastUpdatePostDateStruct?.date || null,
+    overallStatus: status.overallStatus || '',
+    locationCount,
+    enrollmentCount: design.enrollmentInfo?.count || null,
+    conditionMeshTerm,
+    primaryIntervention,
+  };
+}
+
+/**
+ * Map a CT.gov phase array to a human-readable string and numeric value.
+ * For combined phases (e.g. PHASE1/PHASE2), returns the first (lower) phase number
+ * so combined phase 1/2 studies are NOT treated as Phase 1-only for IND signals.
+ *
+ * @param {string[]} phases - e.g. ['PHASE2']
+ * @returns {{ phaseStr: string, phaseNum: number | null, isCombined: boolean }}
+ */
+function parsePhase(phases) {
+  if (!phases || phases.length === 0) {
+    return { phaseStr: 'N/A', phaseNum: null, isCombined: false };
+  }
+
+  const phaseMap = {
+    PHASE1: 1,
+    PHASE2: 2,
+    PHASE3: 3,
+    PHASE4: 4,
+  };
+
+  const normalised = phases.map((p) => p.toUpperCase().replace(/\s/g, ''));
+  const isCombined = normalised.length > 1;
+  const phaseStr = phases.join('/');
+
+  // Use highest phase number for transition signals
+  let phaseNum = null;
+  for (const p of normalised) {
+    const n = phaseMap[p];
+    if (n !== undefined && (phaseNum === null || n > phaseNum)) {
+      phaseNum = n;
+    }
+  }
+
+  return { phaseStr, phaseNum, isCombined };
+}
+
+/**
+ * Infer the previous phase label from the current phase number.
+ *
+ * @param {number} currentPhaseNum
+ * @returns {string}
+ */
+function inferPreviousPhase(currentPhaseNum) {
+  const map = { 2: 'PHASE1', 3: 'PHASE2', 4: 'PHASE3' };
+  return map[currentPhaseNum] || 'PRE-CLINICAL';
+}
+
+/**
+ * Build a short study summary sentence using condition and intervention.
+ *
+ * @param {object} proto - Extracted protocol object
+ * @returns {string}
+ */
+function buildStudySummary(proto) {
+  const condition =
+    proto.conditionMeshTerm.length > 0
+      ? proto.conditionMeshTerm[0]
+      : proto.officialTitle || proto.briefTitle || 'an undisclosed indication';
+
+  const intervention = proto.primaryIntervention
+    ? proto.primaryIntervention
+    : 'an investigational agent';
+
+  return `${condition} evaluating ${intervention}`;
+}
+
+/**
+ * Upsert a company record into the companies table.
+ * On conflict on the 'name' column, returns the existing row.
+ *
+ * @param {string} name - Company name
+ * @returns {Promise<object|null>} The row with id and name, or null on error
+ */
+async function upsertCompany(name) {
+  const { data, error } = await supabase
     .from('companies')
-    .select('id, relationship_warmth')
-    .ilike('name', sponsorName)
-    .maybeSingle()
-
-  if (existing) return existing
-
-  const { data: newCompany, error } = await supabase
-    .from('companies')
-    .insert({ name: sponsorName, industry: 'Life Sciences', relationship_warmth: 'new_prospect' })
-    .select('id, relationship_warmth')
-    .single()
+    .upsert({ name, industry: 'Life Sciences' }, { onConflict: 'name' })
+    .select('id, name')
+    .maybeSingle();
 
   if (error) {
-    console.warn(`Failed to insert company "${sponsorName}": ${error.message}`)
-    return null
+    console.error(`[clinicalTrialMonitor] upsertCompany failed for "${name}":`, error.message);
+    return null;
   }
-  return newCompany
+
+  return data;
 }
 
-async function signalExists(companyId, signalType, sourceUrl) {
-  const { data } = await supabase
+/**
+ * Check whether a signal with the given company_id, signal_type, and source_url
+ * already exists in the signals table.
+ *
+ * @param {string} companyId
+ * @param {string} signalType
+ * @param {string} dedupUrl
+ * @returns {Promise<boolean>} true if the signal already exists
+ */
+async function signalExists(companyId, signalType, dedupUrl) {
+  const { data: existing, error } = await supabase
     .from('signals')
     .select('id')
     .eq('company_id', companyId)
     .eq('signal_type', signalType)
-    .eq('source_url', sourceUrl)
-    .maybeSingle()
-  return !!data
-}
+    .eq('source_url', dedupUrl)
+    .maybeSingle();
 
-// ─── Extraction helpers ────────────────────────────────────────────────────────
-
-function extractSponsor(study) {
-  const sponsor = study?.protocolSection?.sponsorCollaboratorsModule?.leadSponsor || {}
-  return {
-    name: sponsor.name || null,
-    class: sponsor.class || null, // 'INDUSTRY' | 'NIH' | 'OTHER_GOV' | 'FED' | 'INDIV' | 'OTHER' | 'UNKNOWN'
-  }
-}
-
-function extractPhase(study) {
-  return study?.protocolSection?.designModule?.phases || []
-}
-
-function extractNLocations(study) {
-  return study?.protocolSection?.contactsLocationsModule?.locations?.length || 0
-}
-
-function extractPrimaryCompletionDate(study) {
-  return study?.protocolSection?.statusModule?.primaryCompletionDateStruct?.date || null
-}
-
-function extractLastUpdateDate(study) {
-  return study?.protocolSection?.statusModule?.lastUpdatePostDateStruct?.date || null
-}
-
-function extractNctId(study) {
-  return study?.protocolSection?.identificationModule?.nctId || null
-}
-
-function extractTitle(study) {
-  return (
-    study?.protocolSection?.identificationModule?.briefTitle ||
-    study?.protocolSection?.identificationModule?.officialTitle ||
-    'Unknown Study'
-  )
-}
-
-function extractStudyStatus(study) {
-  return study?.protocolSection?.statusModule?.overallStatus || ''
-}
-
-// Infer phase_from based on current phase (what phase came before)
-function inferPhaseFrom(phases) {
-  if (phases.includes('PHASE3')) return 'Phase 2'
-  if (phases.includes('PHASE2')) return 'Phase 1'
-  if (phases.includes('PHASE4')) return 'Phase 3'
-  return 'Unknown'
-}
-
-// Build a one-sentence study summary from title (briefTitle is already concise)
-function buildStudySummary(study) {
-  const title = extractTitle(study)
-  // ClinicalTrials brief titles are typically descriptive enough; just return them
-  return title.length > 120 ? title.slice(0, 117) + '...' : title
-}
-
-// ─── API fetch ─────────────────────────────────────────────────────────────────
-
-async function fetchStudies(pageToken = null) {
-  // Compute 14-day date range with actual ISO dates (Essie TODAY-14D syntax is invalid)
-  const today = new Date().toISOString().split('T')[0]
-  const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-
-  const params = new URLSearchParams({
-    format: 'json',
-    pageSize: '100',
-    fields: [
-      'NCTId',
-      'BriefTitle',
-      'OfficialTitle',
-      'OverallStatus',
-      'Phase',
-      'LeadSponsor',              // includes leadSponsor.name AND leadSponsor.class (SponsorsAndCollaborators is invalid in v2)
-      'LastUpdatePostDate',        // lastUpdatePostDateStruct.date
-      'PrimaryCompletionDate',
-      'ContactsLocationsModule',
-    ].join(','),
-  })
-
-  // INDUSTRY sponsors only: filter at API level for study type + 14-day recency.
-  // Sponsor class filter is applied in code after fetch (more reliable than Essie).
-  params.set('filter.overallStatus', 'RECRUITING,ACTIVE_NOT_RECRUITING')
-  params.set('filter.advanced', `AREA[StudyType]INTERVENTIONAL AND AREA[LastUpdatePostDate]RANGE[${fourteenDaysAgo},${today}]`)
-
-  if (pageToken) {
-    params.set('pageToken', pageToken)
+  if (error) {
+    console.error('[clinicalTrialMonitor] signalExists query error:', error.message);
+    return false;
   }
 
-  const url = `${CLINICALTRIALS_API}?${params.toString()}`
-  const resp = await fetch(url, { headers: { Accept: 'application/json' } })
-
-  if (!resp.ok) {
-    throw new Error(`ClinicalTrials API error ${resp.status}: ${await resp.text()}`)
-  }
-
-  const json = await resp.json()
-  return { studies: json.studies || [], nextPageToken: json.nextPageToken || null, totalCount: json.totalCount }
+  return existing !== null;
 }
 
-// ─── Signal classification ─────────────────────────────────────────────────────
+/**
+ * Insert a single signal row into the signals table.
+ *
+ * @param {object} payload
+ * @returns {Promise<boolean>} true on success
+ */
+async function insertSignal(payload) {
+  const { error } = await supabase.from('signals').insert(payload);
 
-function classifyStudy(study) {
-  const signals = []
-  const phases = extractPhase(study)
-  const nLocations = extractNLocations(study)
-  const primaryCompletionDate = extractPrimaryCompletionDate(study)
-  const status = extractStudyStatus(study)
-  const today = new Date()
-  const nctId = extractNctId(study)
-  const title = extractTitle(study)
-  const dateUpdated = extractLastUpdateDate(study)
-  const studySummary = buildStudySummary(study)
+  if (error) {
+    console.error('[clinicalTrialMonitor] insertSignal error:', error.message);
+    return false;
+  }
 
-  // ── Phase transition: Phase 2 or Phase 3 study updated in last 14 days ──────
-  // Treat Phase 2 study as potential Phase 1→2 transition.
-  // Treat Phase 3 study as potential Phase 2→3 transition.
-  if (phases.includes('PHASE2') || phases.includes('PHASE3') || phases.includes('PHASE4')) {
-    const phaseTo = phases.includes('PHASE4') ? 'Phase 4' : phases.includes('PHASE3') ? 'Phase 3' : 'Phase 2'
-    const phaseFrom = inferPhaseFrom(phases)
-    signals.push({
-      type: 'clinical_trial_phase_transition',
-      summary: `Phase transition detected: ${phaseFrom} → ${phaseTo} for ${extractTitle(study)}`,
-      detail_extra: { phase_from: phaseFrom, phase_to: phaseTo, date_updated: dateUpdated, study_summary: studySummary },
+  return true;
+}
+
+/**
+ * Create an agent_runs entry at the start of a run.
+ *
+ * @returns {Promise<string|null>} The new run ID or null on error
+ */
+async function createAgentRun() {
+  const { data, error } = await supabase
+    .from('agent_runs')
+    .insert({
+      agent_name: 'clinicalTrialMonitor',
+      status: 'running',
+      started_at: new Date().toISOString(),
     })
+    .select('id')
+    .maybeSingle();
+
+  if (error) {
+    console.error('[clinicalTrialMonitor] createAgentRun error:', error.message);
+    return null;
   }
 
-  // ── New IND: Phase 1 study (no Phase 2 co-listed) ───────────────────────────
-  if (phases.includes('PHASE1') && !phases.includes('PHASE2')) {
-    signals.push({
-      type: 'clinical_trial_new_ind',
-      summary: `New Phase 1 IND study: ${title}`,
-      detail_extra: { date_updated: dateUpdated, study_summary: studySummary },
-    })
+  return data?.id ?? null;
+}
+
+/**
+ * Update an agent_runs row with final status, signal count, and optional error.
+ *
+ * @param {string|null} runId
+ * @param {'completed'|'failed'} status
+ * @param {number} signalsFound
+ * @param {string|null} errorMessage
+ */
+async function finaliseAgentRun(runId, status, signalsFound, errorMessage = null) {
+  if (!runId) return;
+
+  const update = {
+    status,
+    signals_found: signalsFound,
+    finished_at: new Date().toISOString(),
+  };
+
+  if (errorMessage) {
+    update.error_message = errorMessage;
   }
 
-  // ── Site activation: > 10 locations ─────────────────────────────────────────
-  if (nLocations > 10) {
-    signals.push({
-      type: 'clinical_trial_site_activation',
-      summary: `Study activating ${nLocations} sites: ${title}`,
-      detail_extra: { n_locations: nLocations, date_updated: dateUpdated, study_summary: studySummary },
-    })
+  const { error } = await supabase.from('agent_runs').update(update).eq('id', runId);
+
+  if (error) {
+    console.error('[clinicalTrialMonitor] finaliseAgentRun error:', error.message);
+  }
+}
+
+/**
+ * Evaluate a single study and insert applicable signals.
+ * Returns the number of new signals inserted.
+ *
+ * @param {object} study - Raw study object from the API
+ * @param {Date} now - Current timestamp
+ * @param {Date} completionCutoff - Furthest future date for completion signals
+ * @returns {Promise<number>}
+ */
+async function processStudy(study, now, completionCutoff) {
+  const proto = extractProtocol(study);
+
+  // Hard local guard: only INDUSTRY sponsors (API pre-filters, but we confirm)
+  if ((proto.leadSponsorClass || '').toUpperCase() !== 'INDUSTRY') {
+    return 0;
   }
 
-  // ── Completion: primary completion within 90 days ────────────────────────────
-  if (primaryCompletionDate) {
-    const completionDate = new Date(primaryCompletionDate)
-    const daysUntilCompletion = Math.floor((completionDate - today) / (1000 * 60 * 60 * 24))
-    if (daysUntilCompletion >= 0 && daysUntilCompletion <= 90) {
-      signals.push({
-        type: 'clinical_trial_completion',
-        summary: `Trial completing in ${daysUntilCompletion} days: ${title}`,
-        detail_extra: {
-          days_until_completion: daysUntilCompletion,
-          primary_completion_date: primaryCompletionDate,
-          date_updated: dateUpdated,
-          study_summary: studySummary,
-        },
-      })
+  if (!proto.nctId || !proto.leadSponsorName) {
+    return 0;
+  }
+
+  const { phaseStr, phaseNum, isCombined } = parsePhase(proto.phases);
+  const studySummary = buildStudySummary(proto);
+  const sourceUrl = `${CT_STUDY_BASE}/${proto.nctId}`;
+
+  const company = await upsertCompany(proto.leadSponsorName);
+  if (!company) return 0;
+
+  let signalsInserted = 0;
+
+  const therapeuticArea =
+    proto.conditionMeshTerm.length > 0
+      ? proto.conditionMeshTerm[0]
+      : (proto.officialTitle || proto.briefTitle || '').substring(0, 120);
+
+  const baseDetail = {
+    company_name: proto.leadSponsorName,
+    sponsor_class: 'INDUSTRY',
+    nct_id: proto.nctId,
+    therapeutic_area: therapeuticArea,
+    enrollment_count: proto.enrollmentCount,
+    num_sites: proto.locationCount,
+    date_updated: proto.lastUpdatePostDate,
+    study_summary: studySummary,
+    source_url: sourceUrl,
+  };
+
+  // ── Signal 1: Phase Transition (Phase 2, 3, or 4 studies) ─────────────────
+  // The dedup URL includes the current phase number so that when the study
+  // advances again to the next phase, a new signal is re-emitted.
+  if (phaseNum !== null && phaseNum >= 2) {
+    const phaseFrom = inferPreviousPhase(phaseNum);
+    const dedupUrl = `${sourceUrl}#PHASE${phaseNum}`;
+
+    const alreadyExists = await signalExists(company.id, SIGNAL_TYPES.PHASE_TRANSITION.type, dedupUrl);
+
+    if (!alreadyExists) {
+      const detail = {
+        ...baseDetail,
+        phase_from: phaseFrom,
+        phase_to: phaseStr,
+      };
+
+      const inserted = await insertSignal({
+        company_id: company.id,
+        signal_type: SIGNAL_TYPES.PHASE_TRANSITION.type,
+        priority_score: SIGNAL_TYPES.PHASE_TRANSITION.score,
+        signal_summary: `${proto.leadSponsorName} study advanced from ${phaseFrom} to ${phaseStr}: ${proto.briefTitle}`,
+        signal_detail: detail,
+        source_url: dedupUrl,
+        detected_at: new Date().toISOString(),
+      });
+
+      if (inserted) signalsInserted++;
     }
   }
 
-  return signals
+  // ── Signal 2: New IND — Phase 1 ONLY, no combined 1/2 ────────────────────
+  const isPhase1Only =
+    !isCombined &&
+    proto.phases.length === 1 &&
+    proto.phases[0].toUpperCase() === 'PHASE1';
+
+  if (isPhase1Only) {
+    const dedupUrl = `${sourceUrl}#IND`;
+
+    const alreadyExists = await signalExists(company.id, SIGNAL_TYPES.NEW_IND.type, dedupUrl);
+
+    if (!alreadyExists) {
+      const detail = {
+        ...baseDetail,
+        phase_from: 'PRE-CLINICAL',
+        phase_to: 'PHASE1',
+      };
+
+      const inserted = await insertSignal({
+        company_id: company.id,
+        signal_type: SIGNAL_TYPES.NEW_IND.type,
+        priority_score: SIGNAL_TYPES.NEW_IND.score,
+        signal_summary: `${proto.leadSponsorName} filed new IND / initiated Phase 1: ${proto.briefTitle}`,
+        signal_detail: detail,
+        source_url: dedupUrl,
+        detected_at: new Date().toISOString(),
+      });
+
+      if (inserted) signalsInserted++;
+    }
+  }
+
+  // ── Signal 3: Site Activation (more than MIN_SITES_FOR_ACTIVATION sites) ──
+  if (proto.locationCount > MIN_SITES_FOR_ACTIVATION) {
+    // Include the location count in the dedup URL so that a re-expansion to
+    // even more sites is treated as a distinct event.
+    const dedupUrl = `${sourceUrl}#SITES${proto.locationCount}`;
+
+    const alreadyExists = await signalExists(company.id, SIGNAL_TYPES.SITE_ACTIVATION.type, dedupUrl);
+
+    if (!alreadyExists) {
+      const detail = {
+        ...baseDetail,
+        phase_from: phaseNum ? inferPreviousPhase(phaseNum) : 'N/A',
+        phase_to: phaseStr,
+      };
+
+      const inserted = await insertSignal({
+        company_id: company.id,
+        signal_type: SIGNAL_TYPES.SITE_ACTIVATION.type,
+        priority_score: SIGNAL_TYPES.SITE_ACTIVATION.score,
+        signal_summary: `${proto.leadSponsorName} has activated ${proto.locationCount} sites: ${proto.briefTitle}`,
+        signal_detail: detail,
+        source_url: dedupUrl,
+        detected_at: new Date().toISOString(),
+      });
+
+      if (inserted) signalsInserted++;
+    }
+  }
+
+  // ── Signal 4: Upcoming Primary Completion (within next 90 days) ───────────
+  if (proto.primaryCompletionDate) {
+    const completionDate = new Date(proto.primaryCompletionDate);
+
+    if (!isNaN(completionDate.getTime()) && completionDate >= now && completionDate <= completionCutoff) {
+      const dedupUrl = `${sourceUrl}#COMPLETION${proto.primaryCompletionDate}`;
+
+      const alreadyExists = await signalExists(company.id, SIGNAL_TYPES.COMPLETION.type, dedupUrl);
+
+      if (!alreadyExists) {
+        const daysUntilCompletion = Math.ceil(
+          (completionDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
+        );
+
+        const detail = {
+          ...baseDetail,
+          phase_from: phaseNum ? inferPreviousPhase(phaseNum) : 'N/A',
+          phase_to: phaseStr,
+          primary_completion_date: proto.primaryCompletionDate,
+          days_until_completion: daysUntilCompletion,
+        };
+
+        const inserted = await insertSignal({
+          company_id: company.id,
+          signal_type: SIGNAL_TYPES.COMPLETION.type,
+          priority_score: SIGNAL_TYPES.COMPLETION.score,
+          signal_summary: `${proto.leadSponsorName} study completes in ${daysUntilCompletion} days (${proto.primaryCompletionDate}): ${proto.briefTitle}`,
+          signal_detail: detail,
+          source_url: dedupUrl,
+          detected_at: new Date().toISOString(),
+        });
+
+        if (inserted) signalsInserted++;
+      }
+    }
+  }
+
+  return signalsInserted;
 }
 
-// ─── Main export ───────────────────────────────────────────────────────────────
+/**
+ * Main entry point for the Clinical Trial Monitor agent.
+ *
+ * Fetches recently updated INDUSTRY-sponsored interventional studies from
+ * ClinicalTrials.gov and emits BD signals for phase transitions, new INDs,
+ * site activations, and upcoming study completions.
+ *
+ * @returns {Promise<{ signalsFound: number, studiesProcessed: number, industryFiltered: number }>}
+ */
+export async function run() {
+  const runId = await createAgentRun();
+  const now = new Date();
+  const lookbackDate = daysAgo(LOOKBACK_DAYS);
+  const completionCutoff = daysFromNow(COMPLETION_WINDOW_DAYS);
+  const lastUpdateGte = formatDate(lookbackDate);
 
-export async function runClinicalTrialMonitor() {
-  let signalsFound = 0
+  let signalsFound = 0;
+  let studiesProcessed = 0;
+  let industryFiltered = 0;
 
-  const { data: runLog } = await supabase
-    .from('agent_runs')
-    .insert({ agent_name: 'clinical_trial_monitor', status: 'running' })
-    .select()
-    .single()
-  const runId = runLog?.id
+  console.log(`[clinicalTrialMonitor] Starting run. Lookback: ${lastUpdateGte}`);
 
   try {
-    let pageToken = null
-    let pagesFetched = 0
-    let studiesProcessed = 0
-    let studiesSkippedNonIndustry = 0
-    let studiesWithSignals = 0
+    const studies = await fetchAllStudies(lastUpdateGte);
 
-    // 2 pages × 100 studies = ~200 studies per run.
-    // Keeps total DB calls within Vercel serverless timeout (~16s).
-    const MAX_PAGES = 2
+    console.log(`[clinicalTrialMonitor] Fetched ${studies.length} raw studies from API.`);
 
-    // In-run company cache: skip redundant SELECT for same sponsor across studies.
-    const companyCache = new Map()
+    for (const study of studies) {
+      studiesProcessed++;
 
-    async function getOrUpsertCompany(sponsorName) {
-      if (companyCache.has(sponsorName)) return companyCache.get(sponsorName)
-      const company = await upsertCompany(sponsorName)
-      if (company) companyCache.set(sponsorName, company)
-      return company
+      const proto = extractProtocol(study);
+
+      if ((proto.leadSponsorClass || '').toUpperCase() === 'INDUSTRY') {
+        industryFiltered++;
+      }
+
+      const inserted = await processStudy(study, now, completionCutoff);
+      signalsFound += inserted;
     }
 
-    do {
-      const { studies, nextPageToken, totalCount } = await fetchStudies(pageToken)
-      if (pagesFetched === 0) {
-        console.log(`Clinical Trial Monitor: API returned ${totalCount ?? '?'} total studies matching 14-day filter`)
-      }
-      pageToken = nextPageToken
-      pagesFetched++
-      studiesProcessed += studies.length
+    await finaliseAgentRun(runId, 'completed', signalsFound);
 
-      for (const study of studies) {
-        const sponsor = extractSponsor(study)
-        if (!sponsor.name) continue
+    console.log(
+      `[clinicalTrialMonitor] Completed. Studies: ${studiesProcessed}, Industry: ${industryFiltered}, Signals: ${signalsFound}`
+    );
 
-        // ── INDUSTRY-only filter ──────────────────────────────────────────────
-        // If class is returned and is NOT INDUSTRY, skip (university/gov).
-        // If class is null (field not returned), allow through conservatively.
-        if (INDUSTRY_ONLY && sponsor.class && sponsor.class !== 'INDUSTRY') {
-          studiesSkippedNonIndustry++
-          continue
-        }
+    return { signalsFound, studiesProcessed, industryFiltered };
+  } catch (err) {
+    console.error('[clinicalTrialMonitor] Fatal error:', err.message);
+    await finaliseAgentRun(runId, 'failed', signalsFound, err.message);
 
-        const nctId = extractNctId(study)
-        const title = extractTitle(study)
-        const signals = classifyStudy(study)
-
-        if (signals.length === 0) continue
-        studiesWithSignals++
-
-        const company = await getOrUpsertCompany(sponsor.name)
-        if (!company) continue
-
-        for (const sig of signals) {
-          // For phase-transition signals, scope dedup key by phase combination so
-        // existing bare-URL signals don't block re-detection when a study advances
-        // (e.g. PHASE2 → PHASE3 generates a new signal despite same NCT ID).
-        const studyPhases = extractPhase(study).slice().sort().join('-') // e.g. "PHASE2" or "PHASE2-PHASE3"
-          const sourceUrl = (sig.type === 'clinical_trial_phase_transition' && nctId)
-            ? `https://clinicaltrials.gov/study/${nctId}#${studyPhases}`
-            : (nctId ? `https://clinicaltrials.gov/study/${nctId}` : 'https://clinicaltrials.gov')
-
-          const alreadyExists = await signalExists(company.id, sig.type, sourceUrl)
-          if (alreadyExists) continue
-
-          const priorityScore = calculatePriorityScore(sig.type, true, company.relationship_warmth)
-
-          const { error: insertError } = await supabase.from('signals').insert({
-            company_id: company.id,
-            signal_type: sig.type,
-            signal_summary: sig.summary,
-            signal_detail: {
-              company_name: sponsor.name,
-              nct_id: nctId,
-              source_url: sourceUrl,
-              // Phase transition specific fields
-              ...(sig.detail_extra || {}),
-              // Always include base fields
-              phases: extractPhase(study),
-              n_locations: extractNLocations(study),
-              primary_completion_date: extractPrimaryCompletionDate(study),
-            },
-            source_url: sourceUrl,
-            source_name: 'ClinicalTrials.gov',
-            first_detected_at: new Date().toISOString(),
-            status: 'new',
-            priority_score: priorityScore,
-            score_breakdown: {
-              signal_strength: SIGNAL_SCORES[sig.type] || 15,
-              recency: 25,
-              relationship_warmth: WARMTH_SCORES[company.relationship_warmth] || 0,
-              actionability: 0,
-            },
-            days_in_queue: 0,
-            is_carried_forward: false,
-          })
-
-          if (!insertError) {
-            signalsFound++
-          } else {
-            console.warn(`Signal insert failed: ${insertError.message}`)
-          }
-        }
-      }
-
-      if (pageToken && pagesFetched < MAX_PAGES) {
-        await new Promise((r) => setTimeout(r, 200))
-      }
-    } while (pageToken && pagesFetched < MAX_PAGES)
-
-    await supabase
-      .from('agent_runs')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        signals_found: signalsFound,
-        run_detail: {
-          pages_fetched: pagesFetched,
-          studies_processed: studiesProcessed,
-          studies_with_signals: studiesWithSignals,
-          studies_skipped_non_industry: studiesSkippedNonIndustry,
-        },
-      })
-      .eq('id', runId)
-
-    console.log(`Clinical Trial Monitor complete. Signals: ${signalsFound} (skipped ${studiesSkippedNonIndustry} non-industry)`)
-    return { success: true, signalsFound }
-  } catch (error) {
-    await supabase
-      .from('agent_runs')
-      .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: error.message })
-      .eq('id', runId)
-    console.error('Clinical Trial Monitor failed:', error.message)
-    return { success: false, error: error.message }
+    return { signalsFound, studiesProcessed, industryFiltered };
   }
 }
