@@ -15,7 +15,7 @@
  * hospitals, government agencies, and foundations are excluded.
  */
 
-import { supabase } from '../lib/supabase.js';
+import { supabase, normalizeCompanyName } from '../lib/supabase.js';
 
 // ── External API base URLs ────────────────────────────────────────────────────
 
@@ -173,14 +173,17 @@ function extractAmount(text) {
  * @returns {Promise<object|null>} Row with id and name, or null on error
  */
 async function upsertCompany(name) {
+  const normalized = normalizeCompanyName(name);
+  if (!normalized) return null;
+
   const { data, error } = await supabase
     .from('companies')
-    .upsert({ name, industry: 'Life Sciences' }, { onConflict: 'name' })
+    .upsert({ name: normalized, industry: 'Life Sciences' }, { onConflict: 'name', ignoreDuplicates: false })
     .select('id, name')
     .maybeSingle();
 
   if (error) {
-    console.error(`[fundingMaAgent] upsertCompany failed for "${name}":`, error.message);
+    console.error(`[fundingMaAgent] upsertCompany failed for "${normalized}":`, error.message);
     return null;
   }
 
@@ -312,7 +315,7 @@ async function finaliseAgentRun(runId, status, signalsFound, errorMessage = null
   const update = {
     status,
     signals_found: signalsFound,
-    finished_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
   };
 
   if (errorMessage) update.error_message = errorMessage;
