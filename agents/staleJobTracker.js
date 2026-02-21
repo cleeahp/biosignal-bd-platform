@@ -346,11 +346,15 @@ function inferDomain(name) {
   return (
     name
       .toLowerCase()
+      // Strip city/state/country qualifiers — CT.gov names include these after the first comma
+      // e.g. "Merck & Co., Inc., Rahway, NJ, USA" → "merck & co"
+      .replace(/,.*$/, '')
+      // Remove common legal/entity suffixes
       .replace(
-        /\s*,?\s*\b(inc|incorporated|corp|corporation|llc|ltd|limited|co|company|plc|gmbh|ag|nv|bv|sa|pty)\b\.?/gi,
+        /\s*\b(inc|incorporated|corp|corporation|llc|ltd|limited|co|company|plc|gmbh|ag|nv|bv|sa|pty|& co)\b\.?/gi,
         ''
       )
-      .replace(/,\s*(usa|u\.s\.a|us|united states)$/i, '')
+      // Strip everything except letters and numbers
       .replace(/[^a-z0-9]/g, '') + '.com'
   )
 }
