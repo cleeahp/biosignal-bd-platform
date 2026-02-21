@@ -186,6 +186,31 @@ function extractAmount(text) {
  * @param {string} url
  * @returns {Promise<boolean>}
  */
+/**
+ * Check whether an M&A signal for this exact EDGAR filing already exists,
+ * within the last 180 days. Uses signal_detail->>'adsh' for precision —
+ * this allows the same company to accumulate multiple M&A signals for
+ * different transactions, only deduplicating identical filings.
+ *
+ * @param {string} adsh - EDGAR accession number (e.g. "0001234567-26-000001")
+ * @returns {Promise<boolean>}
+ */
+async function maSignalExistsByAdsh(adsh) {
+  if (!adsh) return false;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 180);
+
+  const { data } = await supabase
+    .from('signals')
+    .select('id')
+    .eq('signal_type', 'ma_transaction')
+    .filter('signal_detail->>adsh', 'eq', adsh)
+    .gte('created_at', cutoff.toISOString())
+    .maybeSingle();
+
+  return !!data;
+}
+
 async function signalExists(companyId, signalType, url) {
   const { data: existing, error } = await supabase
     .from('signals')
@@ -604,42 +629,47 @@ async function processMaFilings(sixMonthsAgo, today) {
       }
 
       const dealAmount = extractAmount(filingText);
+      const adsh = hit._source?.adsh || '';
 
-      // One signal per filing (dedup by filing URL). Signal type ma_transaction
-      // replaces the old ma_acquirer + ma_acquired pair — one row per deal.
+      // One signal per filing. Dedup by adsh (unique EDGAR accession number)
+      // within a 180-day window so the same company can receive signals for
+      // different transactions without being blocked by a prior M&A signal.
+      const adshAlreadyExists = await maSignalExistsByAdsh(adsh);
+      if (adshAlreadyExists) {
+        console.log(`[fundingMaAgent] M&A SKIP (dedup by adsh): ${entityName} adsh=${adsh}`);
+        continue;
+      }
+
+      const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, MA_BASE_SCORE);
+      const dealSummary = `${entityName} announced an M&A transaction${dealAmount ? ` valued at ${dealAmount}` : ''}`;
+      const detail = {
+        company_name: entityName,
+        acquirer_name: entityName,
+        acquired_name: '',
+        adsh,
+        funding_type: 'ma',
+        funding_amount: dealAmount,
+        funding_summary: dealSummary,
+        deal_summary: dealSummary,
+        date_announced: fileDate,
+        filing_url: filingUrl,
+        source_url: filingUrl,
+        ...preHiringDetail,
+      };
+
       const company = await upsertCompany(supabase, { name: entityName });
       if (company) {
-        const alreadyExists = await signalExists(company.id, 'ma_transaction', filingUrl);
-        if (!alreadyExists) {
-          const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, MA_BASE_SCORE);
-          const dealSummary = `${entityName} announced an M&A transaction${dealAmount ? ` valued at ${dealAmount}` : ''}`;
+        const inserted = await insertSignal({
+          company_id: company.id,
+          signal_type: 'ma_transaction',
+          priority_score: adjustedScore,
+          signal_summary: `${entityName} M&A transaction${dealAmount ? ` (${dealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+          signal_detail: detail,
+          source_url: filingUrl,
+          created_at: new Date().toISOString(),
+        });
 
-          const detail = {
-            company_name: entityName,
-            acquirer_name: entityName,
-            acquired_name: '',
-            funding_type: 'ma',
-            funding_amount: dealAmount,
-            funding_summary: dealSummary,
-            deal_summary: dealSummary,
-            date_announced: fileDate,
-            filing_url: filingUrl,
-            source_url: filingUrl,
-            ...preHiringDetail,
-          };
-
-          const inserted = await insertSignal({
-            company_id: company.id,
-            signal_type: 'ma_transaction',
-            priority_score: adjustedScore,
-            signal_summary: `${entityName} M&A transaction${dealAmount ? ` (${dealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
-            signal_detail: detail,
-            source_url: filingUrl,
-            created_at: new Date().toISOString(),
-          });
-
-          if (inserted) signalsInserted++;
-        }
+        if (inserted) signalsInserted++;
       }
     }
   }

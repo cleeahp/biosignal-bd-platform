@@ -88,7 +88,10 @@ function buildQueryUrl(lastUpdateGte, pageToken = null) {
     'LeadSponsorClass',
     'Phase',
     'PrimaryCompletionDate',
-    'StudyFirstPostedDate',
+    // NOTE: StudyFirstPostedDate is NOT a valid CT.gov v2 API field — returns 400.
+    // The studyFirstPostedDateStruct is available inside identificationModule
+    // which is returned as part of the NCTId/BriefTitle response without needing
+    // to be explicitly listed here.
     'LastUpdatePostDate',
     'OverallStatus',
     'EnrollmentCount',
@@ -123,12 +126,17 @@ function buildQueryUrl(lastUpdateGte, pageToken = null) {
  * @returns {Promise<object>}
  */
 async function fetchStudiesPage(url) {
+  // Log the full URL so it's visible in Vercel logs for debugging 400 errors
+  console.log(`[clinicalTrialMonitor] GET ${url}`);
+
   const response = await fetch(url, {
     headers: { Accept: 'application/json' },
     signal: AbortSignal.timeout(15000),
   });
 
   if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    console.error(`[clinicalTrialMonitor] API ${response.status}: ${body.substring(0, 300)}`);
     throw new Error(`ClinicalTrials.gov API error: ${response.status} ${response.statusText}`);
   }
 
@@ -501,7 +509,10 @@ async function processStudy(study, now) {
 
   const lookbackThreshold = new Date();
   lookbackThreshold.setDate(lookbackThreshold.getDate() - LOOKBACK_DAYS);
-  const firstPosted = proto.studyFirstPostedDate ? new Date(proto.studyFirstPostedDate) : null;
+  // Prefer studyFirstPostedDate; fall back to lastUpdatePostDate as a proxy
+  // (studyFirstPostedDateStruct may not be present in all API responses).
+  const firstPostedRaw = proto.studyFirstPostedDate || proto.lastUpdatePostDate;
+  const firstPosted = firstPostedRaw ? new Date(firstPostedRaw) : null;
   const isNewStudy = firstPosted ? firstPosted >= lookbackThreshold : false;
 
   if (isPhase1Only && isNewStudy) {
