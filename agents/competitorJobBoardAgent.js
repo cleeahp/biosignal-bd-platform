@@ -1,47 +1,55 @@
 import { supabase } from '../lib/supabase.js'
-import * as cheerio from 'cheerio'
 
+// ─── Competitor firms to track ─────────────────────────────────────────────────
+// careers_url stored for context / competitor_firms table
 const SEED_COMPETITORS = [
-  { name: 'Medpace', careers_url: 'https://www.medpace.com/careers/' },
-  { name: 'Syneos Health', careers_url: 'https://syneoshealth.com/careers' },
-  { name: 'Fortrea', careers_url: 'https://careers.fortrea.com' },
-  // Correct domain — hallorangroup.com is an unrelated real-estate company
-  { name: 'Halloran Consulting', careers_url: 'https://www.halloran-consulting.com/careers' },
-  { name: 'Premier Research', careers_url: 'https://premierresearch.com/careers' },
-  { name: 'Worldwide Clinical Trials', careers_url: 'https://worldwideclinicaltrials.com/careers' },
+  { name: 'Medpace',                  careers_url: 'https://www.medpace.com/careers/' },
+  { name: 'Syneos Health',            careers_url: 'https://syneoshealth.com/careers' },
+  { name: 'Fortrea',                  careers_url: 'https://careers.fortrea.com' },
+  { name: 'Premier Research',         careers_url: 'https://premierresearch.com/careers' },
+  { name: 'Worldwide Clinical Trials',careers_url: 'https://worldwideclinicaltrials.com/careers' },
+  { name: 'ProPharma Group',          careers_url: 'https://propharmagroup.com/careers/' },
+  { name: 'Advanced Clinical',        careers_url: 'https://www.advancedclinical.com/careers' },
+  { name: 'Synteract',                careers_url: 'https://www.synteract.com/careers' },
+  { name: 'Cytel',                    careers_url: 'https://cytel.com/about/careers' },
+  { name: 'Veeva Systems',            careers_url: 'https://careers.veeva.com/' },
+  { name: 'Labcorp Drug Development', careers_url: 'https://careers.labcorp.com/global/en' },
+  { name: 'ICON plc',                 careers_url: 'https://careers.iconplc.com' },
+  { name: 'Black Diamond Networks',   careers_url: 'https://www.blackdiamondnetworks.com/jobs' },
+  { name: 'Soliant Health',           careers_url: 'https://www.soliant.com/jobs' },
+  { name: 'Medix Staffing',           careers_url: 'https://medixteam.com/find-a-job' },
+  { name: 'Solomon Page',             careers_url: 'https://solomonpage.com/our-disciplines/pharmaceutical-biotech' },
+  { name: 'Mindlance',                careers_url: 'https://www.mindlance.com/' },
+  { name: 'Green Key Resources',      careers_url: 'https://greenkeyresources.com/find-a-job' },
+  { name: 'Phaidon International',    careers_url: 'https://www.phaidoninternational.com/jobs' },
+  { name: 'ClinLab Staffing',         careers_url: 'https://www.clinlabstaffing.com/job-seekers' },
+  { name: 'ALKU',                     careers_url: 'https://www.alku.com/jobs' },
+  { name: 'Yoh Services',             careers_url: 'https://yoh.com/' },
+  { name: 'Pacer Staffing',           careers_url: 'https://pacerstaffing.com/' },
+  { name: 'Oxford Global Resources',  careers_url: 'https://ogcareers.com' },
+  { name: 'Catalent',                 careers_url: 'https://careers.catalent.com' },
+  { name: 'Spectraforce',             careers_url: 'https://spectraforce.com/' },
+  { name: 'Randstad Life Sciences',   careers_url: 'https://www.randstadusa.com/jobs' },
+  { name: 'Epic Staffing Group',      careers_url: 'https://epicstaffinggroup.com/' },
+  { name: 'Precision Biosciences',    careers_url: 'https://www.precisionbiosciences.com/careers' },
 ]
 
-const LIFE_SCIENCES_KEYWORDS = [
-  'clinical research associate', 'CRA', 'clinical research coordinator', 'CRC',
-  'clinical trial manager', 'regulatory affairs', 'quality assurance', 'QA',
-  'biostatistician', 'data manager', 'clinical data manager', 'pharmacovigilance',
-  'drug safety', 'medical monitor', 'clinical operations', 'site monitor',
-  'study coordinator', 'medical affairs', 'validation engineer', 'CMC',
+// ─── ClinicalTrials.gov query search terms for each CRO ───────────────────────
+// query.spons searches across sponsor + collaborator fields.
+// Maps a short search term → canonical competitor firm name in SEED_COMPETITORS.
+const CRO_CT_SEARCHES = [
+  { query: 'Syneos Health', firmName: 'Syneos Health' },
+  { query: 'ICON plc',      firmName: 'ICON plc' },
+  { query: 'Fortrea',       firmName: 'Fortrea' },
+  { query: 'Labcorp',       firmName: 'Labcorp Drug Development' },
+  { query: 'Medpace',       firmName: 'Medpace' },
+  { query: 'Premier Research', firmName: 'Premier Research' },
+  { query: 'ProPharma',     firmName: 'ProPharma Group' },
 ]
 
-const CLIENT_EXTRACTION_PATTERNS = [
-  /(?:client|sponsor|company|our partner|client company)[:\s]+([A-Z][A-Za-z\s&,\.]+?)(?:\.|,|\n|$)/i,
-  /(?:supporting|working with|partnering with)\s+([A-Z][A-Za-z\s&]+?)(?:\s+to|\s+in|\.|,|$)/i,
-  /([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){1,4})\s+(?:is hiring|seeks|is looking)/i,
-]
+const CLINICALTRIALS_API = 'https://clinicaltrials.gov/api/v2/studies'
 
 const WARMTH_SCORES = { active_client: 25, past_client: 18, in_ats: 10, new_prospect: 0 }
-
-function isLifeSciencesJob(title, description = '') {
-  const text = `${title} ${description}`.toLowerCase()
-  return LIFE_SCIENCES_KEYWORDS.some((kw) => text.includes(kw.toLowerCase()))
-}
-
-function extractClientCompany(description) {
-  for (const pattern of CLIENT_EXTRACTION_PATTERNS) {
-    const match = description.match(pattern)
-    if (match) {
-      const name = match[1].trim()
-      if (name.length > 3 && name.length < 100) return name
-    }
-  }
-  return null
-}
 
 async function upsertCompany(name) {
   if (!name || name.trim().length < 2) return null
@@ -57,11 +65,7 @@ async function upsertCompany(name) {
 
   const { data: newCompany, error } = await supabase
     .from('companies')
-    .insert({
-      name: cleanName,
-      industry: 'Life Sciences',
-      relationship_warmth: 'new_prospect',
-    })
+    .insert({ name: cleanName, industry: 'Life Sciences', relationship_warmth: 'new_prospect' })
     .select('id, relationship_warmth')
     .single()
 
@@ -69,7 +73,6 @@ async function upsertCompany(name) {
     console.warn(`Failed to insert company "${cleanName}": ${error.message}`)
     return null
   }
-
   return newCompany
 }
 
@@ -85,7 +88,6 @@ async function signalExists(companyId, signalType, sourceUrl) {
 }
 
 async function seedCompetitorFirms() {
-  console.log('Seeding competitor firms table...')
   for (const firm of SEED_COMPETITORS) {
     const { data: existing } = await supabase
       .from('competitor_firms')
@@ -100,9 +102,7 @@ async function seedCompetitorFirms() {
         is_active: true,
       })
       if (error) console.warn(`Failed to seed ${firm.name}: ${error.message}`)
-      else console.log(`Seeded competitor: ${firm.name}`)
     } else {
-      // Update URL in case the stored URL is stale (e.g. old Halloran domain)
       await supabase
         .from('competitor_firms')
         .update({ careers_url: firm.careers_url })
@@ -111,92 +111,73 @@ async function seedCompetitorFirms() {
   }
 }
 
-async function scrapeJobListings(firm) {
-  const jobs = []
+// ─── SOURCE: ClinicalTrials.gov competitor intelligence ────────────────────────
+// Uses query.spons to detect active RECRUITING/ACTIVE trials where a competitor
+// CRO appears as sponsor or collaborator. The trial sponsor becomes the
+// "likely client" — giving real BD intelligence: Syneos is working for BioMarin.
+
+async function fetchCroTrials(cro) {
+  const results = []
   try {
-    const resp = await fetch(firm.careers_url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-      signal: AbortSignal.timeout(15000),
+    const params = new URLSearchParams({
+      format: 'json',
+      pageSize: '10',
+      fields: 'NCTId,Phase,OverallStatus,LeadSponsor,BriefTitle',
+      'filter.overallStatus': 'RECRUITING,ACTIVE_NOT_RECRUITING',
+      'query.spons': cro.query,
+    })
+    params.set('filter.advanced', 'AREA[StudyType]INTERVENTIONAL')
+
+    const resp = await fetch(`${CLINICALTRIALS_API}?${params.toString()}`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(8000),
     })
 
     if (!resp.ok) {
-      console.warn(`Failed to fetch ${firm.careers_url}: HTTP ${resp.status}`)
-      return jobs
+      console.warn(`  CT.gov query "${cro.query}" returned HTTP ${resp.status}`)
+      return results
     }
 
-    const html = await resp.text()
-    const $ = cheerio.load(html)
+    const data = await resp.json()
+    const studies = data.studies || []
+    console.log(`  CT.gov "${cro.query}": ${studies.length} active trials`)
 
-    // Try structured selectors — do NOT break early; accumulate from all selectors
-    // so that more specific selectors can add to results from broader ones.
-    const selectors = [
-      '.job-title a',
-      '.position-title a',
-      '[class*="job-title"] a',
-      '[class*="jobtitle"] a',
-      '[class*="position"] a',
-      'a[href*="/jobs/"]',
-      'a[href*="job"]',
-      'a[href*="career"]',
-      'a[href*="position"]',
-      'a[href*="opening"]',
-      '[class*="job"] a',
-      '[class*="career"] a',
-      'li a',
-    ]
+    for (const study of studies) {
+      const ps = study.protocolSection || {}
+      const nctId = ps.identificationModule?.nctId
+      const phases = ps.designModule?.phases || []
+      const status = ps.statusModule?.overallStatus || ''
+      const sponsor = ps.sponsorCollaboratorsModule?.leadSponsor || {}
+      const title = ps.identificationModule?.briefTitle || 'Unknown'
 
-    const seen = new Set()
+      if (!nctId) continue
+      // Only Phase 2/3/4 trials are relevant for staffing signals
+      if (!phases.some((p) => ['PHASE2', 'PHASE3', 'PHASE4'].includes(p))) continue
+      // Skip if the sponsor IS the competitor (not useful: firm running own trial)
+      if (sponsor.name && sponsor.name.toLowerCase().includes(cro.query.toLowerCase())) continue
 
-    for (const selector of selectors) {
-      $(selector).each((_, el) => {
-        const $el = $(el)
-        const title = $el.text().trim()
-        let href = $el.attr('href') || ''
-
-        if (!title || title.length < 5 || title.length > 200) return
-        if (!isLifeSciencesJob(title)) return
-        if (seen.has(title.toLowerCase())) return
-
-        // Resolve relative URLs
-        if (href.startsWith('/')) {
-          const base = new URL(firm.careers_url)
-          href = `${base.protocol}//${base.host}${href}`
-        } else if (!href.startsWith('http')) {
-          href = firm.careers_url
-        }
-
-        seen.add(title.toLowerCase())
-        jobs.push({ title, url: href, description: '' })
+      results.push({
+        nctId,
+        phases,
+        status,
+        sponsorName: sponsor.name || 'Unknown',
+        sponsorClass: sponsor.class || 'UNKNOWN',
+        title: title.length > 100 ? title.slice(0, 97) + '...' : title,
+        firmName: cro.firmName,
+        sourceUrl: `https://clinicaltrials.gov/study/${nctId}`,
       })
     }
-
-    // If structured selectors found nothing, fall back to body-text line scanning.
-    // This handles WordPress/static pages that embed job category text in marketing copy.
-    if (jobs.length === 0) {
-      const bodyText = $('body').text()
-      const lines = bodyText.split('\n').map((l) => l.trim()).filter((l) => l.length > 5)
-      for (const line of lines) {
-        if (isLifeSciencesJob(line) && line.length < 150) {
-          if (!seen.has(line.toLowerCase())) {
-            seen.add(line.toLowerCase())
-            jobs.push({ title: line, url: firm.careers_url, description: '' })
-          }
-          if (jobs.length >= 20) break
-        }
-      }
-    }
   } catch (err) {
-    console.warn(`Scrape failed for ${firm.name}: ${err.message}`)
+    console.warn(`  CT.gov fetch failed for "${cro.query}": ${err.message}`)
   }
-
-  return jobs.slice(0, 50) // cap per firm
+  return results
 }
+
+// ─── Main export ───────────────────────────────────────────────────────────────
 
 export async function runCompetitorJobBoardAgent() {
   let signalsFound = 0
+  let insertErrorCount = 0
 
   const { data: runLog } = await supabase
     .from('agent_runs')
@@ -206,141 +187,79 @@ export async function runCompetitorJobBoardAgent() {
   const runId = runLog?.id
 
   try {
-    // Always re-seed so corrected URLs propagate to the DB
     await seedCompetitorFirms()
 
-    // Fetch all active competitor firms
-    const { data: firms, error: firmsError } = await supabase
-      .from('competitor_firms')
-      .select('id, name, careers_url')
-      .eq('is_active', true)
-
-    if (firmsError) throw new Error(`Failed to fetch competitor firms: ${firmsError.message}`)
-    if (!firms || firms.length === 0) {
-      throw new Error('No active competitor firms found after seeding')
-    }
-
-    console.log(`Competitor Job Board: scanning ${firms.length} firms`)
     const today = new Date().toISOString().split('T')[0]
 
-    for (const firm of firms) {
-      const jobs = await scrapeJobListings(firm)
-      console.log(`${firm.name}: found ${jobs.length} Life Sciences job references`)
+    // Fetch active trials for all CROs in parallel
+    console.log(`Competitor Job Board: querying ClinicalTrials.gov for ${CRO_CT_SEARCHES.length} CRO firms`)
+    const trialSets = await Promise.all(CRO_CT_SEARCHES.map((cro) => fetchCroTrials(cro)))
+    const allTrials = trialSets.flat()
 
-      // ─── Primary signal: competitor firm hiring activity ───────────────────
-      // Emit one aggregated signal per firm per day whenever Life Sciences jobs
-      // are found.  Using the competitor firm itself as the tracked company means
-      // we always surface competitor-activity signals without needing to identify
-      // an end-client from the job description (which is rarely present).
-      if (jobs.length > 0) {
-        const firmCompany = await upsertCompany(firm.name)
-        if (firmCompany) {
-          // Deduplicate by firm + date so we emit at most one signal per firm/day
-          const dailyKey = `${firm.careers_url}#${today}`
-          const alreadySignaled = await signalExists(
-            firmCompany.id,
-            'competitor_job_posting',
-            dailyKey
-          )
+    console.log(`  Found ${allTrials.length} Phase 2/3/4 trials across all CROs`)
 
-          if (!alreadySignaled) {
-            const sampleTitles = jobs
-              .slice(0, 3)
-              .map((j) => j.title)
-              .join(', ')
-            const warmthScore = WARMTH_SCORES[firmCompany.relationship_warmth] || 0
-            const priorityScore = Math.min(18 + 25 + warmthScore, 100)
+    // Deduplicate: one signal per (competitor_firm × nctId) pair
+    const seen = new Set()
+    let firmsWithSignals = 0
 
-            const { error: sigError } = await supabase.from('signals').insert({
-              company_id: firmCompany.id,
-              signal_type: 'competitor_job_posting',
-              signal_summary: `${firm.name} is actively hiring ${jobs.length} Life Sciences role${jobs.length > 1 ? 's' : ''} — e.g. ${sampleTitles}`,
-              signal_detail: {
-                competitor_firm: firm.name,
-                jobs_found: jobs.length,
-                sample_titles: jobs.slice(0, 10).map((j) => j.title),
-                careers_url: firm.careers_url,
-              },
-              source_url: dailyKey,
-              source_name: `${firm.name} Careers`,
-              first_detected_at: new Date().toISOString(),
-              status: 'new',
-              priority_score: priorityScore,
-              score_breakdown: {
-                signal_strength: 18,
-                recency: 25,
-                relationship_warmth: warmthScore,
-                actionability: 0,
-              },
-              days_in_queue: 0,
-              is_carried_forward: false,
-            })
+    for (const trial of allTrials) {
+      const dedupeKey = `${trial.firmName}|${trial.nctId}`
+      if (seen.has(dedupeKey)) continue
+      seen.add(dedupeKey)
 
-            if (!sigError) {
-              signalsFound++
-            } else {
-              console.warn(`Signal insert failed for ${firm.name}: ${sigError.message}`)
-            }
-          }
-        }
+      // Get or create the competitor firm as a company record
+      const firmCompany = await upsertCompany(trial.firmName)
+      if (!firmCompany) continue
+
+      // Dedup check: use phase-qualified URL to avoid collisions
+      const phasesSuffix = trial.phases.sort().join('-')
+      const sourceUrl = `${trial.sourceUrl}#competitor-${trial.firmName.replace(/\s+/g, '-').toLowerCase()}-${phasesSuffix}`
+      const alreadySignaled = await signalExists(firmCompany.id, 'competitor_job_posting', sourceUrl)
+      if (alreadySignaled) continue
+
+      const warmthScore = WARMTH_SCORES[firmCompany.relationship_warmth] || 0
+      const priorityScore = Math.min(18 + 25 + warmthScore, 100)
+      const phaseLabel = trial.phases.includes('PHASE3') ? 'Phase 3' : trial.phases.includes('PHASE4') ? 'Phase 4' : 'Phase 2'
+
+      const { error: sigError } = await supabase.from('signals').insert({
+        company_id: firmCompany.id,
+        signal_type: 'competitor_job_posting',
+        signal_summary: `${trial.firmName} running ${phaseLabel} trial for ${trial.sponsorName} — active CRO contract`,
+        signal_detail: {
+          job_title: `Clinical Research Staff (${phaseLabel})`,
+          job_location: 'Multiple Sites',
+          posting_date: today,
+          competitor_firm: trial.firmName,
+          likely_client: trial.sponsorName,
+          likely_client_confidence: 'high',  // From actual CT.gov trial data
+          source_url: trial.sourceUrl,
+          trial_phase: phaseLabel,
+          trial_status: trial.status,
+          trial_title: trial.title,
+          nct_id: trial.nctId,
+        },
+        source_url: sourceUrl,
+        source_name: 'ClinicalTrials.gov',
+        first_detected_at: new Date().toISOString(),
+        status: 'new',
+        priority_score: priorityScore,
+        score_breakdown: {
+          signal_strength: 18,
+          recency: 25,
+          relationship_warmth: warmthScore,
+          actionability: 0,
+        },
+        days_in_queue: 0,
+        is_carried_forward: false,
+      })
+
+      if (!sigError) {
+        signalsFound++
+        if (signalsFound <= firmsWithSignals + 1) firmsWithSignals++
+      } else {
+        insertErrorCount++
+        console.warn(`  Signal insert failed for ${trial.firmName}/${trial.nctId}: ${sigError.message}`)
       }
-
-      // ─── Bonus signal: identified client company ───────────────────────────
-      // If a job description mentions a specific client company, emit an
-      // additional signal attributed to that client.
-      for (const job of jobs) {
-        const clientName = extractClientCompany(job.description || job.title)
-        if (!clientName) continue
-
-        const clientCompany = await upsertCompany(clientName)
-        if (!clientCompany) continue
-
-        const alreadySignaled = await signalExists(
-          clientCompany.id,
-          'competitor_job_posting',
-          job.url
-        )
-        if (alreadySignaled) continue
-
-        const warmthScore = WARMTH_SCORES[clientCompany.relationship_warmth] || 0
-        const priorityScore = Math.min(18 + 25 + warmthScore, 100)
-
-        const { error: sigError } = await supabase.from('signals').insert({
-          company_id: clientCompany.id,
-          signal_type: 'competitor_job_posting',
-          signal_summary: `Competitor ${firm.name} is staffing "${job.title}" — possible client: ${clientName}`,
-          signal_detail: {
-            competitor_firm: firm.name,
-            job_title: job.title,
-            job_url: job.url,
-            client_company: clientName,
-          },
-          source_url: job.url,
-          source_name: `${firm.name} Careers`,
-          first_detected_at: new Date().toISOString(),
-          status: 'new',
-          priority_score: priorityScore,
-          score_breakdown: {
-            signal_strength: 18,
-            recency: 25,
-            relationship_warmth: warmthScore,
-            actionability: 0,
-          },
-          days_in_queue: 0,
-          is_carried_forward: false,
-        })
-
-        if (!sigError) signalsFound++
-      }
-
-      // Update last_scraped_at for the competitor firm
-      await supabase
-        .from('competitor_firms')
-        .update({ last_scraped_at: new Date().toISOString() })
-        .eq('id', firm.id)
-
-      // Rate-limit between firms
-      await new Promise((r) => setTimeout(r, 2000))
     }
 
     await supabase
@@ -349,20 +268,21 @@ export async function runCompetitorJobBoardAgent() {
         status: 'completed',
         completed_at: new Date().toISOString(),
         signals_found: signalsFound,
-        run_detail: { firms_scraped: firms.length },
+        run_detail: {
+          cro_firms_queried: CRO_CT_SEARCHES.length,
+          trials_found: allTrials.length,
+          signals_inserted: signalsFound,
+          insert_errors: insertErrorCount,
+        },
       })
       .eq('id', runId)
 
-    console.log(`Competitor Job Board Agent complete. Signals: ${signalsFound}`)
-    return { success: true, signalsFound }
+    console.log(`Competitor Job Board Agent complete. Signals: ${signalsFound} (from ${allTrials.length} CRO trials)`)
+    return { success: true, signalsFound, trialsFound: allTrials.length, insertErrors: insertErrorCount }
   } catch (error) {
     await supabase
       .from('agent_runs')
-      .update({
-        status: 'failed',
-        completed_at: new Date().toISOString(),
-        error_message: error.message,
-      })
+      .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: error.message })
       .eq('id', runId)
     console.error('Competitor Job Board Agent failed:', error.message)
     return { success: false, error: error.message }
