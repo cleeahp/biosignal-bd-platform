@@ -14,6 +14,7 @@ const SIGNAL_TYPE_CONFIG = {
   clinical_trial_completion:       { label: 'Trial Completion',  color: 'bg-purple-500', tab: 'clinical' },
   funding_new_award:               { label: null,                color: null,            tab: 'funding' },
   funding_renewal:                 { label: 'Renewal',           color: 'bg-lime-600',   tab: 'funding' },
+  ma_transaction:                  { label: 'M&A',               color: 'bg-orange-500', tab: 'funding' },
   ma_acquirer:                     { label: 'M&A — Acquirer',    color: 'bg-orange-500', tab: 'funding' },
   ma_acquired:                     { label: 'M&A — Acquired',    color: 'bg-amber-500',  tab: 'funding' },
   competitor_job_posting:          { label: 'Competitor Job',    color: 'bg-red-500',    tab: 'jobs' },
@@ -294,6 +295,8 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
           <Th>Type</Th>
           <Th>Company</Th>
           <Th className="min-w-72">Detail</Th>
+          <Th className="min-w-48">Summary</Th>
+          <Th>Source</Th>
           <Th>Date Updated</Th>
           <Th>Queue</Th>
           <Th>Claim</Th>
@@ -325,6 +328,23 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
                 <td className="px-4 py-3 min-w-72">
                   <ClinicalDetailCell signal={signal} />
                 </td>
+                <td className="px-4 py-3 min-w-48">
+                  <span className="text-xs text-gray-400 leading-snug">
+                    {truncate(d.study_summary, 120) || '—'}
+                  </span>
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                  {d.nct_id ? (
+                    <a
+                      href={`https://clinicaltrials.gov/study/${d.nct_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-400 hover:text-blue-300 font-mono"
+                    >
+                      {d.nct_id}
+                    </a>
+                  ) : '—'}
+                </td>
                 <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
                   {formatDate(d.date_updated || signal.updated_at)}
                 </td>
@@ -337,7 +357,7 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
               </tr>
               {isExpanded && (
                 <tr key={`${signal.id}-exp`}>
-                  <td colSpan={6} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                  <td colSpan={8} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
                     <ExpandedDetailCard signal={signal} />
                   </td>
                 </tr>
@@ -398,11 +418,11 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
                   )}
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-green-400">
-                  {d.funding_amount || '—'}
+                  {d.funding_amount || 'Undisclosed'}
                 </td>
                 <td className="px-4 py-3 min-w-64">
                   <span className="text-sm text-gray-200">
-                    {truncate(d.funding_summary || signal.signal_summary, 100)}
+                    {truncate(d.deal_summary || d.funding_summary || signal.signal_summary, 100)}
                   </span>
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">

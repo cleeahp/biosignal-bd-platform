@@ -415,6 +415,13 @@ async function processNihGrants(sixMonthsAgo, today, currentYear) {
       continue;
     }
 
+    // Post-fetch academic name filter — catches academic orgs that pass the
+    // SMALL BUSINESS org_type filter (mis-coded entries in NIH Reporter)
+    if (ACADEMIC_PATTERNS.test(orgName)) {
+      console.log(`[fundingMaAgent] FILTERED (academic NIH): ${orgName}`);
+      continue;
+    }
+
     if (!orgName || !isIndustryOrg(orgName)) continue;
 
     // R43, R41, U43 are new (Phase I) awards; R44, R42, U44 are renewals
@@ -587,58 +594,34 @@ async function processMaFilings(sixMonthsAgo, today) {
 
       const dealAmount = extractAmount(filingText);
 
-      // Emit acquirer signal
-      const acquirerCompany = await upsertCompany(supabase, { name: entityName });
-      if (acquirerCompany) {
-        const acquirerAlreadyExists = await signalExists(acquirerCompany.id, 'ma_acquirer', filingUrl);
-        if (!acquirerAlreadyExists) {
+      // One signal per filing (dedup by filing URL). Signal type ma_transaction
+      // replaces the old ma_acquirer + ma_acquired pair — one row per deal.
+      const company = await upsertCompany(supabase, { name: entityName });
+      if (company) {
+        const alreadyExists = await signalExists(company.id, 'ma_transaction', filingUrl);
+        if (!alreadyExists) {
           const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, MA_BASE_SCORE);
+          const dealSummary = `${entityName} announced an M&A transaction${dealAmount ? ` valued at ${dealAmount}` : ''}`;
 
           const detail = {
             company_name: entityName,
+            acquirer_name: entityName,
+            acquired_name: '',
             funding_type: 'ma',
             funding_amount: dealAmount,
-            funding_summary: `${entityName} announced an acquisition or merger${dealAmount ? ` valued at ${dealAmount}` : ''}.`,
+            funding_summary: dealSummary,
+            deal_summary: dealSummary,
             date_announced: fileDate,
+            filing_url: filingUrl,
             source_url: filingUrl,
             ...preHiringDetail,
           };
 
           const inserted = await insertSignal({
-            company_id: acquirerCompany.id,
-            signal_type: 'ma_acquirer',
+            company_id: company.id,
+            signal_type: 'ma_transaction',
             priority_score: adjustedScore,
-            signal_summary: `${entityName} is acquiring in life sciences M&A${dealAmount ? ` (${dealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
-            signal_detail: detail,
-            source_url: filingUrl,
-            created_at: new Date().toISOString(),
-          });
-
-          if (inserted) signalsInserted++;
-        }
-      }
-
-      // Emit acquired signal (same company, different signal type)
-      if (acquirerCompany) {
-        const acquiredAlreadyExists = await signalExists(acquirerCompany.id, 'ma_acquired', filingUrl);
-        if (!acquiredAlreadyExists) {
-          const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, MA_BASE_SCORE);
-
-          const detail = {
-            company_name: entityName,
-            funding_type: 'ma',
-            funding_amount: dealAmount,
-            funding_summary: `${entityName} is a party in an M&A transaction${dealAmount ? ` valued at ${dealAmount}` : ''}.`,
-            date_announced: fileDate,
-            source_url: filingUrl,
-            ...preHiringDetail,
-          };
-
-          const inserted = await insertSignal({
-            company_id: acquirerCompany.id,
-            signal_type: 'ma_acquired',
-            priority_score: adjustedScore,
-            signal_summary: `${entityName} involved in acquisition/merger filing${dealAmount ? ` (${dealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+            signal_summary: `${entityName} M&A transaction${dealAmount ? ` (${dealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
             signal_detail: detail,
             source_url: filingUrl,
             created_at: new Date().toISOString(),
