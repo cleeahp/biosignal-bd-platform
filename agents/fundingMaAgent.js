@@ -420,7 +420,7 @@ async function processNihGrants(sixMonthsAgo, today, currentYear) {
     const fundingSummary = `${orgName} received NIH ${activityCode} grant${fundingAmount ? ` of ${fundingAmount}` : ''} for: ${projectTitle}`;
     const sourceUrl = `https://reporter.nih.gov/project-details/${encodeURIComponent(nctId)}`;
 
-    const company = await upsertCompany(orgName);
+    const company = await upsertCompany(supabase, { name: orgName });
     if (!company) continue;
 
     const alreadyExists = await signalExists(company.id, signalType, sourceUrl);
@@ -577,7 +577,7 @@ async function processMaFilings(sixMonthsAgo, today) {
       const dealAmount = extractAmount(filingText);
 
       // Emit acquirer signal
-      const acquirerCompany = await upsertCompany(entityName);
+      const acquirerCompany = await upsertCompany(supabase, { name: entityName });
       if (acquirerCompany) {
         const acquirerAlreadyExists = await signalExists(acquirerCompany.id, 'ma_acquirer', filingUrl);
         if (!acquirerAlreadyExists) {
@@ -786,7 +786,7 @@ async function processBioSpaceDeals(today) {
     if (LARGE_PHARMA_PATTERNS.test(rawCompany) && dealType === 'pharma_partnership') continue;
 
     const amount = extractAmount(title);
-    const company = await upsertCompany(rawCompany);
+    const company = await upsertCompany(supabase, { name: rawCompany });
     if (!company) continue;
 
     const alreadyExists = await signalExists(company.id, 'funding_new_award', url);
@@ -869,7 +869,7 @@ async function processBioSpaceFunding(today) {
     if (VC_FUND_PATTERNS.test(rawCompany)) continue;
 
     const amount = extractAmount(title);
-    const company = await upsertCompany(rawCompany);
+    const company = await upsertCompany(supabase, { name: rawCompany });
     if (!company) continue;
 
     const alreadyExists = await signalExists(company.id, 'funding_new_award', url);

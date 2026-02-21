@@ -422,7 +422,7 @@ async function processStudy(study, now, completionCutoff) {
   const studySummary = buildStudySummary(proto);
   const sourceUrl = `${CT_STUDY_BASE}/${proto.nctId}`;
 
-  const company = await upsertCompany(proto.leadSponsorName);
+  const company = await upsertCompany(supabase, { name: proto.leadSponsorName });
   if (!company) return 0;
 
   let signalsInserted = 0;

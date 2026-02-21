@@ -516,7 +516,7 @@ async function discoverSponsorCareerPages() {
 // ─── Persist a single job as a signal ─────────────────────────────────────────
 
 async function persistJobSignal(job) {
-  const company = await upsertCompany(job.company_name)
+  const company = await upsertCompany(supabase, { name: job.company_name })
   if (!company) return false
 
   const exists = await signalExists(company.id, 'stale_job_posting', job.source_url)
