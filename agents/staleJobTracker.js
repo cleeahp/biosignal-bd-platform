@@ -2,7 +2,7 @@ import { supabase } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import * as cheerio from 'cheerio'
 
-const BOT_UA = 'Mozilla/5.0 (compatible; BioSignalBot/1.0)'
+const BOT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 // ─── Shared signal helpers ─────────────────────────────────────────────────────
 
@@ -35,13 +35,15 @@ function computeScore(daysPosted) {
   return Math.min(score, 20)
 }
 
-// ─── SOURCE 1: BioSpace.com ────────────────────────────────────────────────────
+// ─── SOURCE 1: PharmJobs.com ───────────────────────────────────────────────────
+// Replaces BioSpace.com, which blocks server-side requests from Vercel IPs (0 bytes returned).
+// PharmJobs uses server-rendered HTML with article.jlcol1 containers.
 
-async function fetchBioSpaceJobs() {
+async function fetchPharmaJobsJobs() {
   const jobs = []
   let html
   try {
-    const resp = await fetch('https://www.biospace.com/jobs/?days=30', {
+    const resp = await fetch('https://www.pharmajobs.com', {
       headers: {
         'User-Agent': BOT_UA,
         Accept: 'text/html,application/xhtml+xml,*/*',
@@ -50,113 +52,64 @@ async function fetchBioSpaceJobs() {
       signal: AbortSignal.timeout(12000),
     })
     if (!resp.ok) {
-      console.warn(`BioSpace HTTP ${resp.status}`)
+      console.warn(`PharmJobs HTTP ${resp.status}`)
       return jobs
     }
     html = await resp.text()
   } catch (err) {
-    console.warn(`BioSpace fetch error: ${err.message}`)
+    console.warn(`PharmJobs fetch error: ${err.message}`)
     return jobs
   }
 
   if (html.length < 1000) {
-    console.warn(`BioSpace: response too short (${html.length} chars) — may be blocked`)
+    console.warn(`PharmJobs: response too short (${html.length} chars) — may be blocked`)
     return jobs
   }
 
   const $ = cheerio.load(html)
 
-  // Primary parsing strategy: job cards identified by id="item-{n}"
-  let parsed = 0
-  $('[id^="item-"]').each((_, el) => {
+  // PharmJobs structure: article.jlcol1 > a.title.joblink[title] (job title + href)
+  //                                      > p.jobPostHeader span (company name)
+  //                                      > p.jobPostCity span (location)
+  $('article.jlcol1').each((_, el) => {
     const $item = $(el)
 
-    const title =
-      $item.find('.lister__header span').first().text().trim() ||
-      $item.find('h2.lister__header').first().text().trim() ||
-      $item.find('h3 span').first().text().trim()
-
+    const $titleLink = $item.find('a.title.joblink').first()
+    const title = $titleLink.attr('title') || $titleLink.text().trim()
     if (!title || !matchesRoleKeywords(title)) return
 
-    // Company: alt text of logo image, stripping trailing " logo"
-    const logoAlt = $item.find('img.lister__logo[alt]').first().attr('alt') || ''
-    const orgText = $item.find('.lister__organization').first().text().trim()
-    let companyName = logoAlt
-      ? logoAlt.replace(/\s+logo\s*$/i, '').trim()
-      : orgText
+    const companyName = $item.find('p.jobPostHeader span').first().text().trim()
     if (!companyName || companyName.length < 2) return
 
-    // Job URL: first anchor with /job/ in href
-    const rawHref = $item.find('a[href*="/job/"]').first().attr('href') || ''
-    const cleanHref = rawHref.replace(/\s+/g, '')
-    const sourceUrl = cleanHref
-      ? cleanHref.startsWith('http')
-        ? cleanHref
-        : `https://www.biospace.com${cleanHref}`
-      : 'https://www.biospace.com/jobs/?days=30'
+    const rawHref = $titleLink.attr('href') || ''
+    const sourceUrl = rawHref.startsWith('http')
+      ? rawHref
+      : `https://www.pharmajobs.com${rawHref}`
 
-    // Days posted: badge title "Added in the last N days"
-    const badgeTitle = $item.find('.badge[title]').first().attr('title') || ''
-    const daysMatch = badgeTitle.match(/Added in the last (\d+) day/i)
-    const daysPosted = daysMatch ? parseInt(daysMatch[1], 10) : 30
-
-    // Location
-    const jobLocation =
-      $item.find('[class*="location"]').first().text().trim() ||
-      $item.find('[class*="city"]').first().text().trim() ||
-      ''
+    const location = $item.find('p.jobPostCity span').first().text().trim()
 
     jobs.push({
-      job_title: title,
-      company_name: companyName,
-      job_location: jobLocation,
+      job_title: title.substring(0, 120),
+      company_name: companyName.substring(0, 100),
+      job_location: location,
       date_posted: null,
-      days_posted: daysPosted,
+      days_posted: 30,
       source_url: sourceUrl,
-      job_board: 'biospace',
+      job_board: 'pharmajobs',
     })
-    parsed++
   })
 
-  // Fallback: if primary selectors yielded nothing, try article.job containers
-  if (parsed === 0) {
-    $('article.job').each((_, el) => {
-      const $item = $(el)
-      const titleEl = $item.find('h2 a').first()
-      const title = titleEl.text().trim()
-      if (!title || !matchesRoleKeywords(title)) return
-
-      const companyName = $item.find('[class*="company"], [class*="employer"]').first().text().trim()
-      if (!companyName || companyName.length < 2) return
-
-      const rawHref = titleEl.attr('href') || ''
-      const sourceUrl = rawHref.startsWith('http')
-        ? rawHref
-        : `https://www.biospace.com${rawHref}`
-
-      jobs.push({
-        job_title: title,
-        company_name: companyName,
-        job_location: '',
-        date_posted: null,
-        days_posted: 30,
-        source_url: sourceUrl,
-        job_board: 'biospace',
-      })
-    })
-  }
-
-  console.log(`BioSpace: ${jobs.length} matched jobs`)
+  console.log(`PharmJobs: ${jobs.length} matched jobs`)
   return jobs
 }
 
 // ─── SOURCE 2: MedZilla.com ────────────────────────────────────────────────────
+// MedZilla has shifted to a blog/news format. We still attempt it but expect
+// zero results; the function returns gracefully if content is unhelpful.
 
 async function fetchMedZillaJobs() {
   const jobs = []
 
-  // MedZilla is an older life sciences job board with server-rendered HTML
-  // Try the main search page and a generic jobs listing URL
   const candidateUrls = [
     'https://www.medzilla.com/search.cfm',
     'https://www.medzilla.com/jobs/',
@@ -216,7 +169,6 @@ async function fetchMedZillaJobs() {
       ? `https://www.medzilla.com${href}`
       : successUrl
 
-    // Company is often in the 2nd or 3rd td
     const cells = $el.find('td')
     const companyName =
       cells.eq(1).text().trim() ||
@@ -235,45 +187,7 @@ async function fetchMedZillaJobs() {
     parsed++
   })
 
-  // Strategy 2: list or div containers with job/listing class names
-  if (parsed === 0) {
-    $(
-      '[class*="job"], [class*="listing"], [class*="result"], [class*="position"]'
-    ).each((_, el) => {
-      if (parsed >= 30) return
-      const $el = $(el)
-      const $link = $el.find('a').first()
-      const title =
-        $link.text().trim() ||
-        $el.find('h2, h3, h4').first().text().trim()
-
-      if (!title || !matchesRoleKeywords(title)) return
-
-      const href = $link.attr('href') || ''
-      const sourceUrl = href.startsWith('http')
-        ? href
-        : href
-        ? `https://www.medzilla.com${href}`
-        : successUrl
-
-      const companyName =
-        $el.find('[class*="company"], [class*="employer"]').first().text().trim() ||
-        'Unknown Company'
-
-      jobs.push({
-        job_title: title.substring(0, 120),
-        company_name: companyName.substring(0, 100),
-        job_location: '',
-        date_posted: null,
-        days_posted: 30,
-        source_url: sourceUrl,
-        job_board: 'medzilla',
-      })
-      parsed++
-    })
-  }
-
-  // Strategy 3: scan all anchors for matching job titles
+  // Strategy 2: scan all anchors for matching job titles
   if (parsed === 0) {
     $('a').each((_, el) => {
       if (parsed >= 20) return
@@ -416,97 +330,134 @@ async function fetchClinicalTrialsArenaJobs() {
   return jobs
 }
 
-// ─── SOURCE 4: Career site discovery via ClinicalTrials.gov sponsors ──────────
+// ─── SOURCE 4: Career site discovery via company domain inference ──────────────
+// Fetches INDUSTRY sponsor company names from the companies table (populated by
+// clinical trial signals), infers their corporate domain, tries common career
+// page URL patterns, and scans for role keyword matches.
+// Replaces the unreliable DuckDuckGo-based discovery approach.
+
+/**
+ * Infer a likely corporate domain from a company name.
+ *
+ * @param {string} name
+ * @returns {string} e.g. "pfizer.com"
+ */
+function inferDomain(name) {
+  return (
+    name
+      .toLowerCase()
+      .replace(
+        /\s*,?\s*\b(inc|incorporated|corp|corporation|llc|ltd|limited|co|company|plc|gmbh|ag|nv|bv|sa|pty)\b\.?/gi,
+        ''
+      )
+      .replace(/,\s*(usa|u\.s\.a|us|united states)$/i, '')
+      .replace(/[^a-z0-9]/g, '') + '.com'
+  )
+}
 
 async function discoverSponsorCareerPages() {
   const jobs = []
 
-  // Step 1: Fetch unique INDUSTRY sponsors from active recruiting trials
-  let sponsors = []
+  // Step 1: Get INDUSTRY company names from our DB (confirmed CT.gov sponsors)
+  let companyNames = []
   try {
-    const params = new URLSearchParams({
-      'query.term': 'AREA[InterventionType]interventional',
-      'filter.advanced': 'AREA[LeadSponsorClass]INDUSTRY',
-      'filter.overallStatus': 'RECRUITING',
-      pageSize: '20',
-      fields: 'NCTId,LeadSponsorName',
-    })
-    const resp = await fetch(`https://clinicaltrials.gov/api/v2/studies?${params}`, {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(8000),
-    })
-    if (resp.ok) {
-      const json = await resp.json()
-      const seen = new Set()
-      for (const study of json.studies || []) {
-        const name =
-          study.protocolSection?.sponsorsModule?.leadSponsor?.name ||
-          study.protocolSection?.identificationModule?.leadSponsorName
-        if (name && !seen.has(name)) {
-          seen.add(name)
-          sponsors.push(name)
-        }
-      }
+    const { data, error } = await supabase
+      .from('companies')
+      .select('name')
+      .eq('industry', 'Life Sciences')
+      .limit(30)
+
+    if (error) {
+      console.warn(`companies table query error: ${error.message}`)
     } else {
-      console.warn(`ClinicalTrials.gov sponsor query HTTP ${resp.status}`)
+      companyNames = (data || []).map((c) => c.name).filter(Boolean)
     }
   } catch (err) {
-    console.warn(`ClinicalTrials.gov sponsor query error: ${err.message}`)
+    console.warn(`companies table fetch error: ${err.message}`)
   }
 
-  // Limit sponsor list
-  sponsors = sponsors.slice(0, 10)
-  if (sponsors.length === 0) return jobs
-
-  // Step 2: For each sponsor, find their career page via DuckDuckGo HTML search
-  let careerChecks = 0
-  const MAX_CAREER_CHECKS = 5
-
-  for (const companyName of sponsors) {
-    if (careerChecks >= MAX_CAREER_CHECKS) break
-
-    // Use DuckDuckGo HTML endpoint — avoids Google bot-blocking
-    let careerUrl = null
+  // Fall back to CT.gov live query if table is empty
+  if (companyNames.length === 0) {
     try {
-      const ddgQuery = encodeURIComponent(`${companyName} careers jobs`)
-      const ddgResp = await fetch(`https://html.duckduckgo.com/html/?q=${ddgQuery}`, {
-        headers: {
-          'User-Agent': BOT_UA,
-          Accept: 'text/html',
-        },
-        signal: AbortSignal.timeout(6000),
+      const params = new URLSearchParams({
+        'query.term': 'AREA[InterventionType]interventional',
+        'filter.advanced': 'AREA[LeadSponsorClass]INDUSTRY',
+        'filter.overallStatus': 'RECRUITING',
+        pageSize: '20',
+        fields: 'NCTId,LeadSponsorName',
       })
-      if (ddgResp.ok) {
-        const ddgHtml = await ddgResp.text()
-        const $ = cheerio.load(ddgHtml)
-        // DuckDuckGo HTML results: result links are in <a class="result__a"> or similar
-        $('a.result__a, a.result__url, .result__extras__url').each((_, el) => {
-          if (careerUrl) return
-          const href = $(el).attr('href') || ''
-          // DDG wraps URLs in redirect links — extract the actual URL from uddg= param
-          const uddgMatch = href.match(/uddg=([^&]+)/)
-          const actualUrl = uddgMatch ? decodeURIComponent(uddgMatch[1]) : href
-          if (actualUrl && (actualUrl.includes('career') || actualUrl.includes('/jobs'))) {
-            careerUrl = actualUrl
+      const resp = await fetch(`https://clinicaltrials.gov/api/v2/studies?${params}`, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(8000),
+      })
+      if (resp.ok) {
+        const json = await resp.json()
+        const seen = new Set()
+        for (const study of json.studies || []) {
+          const name =
+            study.protocolSection?.sponsorsModule?.leadSponsor?.name ||
+            study.protocolSection?.identificationModule?.leadSponsorName
+          if (name && !seen.has(name)) {
+            seen.add(name)
+            companyNames.push(name)
           }
-        })
+        }
       }
     } catch (err) {
-      console.warn(`DuckDuckGo search failed for "${companyName}": ${err.message}`)
+      console.warn(`CT.gov fallback query error: ${err.message}`)
+    }
+  }
+
+  const uniqueNames = [...new Set(companyNames)].slice(0, 15)
+  if (uniqueNames.length === 0) return jobs
+
+  console.log(`Career site discovery: checking ${uniqueNames.length} companies via domain inference`)
+
+  let careerChecks = 0
+  const MAX_CAREER_CHECKS = 6
+
+  for (const companyName of uniqueNames) {
+    if (careerChecks >= MAX_CAREER_CHECKS) break
+
+    const domain = inferDomain(companyName)
+    if (!domain || domain.length < 6) continue
+
+    // Try common career page URL patterns in order
+    const candidateUrls = [
+      `https://${domain}/careers`,
+      `https://${domain}/jobs`,
+      `https://careers.${domain.replace(/\.com$/, '')}.com`,
+    ]
+
+    let careerUrl = null
+    for (const url of candidateUrls) {
+      try {
+        const headResp = await fetch(url, {
+          method: 'HEAD',
+          headers: { 'User-Agent': BOT_UA },
+          signal: AbortSignal.timeout(5000),
+          redirect: 'follow',
+        })
+        if (headResp.status < 400 || headResp.status === 405) {
+          careerUrl = url
+          break
+        }
+      } catch {
+        // Try next candidate
+      }
     }
 
     if (!careerUrl) {
-      console.log(`No career URL found for ${companyName} via DDG`)
+      console.log(`No career URL found for ${companyName} (domain: ${domain})`)
       continue
     }
 
-    // Step 3: Fetch the career page and scan for matching roles
+    // Fetch and scan career page for role keyword matches
     careerChecks++
-    let careerPageText = ''
     try {
       const careerResp = await fetch(careerUrl, {
         headers: { 'User-Agent': BOT_UA },
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(8000),
       })
       if (!careerResp.ok) {
         console.warn(`Career page fetch HTTP ${careerResp.status} for ${companyName}`)
@@ -514,35 +465,44 @@ async function discoverSponsorCareerPages() {
       }
       const careerHtml = await careerResp.text()
       const $c = cheerio.load(careerHtml)
-      // Remove nav/footer noise
+
       $c('nav, footer, script, style').remove()
-      careerPageText = $c('body').text()
+
+      let found = false
+      $c('a, h1, h2, h3, h4, li').each((_, el) => {
+        if (found) return
+        const text = $c(el).text().trim()
+        if (!text || text.length < 5 || text.length > 200) return
+        if (!matchesRoleKeywords(text)) return
+
+        const href = $c(el).attr('href') || ''
+        const jobUrl = href.startsWith('http')
+          ? href
+          : href
+          ? `https://${domain}${href}`
+          : careerUrl
+
+        const locMatch = text.match(/([A-Z][a-zA-Z\s]{1,25},\s*[A-Z]{2})\b/)
+        jobs.push({
+          job_title: text.replace(/\s+/g, ' ').slice(0, 120),
+          company_name: companyName,
+          job_location: locMatch ? locMatch[1].trim() : '',
+          date_posted: null,
+          days_posted: 30,
+          source_url: jobUrl,
+          job_board: 'company_career_site',
+        })
+        found = true
+      })
+
+      if (!found) {
+        console.log(`No matching roles on ${careerUrl} for ${companyName}`)
+      }
     } catch (err) {
       console.warn(`Career page fetch failed for ${companyName}: ${err.message}`)
-      continue
     }
 
-    // Step 4: Scan text for role keyword matches line by line
-    const lines = careerPageText.split(/\n/).map((l) => l.trim()).filter(Boolean)
-    for (const line of lines) {
-      if (line.length < 5 || line.length > 200) continue
-      if (!matchesRoleKeywords(line)) continue
-
-      // Heuristic location: look for "City, ST" near the line
-      const locMatch = line.match(/([A-Z][a-zA-Z\s]{1,25},\s*[A-Z]{2})\b/)
-      const jobLocation = locMatch ? locMatch[1].trim() : ''
-
-      jobs.push({
-        job_title: line.replace(/\s+/g, ' ').slice(0, 120),
-        company_name: companyName,
-        job_location: jobLocation,
-        date_posted: null,
-        days_posted: 30,
-        source_url: careerUrl,
-        job_board: 'company_career_site',
-      })
-      break // One signal per company career page per run
-    }
+    await new Promise((r) => setTimeout(r, 300))
   }
 
   console.log(`Career site discovery: checked ${careerChecks} companies, found ${jobs.length} signals`)
@@ -606,15 +566,15 @@ export async function run() {
   const runId = runEntry?.id
 
   let signalsFound = 0
-  const sourceCounts = { biospace: 0, medzilla: 0, clinicalTrialsArena: 0, careerSites: 0 }
+  const sourceCounts = { pharmajobs: 0, medzilla: 0, clinicalTrialsArena: 0, careerSites: 0 }
 
   try {
     const allJobs = []
 
-    // ── Source 1: BioSpace.com ─────────────────────────────────────────────────
-    const bioSpaceJobs = await fetchBioSpaceJobs()
-    for (const job of bioSpaceJobs) {
-      job._source = 'biospace'
+    // ── Source 1: PharmJobs.com (replaces blocked BioSpace) ───────────────────
+    const pharmaJobsJobs = await fetchPharmaJobsJobs()
+    for (const job of pharmaJobsJobs) {
+      job._source = 'pharmajobs'
       allJobs.push(job)
     }
 
@@ -632,14 +592,14 @@ export async function run() {
       allJobs.push(job)
     }
 
-    // ── Source 4: ClinicalTrials.gov sponsor career pages ──────────────────────
+    // ── Source 4: Company career pages via domain inference ────────────────────
     const careerSiteJobs = await discoverSponsorCareerPages()
     for (const job of careerSiteJobs) {
       job._source = 'careerSites'
       allJobs.push(job)
     }
 
-    // Deduplicate by (company_name, source_url) — same URL cannot produce two signals
+    // Deduplicate by (company_name, source_url)
     const dedupMap = new Map()
     for (const job of allJobs) {
       const key = `${job.company_name.toLowerCase()}|${job.source_url}`
@@ -657,7 +617,7 @@ export async function run() {
       const inserted = await persistJobSignal(job)
       if (inserted) {
         signalsFound++
-        if (job._source === 'biospace') sourceCounts.biospace++
+        if (job._source === 'pharmajobs') sourceCounts.pharmajobs++
         else if (job._source === 'medzilla') sourceCounts.medzilla++
         else if (job._source === 'clinicalTrialsArena') sourceCounts.clinicalTrialsArena++
         else sourceCounts.careerSites++
@@ -676,7 +636,7 @@ export async function run() {
           jobs_found_total: jobsFound,
           jobs_deduped: uniqueJobs.length,
           source_counts: {
-            biospace_raw: allJobs.filter((j) => j._source === 'biospace').length,
+            pharmajobs_raw: allJobs.filter((j) => j._source === 'pharmajobs').length,
             medzilla_raw: allJobs.filter((j) => j._source === 'medzilla').length,
             clinicaltrialsarena_raw: allJobs.filter((j) => j._source === 'clinicalTrialsArena').length,
             career_sites_raw: allJobs.filter((j) => j._source === 'careerSites').length,

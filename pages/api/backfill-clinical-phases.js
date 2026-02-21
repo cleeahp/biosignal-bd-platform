@@ -128,10 +128,17 @@ function extractStudyDetail(study, nctId) {
   }
 }
 
+export const config = { maxDuration: 300 }
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
+
+  // Optional ?batch= query param: which batch of 20 to process (0-indexed).
+  // Allows incremental processing to stay within the 300s timeout.
+  const batchIndex = Math.max(0, parseInt(req.query.batch ?? '0', 10))
+  const BATCH_SIZE = 20
 
   // Fetch all clinical trial phase_transition signals
   const { data: signals, error: fetchError } = await supabase
@@ -148,8 +155,15 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: fetchError.message })
   }
 
+  // Slice to the requested batch
+  const batchStart = batchIndex * BATCH_SIZE
+  const batchSignals = signals.slice(batchStart, batchStart + BATCH_SIZE)
+
   const results = {
     total: signals.length,
+    batch_index: batchIndex,
+    batch_size: batchSignals.length,
+    batch_start: batchStart,
     updated: 0,
     normalized_only: 0,
     skipped_no_nct: 0,
@@ -157,7 +171,7 @@ export default async function handler(req, res) {
     errors: [],
   }
 
-  for (const signal of signals) {
+  for (const signal of batchSignals) {
     let detail = signal.signal_detail
     if (typeof detail === 'string') {
       try { detail = JSON.parse(detail) } catch { detail = {} }
@@ -249,10 +263,11 @@ export default async function handler(req, res) {
       )
     }
 
-    // Brief pause to avoid hammering CT.gov
-    await new Promise((r) => setTimeout(r, 200))
+    // 500ms pause between CT.gov requests to avoid rate limiting
+    await new Promise((r) => setTimeout(r, 500))
   }
 
   console.log('[backfill] Completed:', JSON.stringify(results))
   return res.status(200).json(results)
 }
+
