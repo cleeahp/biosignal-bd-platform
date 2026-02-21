@@ -3,6 +3,7 @@ import { run as runClinicalTrialMonitor } from './clinicalTrialMonitor.js'
 import { run as runFundingMaAgent } from './fundingMaAgent.js'
 import { run as runCompetitorJobBoardAgent } from './competitorJobBoardAgent.js'
 import { run as runStaleJobTracker } from './staleJobTracker.js'
+import { run as runTargetCompanyJobsAgent } from './targetCompanyJobsAgent.js'
 
 // ─── Priority score recalculation ─────────────────────────────────────────────
 
@@ -50,8 +51,8 @@ export async function runOrchestrator() {
   const runId = runLog?.id
 
   try {
-    // ── Step 1: Run all four agents in parallel ──────────────────────────────
-    console.log('Orchestrator: starting all agents in parallel...')
+    // ── Step 1: Run signal-generating agents in parallel ────────────────────
+    console.log('Orchestrator: starting agents in parallel...')
     const [ctResult, fundingResult, competitorResult, staleResult] = await Promise.all([
       runClinicalTrialMonitor().catch((err) => ({ success: false, error: err.message, signalsFound: 0 })),
       runFundingMaAgent().catch((err) => ({ success: false, error: err.message, signalsFound: 0 })),
@@ -64,11 +65,19 @@ export async function runOrchestrator() {
     agentResults.competitorJobBoard = competitorResult
     agentResults.staleJobTracker = staleResult
 
+    // ── Step 1b: Target company jobs runs after signal agents so it can see
+    //            the companies they just upserted / signalled ────────────────
+    const targetJobsResult = await runTargetCompanyJobsAgent().catch((err) => ({
+      success: false, error: err.message, signalsFound: 0,
+    }))
+    agentResults.targetCompanyJobs = targetJobsResult
+
     totalSignalsFound =
       (ctResult.signalsFound || 0) +
       (fundingResult.signalsFound || 0) +
       (competitorResult.signalsFound || 0) +
-      (staleResult.signalsFound || 0)
+      (staleResult.signalsFound || 0) +
+      (targetJobsResult.signalsFound || 0)
 
     console.log(`Orchestrator: agents complete. Total new signals: ${totalSignalsFound}`)
 
