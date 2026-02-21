@@ -28,9 +28,16 @@ const LOOKBACK_DAYS = 180;           // 6-month window for all sources
 const FETCH_TIMEOUT_MS = 10000;      // AbortSignal timeout for all fetches
 const SEC_RATE_LIMIT_MS = 200;       // Delay between SEC EDGAR requests
 
-// Patterns that identify non-industry (academic/government) organisations
+// Patterns that identify non-industry (academic/government) organisations.
+// Applied to ALL five funding sources. When matched, the organisation is
+// logged and excluded — we only staff into industry.
 const ACADEMIC_PATTERNS =
-  /university|college|hospital|medical center|health system|institute of|school of|foundation|NIH|NCI|FDA|NHLBI|national institute|department of/i;
+  /university|universite|college|hospital|medical center|health system|health centre|institute of|school of|foundation|academy|academie|NIH\b|NCI\b|FDA\b|NHLBI\b|national institute|national cancer|national heart|department of|children's|childrens|memorial|baptist|methodist|presbyterian|kaiser|mayo clinic|cleveland clinic|johns hopkins|\bmit\b|caltech|stanford|harvard|yale\b|columbia university|university of pennsylvania|duke university|vanderbilt|emory university|\.edu\b/i;
+
+// Industry entity indicators — at least one must be present for SEC-sourced
+// companies that would otherwise match no academic keyword (belt-and-suspenders).
+const INDUSTRY_INDICATORS =
+  /\b(inc\.|inc\b|corp\.|corp\b|llc\b|ltd\.|ltd\b|co\.\b|gmbh\b|\bag\b|\bnv\b|\bplc\b|therapeutics|biosciences|bioscience|pharmaceuticals|pharmaceutical|pharma\b|biotech\b|biopharma|biopharmaceutical|genomics|biologics|medical devices?|diagnostics|oncology|clinical|lifesciences|life sciences)\b/i;
 
 // Life sciences keyword filter for SEC filings (company names and filing text)
 const LIFE_SCIENCES_PATTERNS =
@@ -84,12 +91,43 @@ function sleep(ms) {
 /**
  * Returns true if the organisation name is an industry entity
  * (biotech, pharma, CRO, etc.) rather than academic or government.
+ * Logs every exclusion so the filter can be verified in Vercel logs.
  *
  * @param {string} name
  * @returns {boolean}
  */
 function isIndustryOrg(name) {
-  return !ACADEMIC_PATTERNS.test(name);
+  if (ACADEMIC_PATTERNS.test(name)) {
+    console.log(`[fundingMaAgent] FILTERED (academic): ${name}`);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Stricter industry check used for SEC EDGAR sources.
+ * Requires at least one explicit industry-entity indicator in the name,
+ * unless the name is short and clearly a company (e.g. "Moderna").
+ * All academic-pattern matches are always rejected.
+ *
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isIndustryOrgSec(name) {
+  if (!name) return false;
+  if (ACADEMIC_PATTERNS.test(name)) {
+    console.log(`[fundingMaAgent] FILTERED (academic/SEC): ${name}`);
+    return false;
+  }
+  // Accept names that have an explicit industry indicator
+  if (INDUSTRY_INDICATORS.test(name)) return true;
+  // Accept short names (≤3 words) that don't match any academic keyword —
+  // these are typically company brand names (e.g. "Gilead", "Moderna")
+  const wordCount = name.trim().split(/\s+/).length;
+  if (wordCount <= 3) return true;
+  // Longer names with no industry indicator and no academic keyword — reject
+  console.log(`[fundingMaAgent] FILTERED (no industry indicator, long name): ${name}`);
+  return false;
 }
 
 /**
@@ -379,6 +417,13 @@ async function processNihGrants(sixMonthsAgo, today, currentYear) {
     const awardDate = project.award_notice_date || project.project_start_date || today;
     const nctId = project.project_num || '';
 
+    // Check .edu domain from organization website field
+    const orgWebsite = project.organization?.org_url || project.org_url || '';
+    if (orgWebsite && orgWebsite.includes('.edu')) {
+      console.log(`[fundingMaAgent] FILTERED (edu domain): ${orgName} [${orgWebsite}]`);
+      continue;
+    }
+
     if (!orgName || !isIndustryOrg(orgName)) continue;
 
     // R43, R41, U43 are new (Phase I) awards; R44, R42, U44 are renewals
@@ -516,7 +561,7 @@ async function processMaFilings(sixMonthsAgo, today) {
         ? `https://www.sec.gov${hit._source.file_url}`
         : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=8-K`;
 
-      if (!entityName || !isIndustryOrg(entityName)) continue;
+      if (!entityName || !isIndustryOrgSec(entityName)) continue;
       if (!isLifeSciences(entityName) && !isLifeSciences(filingText)) continue;
 
       const dealAmount = extractAmount(hit._source?.file_date || '');
@@ -626,7 +671,7 @@ async function processPartnershipFilings(sixMonthsAgo, today) {
         ? `https://www.sec.gov${hit._source.file_url}`
         : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=8-K`;
 
-      if (!entityName || !isIndustryOrg(entityName)) continue;
+      if (!entityName || !isIndustryOrgSec(entityName)) continue;
       if (!isLifeSciences(entityName)) continue;
 
       // Skip large pharma entities — we target the smaller biotech
@@ -701,7 +746,7 @@ async function processIpoFilings(sixMonthsAgo, today) {
       ? `https://www.sec.gov${hit._source.file_url}`
       : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=S-1`;
 
-    if (!entityName || !isIndustryOrg(entityName)) continue;
+    if (!entityName || !isIndustryOrgSec(entityName)) continue;
     if (!isLifeSciences(entityName)) continue;
 
     const ipoAmount = extractAmount(hit._source?.period_of_report || '');
@@ -779,7 +824,7 @@ async function processVcFilings(sixMonthsAgo, today) {
         ? `https://www.sec.gov${hit._source.file_url}`
         : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=D`;
 
-      if (!entityName || !isIndustryOrg(entityName)) continue;
+      if (!entityName || !isIndustryOrgSec(entityName)) continue;
 
       // Exclude entities that are VC funds themselves (not portfolio companies)
       if (VC_FUND_PATTERNS.test(entityName)) continue;

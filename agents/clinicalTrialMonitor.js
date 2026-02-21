@@ -32,6 +32,9 @@ const COMPLETION_WINDOW_DAYS = 90;
 // How many days back to look for recently updated studies
 const LOOKBACK_DAYS = 14;
 
+// Module-level counter for debug logging of the first N phase transitions per run
+let phaseDebugCount = 0;
+
 /**
  * Format a Date object as YYYY-MM-DD for the ClinicalTrials.gov API.
  * @param {Date} date
@@ -243,7 +246,14 @@ function parsePhase(phases) {
 
   const normalised = phases.map((p) => p.toUpperCase().replace(/\s/g, ''));
   const isCombined = normalised.length > 1;
-  const phaseStr = phases.join('/');
+
+  // Build human-readable phase label: "Phase 2" or "Phase 1/2" for combined
+  const phaseStr = normalised.length === 1
+    ? (() => {
+        const n = phaseMap[normalised[0]];
+        return n !== undefined ? `Phase ${n}` : normalised[0].replace(/^PHASE/i, 'Phase ');
+      })()
+    : 'Phase ' + normalised.map((p) => phaseMap[p] ?? p.replace(/^PHASE/i, '')).join('/');
 
   // Use highest phase number for transition signals
   let phaseNum = null;
@@ -259,13 +269,14 @@ function parsePhase(phases) {
 
 /**
  * Infer the previous phase label from the current phase number.
+ * Returns human-readable labels like "Phase 1", "Phase 2", "Pre-Clinical".
  *
  * @param {number} currentPhaseNum
  * @returns {string}
  */
 function inferPreviousPhase(currentPhaseNum) {
-  const map = { 2: 'PHASE1', 3: 'PHASE2', 4: 'PHASE3' };
-  return map[currentPhaseNum] || 'PRE-CLINICAL';
+  const map = { 2: 'Phase 1', 3: 'Phase 2', 4: 'Phase 3' };
+  return map[currentPhaseNum] || 'Pre-Clinical';
 }
 
 /**
@@ -458,6 +469,16 @@ async function processStudy(study, now, completionCutoff) {
     const phaseFrom = inferPreviousPhase(phaseNum);
     const dedupUrl = `${sourceUrl}#PHASE${phaseNum}`;
 
+    // Debug logging for the first 3 phase transition signals per run
+    if (phaseDebugCount < 3) {
+      console.log(
+        `[clinicalTrialMonitor] Phase debug [${proto.nctId}]: ` +
+        `phase_from="${phaseFrom}", phase_to="${phaseStr}", ` +
+        `raw_phases=${JSON.stringify(proto.phases)}, phaseNum=${phaseNum}`
+      );
+      phaseDebugCount++;
+    }
+
     const alreadyExists = await signalExists(company.id, SIGNAL_TYPES.PHASE_TRANSITION.type, dedupUrl);
 
     if (!alreadyExists) {
@@ -592,6 +613,7 @@ async function processStudy(study, now, completionCutoff) {
  * @returns {Promise<{ signalsFound: number, studiesProcessed: number, industryFiltered: number }>}
  */
 export async function run() {
+  phaseDebugCount = 0; // Reset per-run debug counter
   const runId = await createAgentRun();
   const now = new Date();
   const lookbackDate = daysAgo(LOOKBACK_DAYS);

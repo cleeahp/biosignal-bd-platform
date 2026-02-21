@@ -30,6 +30,33 @@ const FUNDING_TYPE_CONFIG = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Safely parse signal_detail — Supabase returns it as a JSONB object,
+ * but older data or edge cases may arrive as a JSON string.
+ */
+function parseDetail(raw) {
+  if (!raw) return {}
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw) } catch { return {} }
+  }
+  return raw
+}
+
+/**
+ * Normalize a stored phase label to a readable format.
+ * Handles both old storage format ("PHASE1", "PRE-CLINICAL") and
+ * new format ("Phase 1", "Pre-Clinical", "Phase 1/2").
+ */
+function formatPhaseLabel(raw) {
+  if (!raw) return '?'
+  const s = String(raw).trim()
+  // Old format: "PHASE1" → "Phase 1"
+  if (/^PHASE\d+$/i.test(s)) return s.replace(/PHASE(\d+)/i, 'Phase $1')
+  // Old format: "PRE-CLINICAL" or "PRE_CLINICAL" → "Pre-Clinical"
+  if (/^PRE[-_]CLINICAL$/i.test(s)) return 'Pre-Clinical'
+  return s
+}
+
 function formatDate(dateStr) {
   if (!dateStr) return '—'
   const d = new Date(dateStr)
@@ -141,7 +168,7 @@ function ClaimCell({ signal, repName, onClaim, onUnclaim }) {
 }
 
 function ExpandedDetailCard({ signal }) {
-  const d = signal.signal_detail || {}
+  const d = parseDetail(signal.signal_detail)
   const fields = Object.entries(d).filter(([k, v]) => k !== 'rep_notes' && v !== null && v !== undefined && v !== '')
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-10 gap-y-3 text-sm">
@@ -215,13 +242,13 @@ function EmptyState({ message }) {
 // ─── Tab: Clinical Trials ─────────────────────────────────────────────────────
 
 function ClinicalDetailCell({ signal }) {
-  const d = signal.signal_detail || {}
+  const d = parseDetail(signal.signal_detail)
   switch (signal.signal_type) {
     case 'clinical_trial_phase_transition':
       return (
         <div>
           <span className="text-sm text-white font-medium">
-            Phase {d.phase_from || '?'} → Phase {d.phase_to || '?'}
+            {formatPhaseLabel(d.phase_from)} → {formatPhaseLabel(d.phase_to)}
           </span>
           {d.study_summary && (
             <p className="text-xs text-gray-400 mt-0.5 leading-snug">{truncate(d.study_summary, 80)}</p>
@@ -275,7 +302,7 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
       <tbody className="divide-y divide-gray-800">
         {signals.map((signal, i) => {
           const isExpanded = expandedRows.has(signal.id)
-          const d = signal.signal_detail || {}
+          const d = parseDetail(signal.signal_detail)
           const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
           return (
             <>
@@ -343,7 +370,7 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
       <tbody className="divide-y divide-gray-800">
         {signals.map((signal, i) => {
           const isExpanded = expandedRows.has(signal.id)
-          const d = signal.signal_detail || {}
+          const d = parseDetail(signal.signal_detail)
           const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
           return (
             <>
@@ -436,7 +463,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
             <tbody className="divide-y divide-gray-800">
               {competitorSignals.map((signal, i) => {
                 const isExpanded = expandedRows.has(signal.id)
-                const d = signal.signal_detail || {}
+                const d = parseDetail(signal.signal_detail)
                 const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
                 return (
                   <>
@@ -500,7 +527,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
             <tbody className="divide-y divide-gray-800">
               {staleSignals.map((signal, i) => {
                 const isExpanded = expandedRows.has(signal.id)
-                const d = signal.signal_detail || {}
+                const d = parseDetail(signal.signal_detail)
                 const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
                 const daysPosted = d.days_posted || 0
                 const daysCls = daysPosted > 60
@@ -558,7 +585,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
 // ─── Tab: My Leads ────────────────────────────────────────────────────────────
 
 function LeadsNoteCell({ signal, notes, onSaveNotes, savingNotes }) {
-  const d = signal.signal_detail || {}
+  const d = parseDetail(signal.signal_detail)
   const serverNote = d.rep_notes || notes[signal.id] || ''
   const [localNote, setLocalNote] = useState(serverNote)
   const isSaving = savingNotes.has(signal.id)
@@ -619,7 +646,7 @@ function LeadsGroup({ groupKey, label, signals, notes, savingNotes, onSaveNotes,
             </thead>
             <tbody className="divide-y divide-gray-800">
               {signals.map((signal, i) => {
-                const d = signal.signal_detail || {}
+                const d = parseDetail(signal.signal_detail)
                 const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
                 return (
                   <tr key={signal.id} className={`${rowBg} hover:bg-gray-800 transition-colors`}>
