@@ -1,5 +1,6 @@
 import { supabase, upsertCompany } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
+import * as cheerio from 'cheerio'
 
 // ─── Competitor firms seed data ────────────────────────────────────────────────
 // This list is upserted into the competitor_firms table when fewer than 30
@@ -143,8 +144,17 @@ async function seedCompetitorFirms() {
  * @returns {{ type: 'greenhouse'|'lever', slug: string }|null}
  */
 function detectAtsSlug(html) {
+  // Greenhouse embed pattern: ?for=slug (most common on career pages)
+  const ghEmbedMatch = html.match(/boards\.greenhouse\.io\/embed\/job_board\?for=([a-z0-9_-]+)/i)
+  if (ghEmbedMatch) return { type: 'greenhouse', slug: ghEmbedMatch[1] }
+
+  // Greenhouse direct path: boards.greenhouse.io/{slug} or boards-api.greenhouse.io/v1/boards/{slug}
+  // Skip non-slug path segments (embed, v1, boards)
   const ghMatch = html.match(/boards(?:-api)?\.greenhouse\.io\/(?:v1\/boards\/)?([a-z0-9_-]+)/i)
-  if (ghMatch) return { type: 'greenhouse', slug: ghMatch[1] }
+  if (ghMatch && !['embed', 'v1', 'boards', 'jobs'].includes(ghMatch[1].toLowerCase())) {
+    return { type: 'greenhouse', slug: ghMatch[1] }
+  }
+
   const lvMatch = html.match(/jobs\.lever\.co\/([a-z0-9_-]+)/i)
   if (lvMatch) return { type: 'lever', slug: lvMatch[1] }
   return null
@@ -161,18 +171,30 @@ async function fetchAtsJobs(ats) {
   try {
     let url, jobs = []
     if (ats.type === 'greenhouse') {
-      url = `https://boards-api.greenhouse.io/v1/boards/${ats.slug}/jobs`
-      const resp = await fetch(url, { signal: AbortSignal.timeout(6000) })
-      if (!resp.ok) return []
-      const data = await resp.json()
+      // ?content=true returns full job descriptions; needed for some boards to list all jobs
+      url = `https://boards-api.greenhouse.io/v1/boards/${ats.slug}/jobs?content=true`
+      const resp = await fetch(url, { signal: AbortSignal.timeout(8000) })
+      console.log(`Greenhouse API [${ats.slug}]: HTTP ${resp.status}`)
+      if (!resp.ok) {
+        const snippet = await resp.text().catch(() => '')
+        console.log(`Greenhouse API [${ats.slug}]: error body: ${snippet.substring(0, 200)}`)
+        return []
+      }
+      const text = await resp.text()
+      console.log(`Greenhouse API [${ats.slug}]: response snippet: ${text.substring(0, 200)}`)
+      const data = JSON.parse(text)
       jobs = (data.jobs || []).map((j) => ({
         title: j.title || '',
         location: j.location?.name || '',
         applyUrl: j.absolute_url || url,
       }))
+      const matched = jobs.filter((j) => matchesRoleKeywords(j.title))
+      console.log(`Greenhouse API [${ats.slug}]: ${jobs.length} total jobs, ${matched.length} matching keywords`)
+      return matched
     } else {
       url = `https://api.lever.co/v0/postings/${ats.slug}?mode=json`
-      const resp = await fetch(url, { signal: AbortSignal.timeout(6000) })
+      const resp = await fetch(url, { signal: AbortSignal.timeout(8000) })
+      console.log(`Lever API [${ats.slug}]: HTTP ${resp.status}`)
       if (!resp.ok) return []
       const data = await resp.json()
       jobs = (Array.isArray(data) ? data : []).map((j) => ({
@@ -180,10 +202,12 @@ async function fetchAtsJobs(ats) {
         location: j.categories?.location || j.workplaceType || '',
         applyUrl: j.hostedUrl || url,
       }))
+      const matched = jobs.filter((j) => matchesRoleKeywords(j.title))
+      console.log(`Lever API [${ats.slug}]: ${jobs.length} total jobs, ${matched.length} matching keywords`)
+      return matched
     }
-    // Filter to life sciences roles matching our keyword list
-    return jobs.filter((j) => matchesRoleKeywords(j.title))
-  } catch {
+  } catch (err) {
+    console.warn(`ATS API error (${ats.type}/${ats.slug}): ${err.message}`)
     return []
   }
 }
@@ -221,11 +245,69 @@ function parseJsonLdJobs(html) {
   return jobs
 }
 
+/**
+ * Scrape job listings from static career page HTML by looking for anchor tags
+ * whose href contains job-specific URL path segments (/job/, /opening/, etc.)
+ * and whose link text matches life sciences role keywords.
+ *
+ * Falls back to scanning all anchors with matching link text if href-based
+ * matching finds nothing.
+ *
+ * @param {string} html
+ * @param {string} baseUrl  Used to resolve relative hrefs
+ * @param {string} firmName Used for logging
+ * @returns {Array<{title: string, location: string, applyUrl: string}>}
+ */
+function scrapeHtmlJobs(html, baseUrl, firmName) {
+  const jobs = []
+  const JOB_HREF_RE = /\/(job|opening|position|apply|posting|requisition|vacancy|role)s?\//i
+  try {
+    const $ = cheerio.load(html)
+    $('nav, footer, script, style, header').remove()
+
+    $('a[href]').each((_, el) => {
+      if (jobs.length >= 10) return
+      const $el = $(el)
+      const href = $el.attr('href') || ''
+      const title = $el.text().trim().replace(/\s+/g, ' ')
+      if (!title || title.length < 5 || title.length > 150) return
+      if (!matchesRoleKeywords(title)) return
+
+      // Require either a job-related URL path OR just a matching title (no unrelated pages)
+      if (!JOB_HREF_RE.test(href) && !href) return
+
+      let applyUrl = href
+      if (!href.startsWith('http')) {
+        try {
+          applyUrl = href.startsWith('/')
+            ? new URL(href, baseUrl).href
+            : `${baseUrl.replace(/\/$/, '')}/${href}`
+        } catch {
+          applyUrl = baseUrl
+        }
+      }
+
+      // Try to extract a location label from the nearest container
+      const $parent = $el.closest('li, div, article, tr')
+      const locText = $parent
+        .find('[class*="location"], [class*="city"], [class*="loc"]')
+        .first()
+        .text()
+        .trim()
+
+      jobs.push({ title: title.slice(0, 120), location: locText.slice(0, 80), applyUrl })
+    })
+  } catch (err) {
+    console.warn(`HTML scrape error for ${firmName}: ${err.message}`)
+  }
+  return jobs
+}
+
 // ─── Client inference from career page HTML + companies table ─────────────────
 // Strategy (in priority order):
 //   1. Detect Greenhouse/Lever ATS embed → fetch actual job list via API
 //   2. Parse JSON-LD JobPosting schema blocks
-//   3. Scan HTML text for known Life Sciences company names (existing approach)
+//   3. Scrape <a> tags with job-related hrefs from static HTML
 
 async function fetchCareerPageJobs(careersUrl, firmName, knownCompanyNames) {
   if (!careersUrl) return { jobs: [], likely_client: 'Unknown', confidence: 'low' }
@@ -243,7 +325,10 @@ async function fetchCareerPageJobs(careersUrl, firmName, knownCompanyNames) {
     return { jobs: [], likely_client: 'Unknown', confidence: 'low' }
   }
 
-  if (html.length < 500) return { jobs: [], likely_client: 'Unknown', confidence: 'low' }
+  if (html.length < 200) {
+    console.log(`${firmName}: career page response too short (${html.length} chars)`)
+    return { jobs: [], likely_client: 'Unknown', confidence: 'low' }
+  }
 
   // ── Strategy 1: ATS API (Greenhouse / Lever) ──────────────────────────────
   const ats = detectAtsSlug(html)
@@ -252,6 +337,7 @@ async function fetchCareerPageJobs(careersUrl, firmName, knownCompanyNames) {
     const atsJobs = await fetchAtsJobs(ats)
     if (atsJobs.length > 0) {
       console.log(`${firmName}: ${atsJobs.length} ATS jobs via ${ats.type}`)
+      // Infer client from job titles only — never from full page HTML
       const likely_client = inferClientFromText(
         atsJobs.map((j) => j.title).join(' '),
         firmName,
@@ -273,9 +359,28 @@ async function fetchCareerPageJobs(careersUrl, firmName, knownCompanyNames) {
     return { jobs: ldJobs, likely_client, confidence: likely_client !== 'Unknown' ? 'medium' : 'low' }
   }
 
-  // ── Strategy 3: company-name scan in HTML ─────────────────────────────────
-  const likely_client = inferClientFromText(html, firmName, knownCompanyNames)
-  return { jobs: [], likely_client, confidence: likely_client !== 'Unknown' ? 'medium' : 'low' }
+  // ── Strategy 3: <a href> scan for job-path anchors ────────────────────────
+  const htmlJobs = scrapeHtmlJobs(html, careersUrl, firmName)
+  if (htmlJobs.length > 0) {
+    console.log(`${firmName}: ${htmlJobs.length} HTML-scraped jobs`)
+    const likely_client = inferClientFromText(
+      htmlJobs.map((j) => j.title).join(' '),
+      firmName,
+      knownCompanyNames
+    )
+    return { jobs: htmlJobs, likely_client, confidence: 'low' }
+  }
+
+  // ── No jobs found — detect JS-rendered vs truly empty ─────────────────────
+  const $check = cheerio.load(html)
+  $check('nav, footer, script, style, header').remove()
+  const visibleText = $check.text().replace(/\s+/g, ' ').trim()
+  if (visibleText.length < 500) {
+    console.log(`${firmName}: JS-rendered career page (${visibleText.length} chars of visible text) — skipping`)
+  } else {
+    console.log(`${firmName}: no job listings found via any method (${visibleText.length} chars of visible text)`)
+  }
+  return { jobs: [], likely_client: 'Unknown', confidence: 'low' }
 }
 
 /** Scan text for known company names — returns first match or 'Unknown'. */
