@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase.js'
+import { supabase, normalizeCompanyName } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 
 // ─── Competitor firms seed data ────────────────────────────────────────────────
@@ -55,16 +55,17 @@ const COMPETITOR_FIRMS_SEED = [
 ]
 
 const BOT_UA = 'Mozilla/5.0 (compatible; BioSignalBot/1.0)'
-const CLINICALTRIALS_API = 'https://clinicaltrials.gov/api/v2/studies'
 
 // ─── Shared signal helpers ─────────────────────────────────────────────────────
 
 async function upsertCompany(name) {
+  const normalized = normalizeCompanyName(name)
+  if (!normalized) return null
   const { data } = await supabase
     .from('companies')
-    .upsert({ name, industry: 'Life Sciences' }, { onConflict: 'name' })
+    .upsert({ name: normalized, industry: 'Life Sciences' }, { onConflict: 'name', ignoreDuplicates: false })
     .select()
-    .single()
+    .maybeSingle()
   return data
 }
 
@@ -127,151 +128,86 @@ async function seedCompetitorFirms() {
   return { seeded, skipped, skippedFirms }
 }
 
-// ─── Client inference from trial metadata ─────────────────────────────────────
-// Determines which pharma/biotech company is the CRO's likely client.
-// "High confidence" = lead sponsor is INDUSTRY and is not the CRO itself.
-// "Medium confidence" = an industry collaborator that is not the CRO.
-// "Low confidence" = no industry party distinguishable from the CRO.
+// ─── Client inference from career page HTML + companies table ─────────────────
+// Previously this used ClinicalTrials.gov per-firm queries (query.term=firmName),
+// which return HTTP 400 because competitor firm names are not valid CT.gov sponsor
+// search terms. Replaced with: fetch the firm's own career page, then scan for any
+// known Life Sciences company name from our companies table.
 
-function inferLikelyClient(trial, firmName) {
-  const sponsor = trial.protocolSection?.sponsorsModule?.leadSponsor
-  const collaborators = trial.protocolSection?.sponsorsModule?.collaborators || []
-  const firmLower = firmName.toLowerCase()
+async function inferClientFromCareerPage(careersUrl, firmName, knownCompanyNames) {
+  if (!careersUrl) return { likely_client: 'Unknown', confidence: 'low' }
 
-  if (
-    sponsor?.class === 'INDUSTRY' &&
-    sponsor.name &&
-    !sponsor.name.toLowerCase().includes(firmLower)
-  ) {
-    return { likely_client: sponsor.name, confidence: 'high' }
+  let html = ''
+  try {
+    const resp = await fetch(careersUrl, {
+      headers: { 'User-Agent': BOT_UA },
+      signal: AbortSignal.timeout(8000),
+      redirect: 'follow',
+    })
+    if (!resp.ok) return { likely_client: 'Unknown', confidence: 'low' }
+    html = await resp.text()
+  } catch {
+    return { likely_client: 'Unknown', confidence: 'low' }
   }
 
-  const industryCollab = collaborators.find(
-    (c) =>
-      c.class === 'INDUSTRY' &&
-      c.name &&
-      !c.name.toLowerCase().includes(firmLower)
-  )
-  if (industryCollab) {
-    return { likely_client: industryCollab.name, confidence: 'medium' }
+  if (html.length < 500) return { likely_client: 'Unknown', confidence: 'low' }
+
+  const htmlLower = html.toLowerCase()
+  const firmLower = firmName.toLowerCase()
+
+  for (const companyName of knownCompanyNames) {
+    if (!companyName || companyName.length < 5) continue
+    // Skip if the company name is the firm itself
+    if (companyName.toLowerCase().includes(firmLower) || firmLower.includes(companyName.toLowerCase())) continue
+    if (htmlLower.includes(companyName.toLowerCase())) {
+      return { likely_client: companyName, confidence: 'medium' }
+    }
   }
 
   return { likely_client: 'Unknown', confidence: 'low' }
 }
 
-// ─── ClinicalTrials.gov query for a single firm ────────────────────────────────
-// Searches for active RECRUITING or ACTIVE_NOT_RECRUITING interventional trials
-// where the firm appears as sponsor or collaborator. Returns raw study objects.
+// ─── Persist a single competitor activity signal ───────────────────────────────
+// Dedup key is firm + ISO week so one signal per firm per week at most.
 
-async function fetchTrialsForFirm(firmName) {
-  const params = new URLSearchParams({
-    'query.term': firmName,
-    'filter.advanced':
-      'AREA[CollaboratorClass]INDUSTRY OR AREA[LeadSponsorClass]INDUSTRY',
-    'filter.overallStatus': 'RECRUITING,ACTIVE_NOT_RECRUITING',
-    pageSize: '5',
-    fields:
-      'NCTId,BriefTitle,LeadSponsorName,LeadSponsorClass,CollaboratorsModule,Phase,OverallStatus,LocationCountry',
-  })
-
-  let json
-  try {
-    const resp = await fetch(`${CLINICALTRIALS_API}?${params}`, {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(8000),
-    })
-    if (!resp.ok) {
-      console.warn(`CT.gov query for "${firmName}" returned HTTP ${resp.status}`)
-      return []
-    }
-    json = await resp.json()
-  } catch (err) {
-    console.warn(`CT.gov fetch error for "${firmName}": ${err.message}`)
-    return []
-  }
-
-  const studies = json.studies || []
-  console.log(`CT.gov "${firmName}": ${studies.length} active trials`)
-  return studies
-}
-
-// ─── Derive a firm slug for use in compound source URLs ───────────────────────
-
-function toFirmSlug(firmName) {
-  return firmName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-}
-
-// ─── Derive a readable phase label from the CT.gov phases array ───────────────
-
-function phaseLabel(phases) {
-  if (!phases || phases.length === 0) return 'Unknown Phase'
-  if (phases.includes('PHASE4')) return 'Phase 4'
-  if (phases.includes('PHASE3')) return 'Phase 3'
-  if (phases.includes('PHASE2')) return 'Phase 2'
-  if (phases.includes('PHASE1')) return 'Phase 1'
-  return phases[0].replace('_', ' ')
-}
-
-// ─── Persist a single competitor trial signal ──────────────────────────────────
-
-async function persistCompetitorSignal(firmName, trial, nctId) {
+async function persistCompetitorSignal(firmName, careersUrl, likelyClient, confidence) {
   const firmCompany = await upsertCompany(firmName)
   if (!firmCompany) return false
 
-  const { likely_client, confidence } = inferLikelyClient(trial, firmName)
-  const firmSlug = toFirmSlug(firmName)
-
-  // Compound source URL makes the dedup key unique per (firm × trial)
-  const sourceUrl = `https://clinicaltrials.gov/study/${nctId}#competitor-${firmSlug}`
+  // One signal per firm per calendar week
+  const weekNum = Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000))
+  const sourceUrl = `${careersUrl || 'https://biosignal.app'}#competitor-week-${weekNum}`
   const exists = await signalExists(firmCompany.id, 'competitor_job_posting', sourceUrl)
   if (exists) return false
 
-  const ps = trial.protocolSection || {}
-  const phases = ps.designModule?.phases || ps.Phase || []
-  const status = ps.statusModule?.overallStatus || ps.OverallStatus || 'Unknown'
-  const briefTitle = ps.identificationModule?.briefTitle || ps.BriefTitle || 'Unknown Trial'
-  const countries = ps.contactsLocationsModule?.locations
-    ? [...new Set(ps.contactsLocationsModule.locations.map((l) => l.country).filter(Boolean))]
-    : ps.LocationCountry || []
-  const locationStr =
-    countries.length > 0 ? countries.slice(0, 3).join(', ') : 'Multiple Sites'
-
-  const label = phaseLabel(Array.isArray(phases) ? phases : [phases])
   const today = new Date().toISOString().split('T')[0]
+  const clientNote = likelyClient !== 'Unknown' ? ` — likely client: ${likelyClient}` : ''
 
   const { error } = await supabase.from('signals').insert({
     company_id: firmCompany.id,
     signal_type: 'competitor_job_posting',
-    signal_summary: `${firmName} active on ${label} trial for ${likely_client} (${status}) — competitor CRO intelligence`,
+    signal_summary: `${firmName} actively hiring in life sciences${clientNote}`,
     signal_detail: {
-      job_title: `Clinical Research Staff - ${label} (${status})`,
-      job_location: locationStr,
+      job_title: 'Active life sciences hiring',
+      job_location: '',
       posting_date: today,
       competitor_firm: firmName,
-      likely_client,
+      likely_client: likelyClient,
       likely_client_confidence: confidence,
-      source_url: `https://clinicaltrials.gov/study/${nctId}`,
-      nct_id: nctId,
-      trial_phase: label,
-      trial_status: status,
-      trial_title:
-        briefTitle.length > 120 ? briefTitle.slice(0, 117) + '...' : briefTitle,
+      source_url: careersUrl || '',
     },
     source_url: sourceUrl,
-    source_name: 'ClinicalTrials.gov',
+    source_name: 'CareersPage',
     first_detected_at: new Date().toISOString(),
     status: 'new',
-    priority_score: 18,
-    score_breakdown: { signal_strength: 18 },
+    priority_score: 15,
+    score_breakdown: { signal_strength: 15 },
     days_in_queue: 0,
     is_carried_forward: false,
   })
 
   if (error) {
-    console.warn(`Signal insert failed for ${firmName}/${nctId}: ${error.message}`)
+    console.warn(`Signal insert failed for ${firmName}: ${error.message}`)
     return false
   }
   return true
@@ -316,19 +252,35 @@ export async function run() {
 
     let firmsChecked = 0
 
-    // ── Step 3: For each firm, query ClinicalTrials.gov (400ms delay between firms)
+    // ── Step 3: Load known Life Sciences companies for client inference ──────
+    const { data: knownCompanies } = await supabase
+      .from('companies')
+      .select('name')
+      .eq('industry', 'Life Sciences')
+      .limit(200)
+    const knownCompanyNames = (knownCompanies || []).map((c) => c.name)
+    console.log(`Loaded ${knownCompanyNames.length} known companies for client inference`)
+
+    // ── Step 4: For each firm, fetch career page and infer likely client ─────
+    // CT.gov per-firm queries are REMOVED — query.term=firmName returns HTTP 400.
+    // Instead: fetch career page HTML, scan for known company names from DB.
     for (const firm of firmsToCheck) {
-      const studies = await fetchTrialsForFirm(firm.name)
       firmsChecked++
 
-      for (const study of studies) {
-        const ps = study.protocolSection || {}
-        const nctId = ps.identificationModule?.nctId || study.NCTId
-        if (!nctId) continue
+      const { likely_client, confidence } = await inferClientFromCareerPage(
+        firm.careers_url,
+        firm.name,
+        knownCompanyNames
+      )
+      console.log(`${firm.name}: likely_client="${likely_client}" (${confidence})`)
 
-        const inserted = await persistCompetitorSignal(firm.name, study, nctId)
-        if (inserted) signalsFound++
-      }
+      const inserted = await persistCompetitorSignal(
+        firm.name,
+        firm.careers_url,
+        likely_client,
+        confidence
+      )
+      if (inserted) signalsFound++
 
       // 400ms delay between firms — balanced against Vercel 300s timeout
       if (firmsChecked < firmsToCheck.length) {

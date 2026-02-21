@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase.js'
+import { supabase, normalizeCompanyName } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import * as cheerio from 'cheerio'
 
@@ -7,11 +7,13 @@ const BOT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KH
 // ─── Shared signal helpers ─────────────────────────────────────────────────────
 
 async function upsertCompany(name) {
+  const normalized = normalizeCompanyName(name)
+  if (!normalized) return null
   const { data } = await supabase
     .from('companies')
-    .upsert({ name, industry: 'Life Sciences' }, { onConflict: 'name' })
+    .upsert({ name: normalized, industry: 'Life Sciences' }, { onConflict: 'name', ignoreDuplicates: false })
     .select()
-    .single()
+    .maybeSingle()
   return data
 }
 
@@ -380,13 +382,20 @@ async function discoverSponsorCareerPages() {
     console.warn(`companies table fetch error: ${err.message}`)
   }
 
-  // Fall back to CT.gov live query if table is empty
+  // Filter out non-industry names (universities, hospitals, etc.) that ended up in DB
+  // before the INDUSTRY-only filter was enforced. Only attempt career lookups for
+  // confirmed industry companies.
+  const NON_INDUSTRY_PATTERN =
+    /university|college|hospital|medical center|health system|health centre|institute|foundation|children's|memorial|research center|research centre|\bschool\b|\bnih\b|\bcdc\b|\bdod\b|\bnasa\b/i
+  companyNames = companyNames.filter((name) => !NON_INDUSTRY_PATTERN.test(name))
+  console.log(`Career site discovery: ${companyNames.length} industry companies after filtering`)
+
+  // Fall back to CT.gov live query if table is empty after filtering
   if (companyNames.length === 0) {
     try {
+      // Use working CT.gov filter.advanced syntax (query.term causes HTTP 400 from Vercel)
       const params = new URLSearchParams({
-        'query.term': 'AREA[InterventionType]interventional',
         'filter.advanced': 'AREA[LeadSponsorClass]INDUSTRY',
-        'filter.overallStatus': 'RECRUITING',
         pageSize: '20',
         fields: 'NCTId,LeadSponsorName',
       })

@@ -8,7 +8,7 @@
  * government/academic entities are rejected at both the API query level and locally.
  */
 
-import { supabase } from '../lib/supabase.js';
+import { supabase, normalizeCompanyName } from '../lib/supabase.js';
 
 const CT_API_BASE = 'https://clinicaltrials.gov/api/v2/studies';
 const CT_STUDY_BASE = 'https://clinicaltrials.gov/study';
@@ -94,10 +94,12 @@ function buildQueryUrl(lastUpdateGte, pageToken = null) {
     'InterventionType',
   ].join(',');
 
+  // Note: query.term with AREA[] syntax and filter.lastUpdatePostDate.gte both return
+  // HTTP 400 from Vercel IPs. The working approach is a single filter.advanced using
+  // RANGE syntax. INDUSTRY filter is confirmed working inside filter.advanced AND is
+  // also enforced post-fetch in processStudy() for defence-in-depth.
   const params = new URLSearchParams({
-    'query.term': 'AREA[InterventionType]interventional',
-    'filter.advanced': 'AREA[LeadSponsorClass]INDUSTRY',
-    'filter.lastUpdatePostDate.gte': lastUpdateGte,
+    'filter.advanced': `AREA[LastUpdatePostDate]RANGE[${lastUpdateGte},MAX]`,
     pageSize: String(PAGE_SIZE),
     fields,
   });
@@ -306,14 +308,17 @@ function buildStudySummary(proto) {
  * @returns {Promise<object|null>} The row with id and name, or null on error
  */
 async function upsertCompany(name) {
+  const normalized = normalizeCompanyName(name);
+  if (!normalized) return null;
+
   const { data, error } = await supabase
     .from('companies')
-    .upsert({ name, industry: 'Life Sciences' }, { onConflict: 'name' })
+    .upsert({ name: normalized, industry: 'Life Sciences' }, { onConflict: 'name', ignoreDuplicates: false })
     .select('id, name')
     .maybeSingle();
 
   if (error) {
-    console.error(`[clinicalTrialMonitor] upsertCompany failed for "${name}":`, error.message);
+    console.error(`[clinicalTrialMonitor] upsertCompany failed for "${normalized}":`, error.message);
     return null;
   }
 
@@ -401,7 +406,7 @@ async function finaliseAgentRun(runId, status, signalsFound, errorMessage = null
   const update = {
     status,
     signals_found: signalsFound,
-    finished_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
   };
 
   if (errorMessage) {
