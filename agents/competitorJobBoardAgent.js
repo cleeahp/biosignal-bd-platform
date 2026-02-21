@@ -146,6 +146,9 @@ async function seedCompetitorFirms() {
 function detectAtsSlug(html) {
   // iCIMS / Workday: log and return a sentinel so callers can skip API attempts
   if (/\.icims\.com/i.test(html)) return { type: 'icims', slug: '' }
+  // Extract Workday tenant slug from embedded URL (e.g. "acme.wd1.myworkdayjobs.com" → slug="acme")
+  const wdMatch = html.match(/([a-z0-9][a-z0-9-]*)\.wd\d+\.myworkdayjobs\.com/i)
+  if (wdMatch) return { type: 'workday', slug: wdMatch[1].toLowerCase() }
   if (/myworkdayjobs\.com|workday\.com\/en-us\/applications/i.test(html)) return { type: 'workday', slug: '' }
 
   // Greenhouse embed pattern: ?for=slug (most common on career pages)
@@ -170,6 +173,111 @@ function detectAtsSlug(html) {
 }
 
 /**
+ * Attempt to fetch job listings from a Workday-powered careers site.
+ * Derives the Workday tenant slug from the firm name and tries common subdomain
+ * patterns (wd1, wd5). Parses JSON-LD or wd-data script blocks from the page.
+ *
+ * @param {string} firmSlug  Lowercase, no-punctuation firm identifier
+ * @returns {Promise<Array<{title: string, location: string, applyUrl: string}>>}
+ */
+async function fetchWorkdayJobs(firmSlug) {
+  const tenants = [1, 5, 3, 2].map((n) => `https://${firmSlug}.wd${n}.myworkdayjobs.com/en-US/${firmSlug}_External`)
+  console.log(`Workday: trying tenant URLs for slug "${firmSlug}"`)
+
+  for (const tenantUrl of tenants) {
+    let html = ''
+    try {
+      const resp = await fetch(tenantUrl, {
+        headers: { 'User-Agent': BOT_UA },
+        signal: AbortSignal.timeout(6000),
+        redirect: 'follow',
+      })
+      console.log(`Workday tenant [${tenantUrl}]: HTTP ${resp.status}`)
+      if (!resp.ok) continue
+      html = await resp.text()
+    } catch {
+      continue
+    }
+
+    if (html.length < 200) continue
+
+    // Try JSON-LD first (Workday sometimes embeds JobPosting schemas)
+    const ldJobs = parseJsonLdJobs(html)
+    if (ldJobs.length > 0) {
+      console.log(`Workday [${firmSlug}]: ${ldJobs.length} JSON-LD jobs found`)
+      return ldJobs.filter((j) => matchesRoleKeywords(j.title))
+    }
+
+    // Try Workday's embedded wd-data JSON block
+    const wdDataMatch = html.match(/<script[^>]+id=["']wd-data["'][^>]*>([\s\S]*?)<\/script>/i)
+      || html.match(/window\.__APP_INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});/i)
+    if (wdDataMatch) {
+      try {
+        const wdData = JSON.parse(wdDataMatch[1])
+        const postings = wdData?.jobSearchResult?.data || wdData?.data || []
+        const jobs = (Array.isArray(postings) ? postings : []).map((j) => ({
+          title: j.title || j.jobTitle || j.job_title || '',
+          location: j.locationsText || j.location || j.primaryLocation || '',
+          applyUrl: j.externalPath ? `${tenantUrl}${j.externalPath}` : tenantUrl,
+        })).filter((j) => j.title && matchesRoleKeywords(j.title))
+        if (jobs.length > 0) {
+          console.log(`Workday [${firmSlug}]: ${jobs.length} jobs from wd-data`)
+          return jobs
+        }
+      } catch {
+        // invalid JSON
+      }
+    }
+
+    console.log(`Workday [${firmSlug}]: page loaded (${html.length} chars) but no job data parsed`)
+    return [] // found a working tenant but couldn't parse jobs — don't try others
+  }
+
+  console.log(`Workday [${firmSlug}]: no working tenant URL found`)
+  return []
+}
+
+/**
+ * Best-effort LinkedIn job search for a firm. LinkedIn typically blocks
+ * server-side requests; this is a graceful fallback only.
+ * Returns empty array on any error (non-fatal).
+ *
+ * @param {string} firmName
+ * @returns {Promise<Array<{title: string, location: string, applyUrl: string}>>}
+ */
+async function fetchLinkedInJobs(firmName) {
+  const keyword = 'clinical research regulatory biostatistics'
+  const url = `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(firmName + ' ' + keyword)}&location=United+States`
+  try {
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': BOT_UA, Accept: 'text/html' },
+      signal: AbortSignal.timeout(6000),
+    })
+    console.log(`LinkedIn [${firmName}]: HTTP ${resp.status}`)
+    if (!resp.ok) return []
+    const html = await resp.text()
+    if (html.length < 500) return []
+
+    const $ = cheerio.load(html)
+    const jobs = []
+    $('[class*="job-search-card"], [class*="result-card"], .base-card').each((_, el) => {
+      if (jobs.length >= 5) return
+      const $el = $(el)
+      const title = $el.find('[class*="job-title"], h3').first().text().trim()
+      if (!title || !matchesRoleKeywords(title)) return
+      const location = $el.find('[class*="job-location"], [class*="location"]').first().text().trim()
+      const href = $el.find('a').first().attr('href') || url
+      jobs.push({ title, location, applyUrl: href.startsWith('http') ? href : `https://www.linkedin.com${href}` })
+    })
+    console.log(`LinkedIn [${firmName}]: ${jobs.length} matching jobs`)
+    return jobs
+  } catch (err) {
+    console.log(`LinkedIn [${firmName}]: fetch failed (${err.message}) — skipping`)
+    return []
+  }
+}
+
+/**
  * Fetch actual job listings from Greenhouse or Lever public API.
  * Returns array of { title, location, applyUrl } objects filtered by role keywords.
  *
@@ -183,8 +291,7 @@ async function fetchAtsJobs(ats) {
     return []
   }
   if (ats.type === 'workday') {
-    console.log(`Workday detected — skipping (Workday does not have a public job listing API)`)
-    return []
+    return fetchWorkdayJobs(ats.slug)
   }
 
   try {
@@ -413,10 +520,18 @@ async function fetchCareerPageJobs(careersUrl, firmName, knownCompanyNames) {
   $check('nav, footer, script, style, header').remove()
   const visibleText = $check.text().replace(/\s+/g, ' ').trim()
   if (visibleText.length < 500) {
-    console.log(`${firmName}: JS-rendered career page (${visibleText.length} chars of visible text) — skipping`)
+    console.log(`${firmName}: JS-rendered career page (${visibleText.length} chars visible) — trying LinkedIn fallback`)
   } else {
-    console.log(`${firmName}: no job listings found via any method (${visibleText.length} chars of visible text)`)
+    console.log(`${firmName}: no job listings found via any method (${visibleText.length} chars visible) — trying LinkedIn fallback`)
   }
+
+  // ── LinkedIn fallback: best-effort for iCIMS / JS-rendered / unknown ATS ──
+  const liJobs = await fetchLinkedInJobs(firmName)
+  if (liJobs.length > 0) {
+    const likely_client = inferClientFromText(liJobs.map((j) => j.title).join(' '), firmName, knownCompanyNames)
+    return { jobs: liJobs, likely_client, confidence: 'low' }
+  }
+
   return { jobs: [], likely_client: 'Unknown', confidence: 'low' }
 }
 
