@@ -37,7 +37,7 @@ const SEC_RATE_LIMIT_MS = 200;       // Delay between SEC EDGAR requests
 // Applied to ALL five funding sources. When matched, the organisation is
 // logged and excluded — we only staff into industry.
 const ACADEMIC_PATTERNS =
-  /university|universite|college|hospital|medical center|health system|health centre|institute of|school of|foundation|academy|academie|NIH\b|NCI\b|FDA\b|NHLBI\b|national institute|national cancer|national heart|department of|children's|childrens|memorial|baptist|methodist|presbyterian|kaiser|mayo clinic|cleveland clinic|johns hopkins|\bmit\b|caltech|stanford|harvard|yale\b|columbia university|university of pennsylvania|duke university|vanderbilt|emory university|\.edu\b/i;
+  /university|universite|college|hospital|medical cent(?:er|re)|health system|health cent(?:er|re)|\binstitute\b|school of|\bschool\b|foundation|academy|academie|\bNIH\b|\bNCI\b|\bFDA\b|\bCDC\b|\bNHLBI\b|national institute|national cancer|national heart|department of|children's|childrens|memorial|baptist|methodist|presbyterian|kaiser|mayo clinic|cleveland clinic|johns hopkins|\bmit\b|caltech|stanford|harvard|\byale\b|columbia university|university of pennsylvania|duke university|vanderbilt|emory university|\.edu\b|research cent(?:er|re)|cancer cent(?:er|re)|\bclinic\b|\bconsortium\b|\bsociety\b|\bassociation\b|ministry of|\bgovernment\b|\bfederal\b|national laborator/i;
 
 // Industry entity indicators — at least one must be present for SEC-sourced
 // companies that would otherwise match no academic keyword (belt-and-suspenders).
@@ -586,6 +586,83 @@ function buildFilingUrl(hit, entityName, formType) {
 }
 
 /**
+ * Fetch the primary document text from an EDGAR filing archive.
+ * Tries the filing index JSON, finds the 8-K document, returns first 4 KB of plain text.
+ * Returns empty string on any error — M&A signal is still created without target details.
+ *
+ * @param {object} hit - EDGAR search hit object
+ * @returns {Promise<string>}
+ */
+async function fetchMaFilingText(hit) {
+  const adsh = hit._source?.adsh || '';
+  const ciks = hit._source?.ciks || [];
+  const cik = ciks[0] ? parseInt(ciks[0], 10) : null;
+  if (!adsh || !cik) return '';
+
+  const adshNoDash = adsh.replace(/-/g, '');
+  const indexUrl = `https://www.sec.gov/Archives/edgar/data/${cik}/${adshNoDash}/${adsh}-index.json`;
+
+  try {
+    await sleep(SEC_RATE_LIMIT_MS);
+    const indexResp = await fetch(indexUrl, {
+      headers: { 'User-Agent': 'BioSignal-BD-Platform contact@biosignal.io', Accept: 'application/json' },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!indexResp.ok) return '';
+
+    const index = await indexResp.json();
+    // Find the primary 8-K document (not exhibits like 99.1)
+    const primaryDoc = (index.documents || []).find((d) => d.type === '8-K') || (index.documents || [])[0];
+    if (!primaryDoc?.document) return '';
+
+    await sleep(SEC_RATE_LIMIT_MS);
+    const docUrl = `https://www.sec.gov/Archives/edgar/data/${cik}/${adshNoDash}/${primaryDoc.document}`;
+    const docResp = await fetch(docUrl, {
+      headers: { 'User-Agent': 'BioSignal-BD-Platform contact@biosignal.io' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!docResp.ok) return '';
+
+    const raw = await docResp.text();
+    // Strip HTML tags and return first 4 KB of plain text
+    return raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 4000);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Extract the name of the acquired company from 8-K filing text.
+ * Uses regex patterns that look for "acquire", "merger with", "combination with".
+ *
+ * @param {string} text  - Plain text excerpt from the filing document
+ * @param {string} acquirerName - The filer (acquirer) name, to avoid self-references
+ * @returns {string}
+ */
+function extractMaTarget(text, acquirerName) {
+  if (!text) return '';
+
+  const patterns = [
+    /to\s+acqui(?:re|red|ring)\s+([A-Z][A-Za-z0-9\s,\.&]+?)(?:\s*,|\s+for\s|\s+in\s+a|\s*\(|\.)/,
+    /has\s+acqui(?:re|red|ring)\s+([A-Z][A-Za-z0-9\s,\.&]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/,
+    /merger\s+with\s+([A-Z][A-Za-z0-9\s,\.&]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/i,
+    /combination\s+with\s+([A-Z][A-Za-z0-9\s,\.&]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/i,
+  ];
+
+  const acquirerPrefix = acquirerName.toLowerCase().slice(0, 10);
+  for (const pat of patterns) {
+    const m = text.match(pat);
+    if (m) {
+      const name = m[1].trim().replace(/\s+/g, ' ');
+      if (name.length >= 3 && name.length <= 80 && !name.toLowerCase().startsWith(acquirerPrefix)) {
+        return name;
+      }
+    }
+  }
+  return '';
+}
+
+/**
  * Process SEC EDGAR 8-K M&A filings and emit acquirer + acquired signals.
  *
  * @param {string} sixMonthsAgo
@@ -628,7 +705,6 @@ async function processMaFilings(sixMonthsAgo, today) {
         continue;
       }
 
-      const dealAmount = extractAmount(filingText);
       const adsh = hit._source?.adsh || '';
 
       // One signal per filing. Dedup by adsh (unique EDGAR accession number)
@@ -640,12 +716,20 @@ async function processMaFilings(sixMonthsAgo, today) {
         continue;
       }
 
+      // Fetch filing document text to extract target company name and deal amount
+      const filingBodyText = await fetchMaFilingText(hit);
+      const dealAmount = extractAmount(filingBodyText) || extractAmount(filingText);
+      const acquiredName = extractMaTarget(filingBodyText, entityName);
+      if (acquiredName) {
+        console.log(`[fundingMaAgent] M&A target found: ${entityName} → ${acquiredName}`);
+      }
+
       const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, MA_BASE_SCORE);
-      const dealSummary = `${entityName} announced an M&A transaction${dealAmount ? ` valued at ${dealAmount}` : ''}`;
+      const dealSummary = `${entityName} announced an M&A transaction${acquiredName ? ` to acquire ${acquiredName}` : ''}${dealAmount ? ` valued at ${dealAmount}` : ''}`;
       const detail = {
         company_name: entityName,
         acquirer_name: entityName,
-        acquired_name: '',
+        acquired_name: acquiredName,
         adsh,
         funding_type: 'ma',
         funding_amount: dealAmount,

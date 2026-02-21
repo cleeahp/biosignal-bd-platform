@@ -18,7 +18,8 @@ const SIGNAL_TYPE_CONFIG = {
   ma_acquirer:                     { label: 'M&A — Acquirer',    color: 'bg-orange-500', tab: null },
   ma_acquired:                     { label: 'M&A — Acquired',    color: 'bg-amber-500',  tab: null },
   competitor_job_posting:          { label: 'Competitor Job',    color: 'bg-red-500',    tab: 'jobs' },
-  stale_job_posting:               { label: 'Stale Job',         color: 'bg-gray-500',   tab: 'jobs' },
+  target_company_job:              { label: 'Target Co. Job',    color: 'bg-violet-500', tab: 'jobs' },
+  stale_job_posting:               { label: 'Stale Job',         color: 'bg-gray-500',   tab: null },
 }
 
 const FUNDING_TYPE_CONFIG = {
@@ -247,14 +248,9 @@ function ClinicalDetailCell({ signal }) {
   switch (signal.signal_type) {
     case 'clinical_trial_phase_transition':
       return (
-        <div>
-          <span className="text-sm text-white font-medium">
-            {formatPhaseLabel(d.phase_from)} → {formatPhaseLabel(d.phase_to)}
-          </span>
-          {d.study_summary && (
-            <p className="text-xs text-gray-400 mt-0.5 leading-snug">{truncate(d.study_summary, 80)}</p>
-          )}
-        </div>
+        <span className="text-sm text-white font-medium">
+          {formatPhaseLabel(d.phase_from)} → {formatPhaseLabel(d.phase_to)}
+        </span>
       )
     case 'clinical_trial_new_ind':
       return (
@@ -328,9 +324,9 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
                 <td className="px-4 py-3 min-w-72">
                   <ClinicalDetailCell signal={signal} />
                 </td>
-                <td className="px-4 py-3 min-w-48">
-                  <span className="text-xs text-gray-400 leading-snug">
-                    {truncate(d.study_summary || signal.signal_summary, 120) || '—'}
+                <td className="px-4 py-3" style={{ maxWidth: '400px' }}>
+                  <span className="text-xs text-gray-400 leading-snug" style={{ wordBreak: 'break-word', whiteSpace: 'normal', display: 'block' }}>
+                    {d.study_summary || signal.signal_summary || '—'}
                   </span>
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
@@ -405,8 +401,10 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-sm font-semibold text-white whitespace-nowrap">
-                      {signal.signal_type === 'ma_transaction' && d.acquirer_name
-                        ? `${d.acquirer_name}${d.acquired_name ? ` → ${d.acquired_name}` : ''}`
+                      {signal.signal_type === 'ma_transaction'
+                        ? (d.acquired_name
+                            ? `${d.acquirer_name || signal.companies?.name} → ${d.acquired_name}`
+                            : `${d.acquirer_name || signal.companies?.name || '—'} (details TBD)`)
                         : signal.companies?.name || d.company_name || '—'}
                     </span>
                     {d.pre_hiring_signal && (
@@ -420,7 +418,7 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
                   )}
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-green-400">
-                  {d.funding_amount || 'Undisclosed'}
+                  {signal.signal_type === 'ma_transaction' ? 'N/A' : (d.funding_amount || 'Undisclosed')}
                 </td>
                 <td className="px-4 py-3 min-w-64">
                   <span className="text-sm text-gray-200">
@@ -455,29 +453,111 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
 // ─── Tab: Jobs ────────────────────────────────────────────────────────────────
 
 function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim }) {
+  const targetJobSignals = signals.filter(s => s.signal_type === 'target_company_job')
   const competitorSignals = signals.filter(s => s.signal_type === 'competitor_job_posting')
-  const staleSignals = signals.filter(s => s.signal_type === 'stale_job_posting')
 
-  if (signals.length === 0) return <EmptyState message="No active job signals." />
+  if (signals.length === 0) return <EmptyState message="No active job signals. Run agents to search for open roles." />
 
   return (
-    <div className="flex flex-col gap-8">
-      {competitorSignals.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-3">
-            <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Competitor Job Postings</h2>
-            <span className="px-2 py-0.5 rounded-full bg-red-900 text-red-300 text-xs font-bold">
-              {competitorSignals.length}
-            </span>
-          </div>
+    <div className="flex flex-col gap-10">
+
+      {/* ── Section A: Roles at Target Companies ── */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Roles at Target Companies</h2>
+          <span className="px-2 py-0.5 rounded-full bg-violet-900 text-violet-300 text-xs font-bold">
+            {targetJobSignals.length}
+          </span>
+          <span className="text-xs text-gray-600 italic">Companies already in your pipeline that are hiring</span>
+        </div>
+        {targetJobSignals.length === 0 ? (
+          <p className="text-xs text-gray-600 italic px-1">No target company jobs found yet — run agents to search for open roles at signal companies.</p>
+        ) : (
           <TableWrapper>
             <thead>
               <tr>
-                <Th>Type</Th>
                 <Th>Role</Th>
+                <Th>Company</Th>
                 <Th>Location</Th>
+                <Th>Why Warm</Th>
+                <Th>Found</Th>
+                <Th>Claim</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800">
+              {targetJobSignals.map((signal, i) => {
+                const isExpanded = expandedRows.has(signal.id)
+                const d = parseDetail(signal.signal_detail)
+                const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
+                return (
+                  <>
+                    <tr
+                      key={signal.id}
+                      onClick={() => onToggleRow(signal.id)}
+                      className={`${rowBg} hover:bg-gray-800 cursor-pointer transition-colors`}
+                    >
+                      <td className="px-4 py-3">
+                        {d.job_url ? (
+                          <a
+                            href={d.job_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={e => e.stopPropagation()}
+                            className="text-sm text-blue-400 hover:text-blue-300 font-medium"
+                          >
+                            {d.job_title || '—'}
+                          </a>
+                        ) : (
+                          <span className="text-sm text-white font-medium">{d.job_title || '—'}</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-sm font-semibold text-gray-100 whitespace-nowrap">
+                        {signal.companies?.name || d.company_name || '—'}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">{d.job_location || '—'}</td>
+                      <td className="px-4 py-3">
+                        <span className="text-xs font-medium text-amber-400">{d.signal_reason || '—'}</span>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
+                        {formatDate(d.date_found || signal.first_detected_at)}
+                      </td>
+                      <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                        <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr key={`${signal.id}-exp`}>
+                        <td colSpan={6} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                          <ExpandedDetailCard signal={signal} />
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                )
+              })}
+            </tbody>
+          </TableWrapper>
+        )}
+      </div>
+
+      {/* ── Section B: Competitor Activity ── */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Competitor Activity</h2>
+          <span className="px-2 py-0.5 rounded-full bg-red-900 text-red-300 text-xs font-bold">
+            {competitorSignals.length}
+          </span>
+        </div>
+        {competitorSignals.length === 0 ? (
+          <p className="text-xs text-gray-600 italic px-1">No competitor signals found yet.</p>
+        ) : (
+          <TableWrapper>
+            <thead>
+              <tr>
+                <Th>Role</Th>
                 <Th>Competitor Firm</Th>
                 <Th>Likely Client</Th>
+                <Th>Location</Th>
                 <Th>Posted</Th>
                 <Th>Claim</Th>
               </tr>
@@ -494,93 +574,17 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                       onClick={() => onToggleRow(signal.id)}
                       className={`${rowBg} hover:bg-gray-800 cursor-pointer transition-colors`}
                     >
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <SignalTypeBadge signalType={signal.signal_type} />
-                      </td>
                       <td className="px-4 py-3 text-sm text-white font-medium">{d.job_title || '—'}</td>
-                      <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">{d.job_location || '—'}</td>
-                      <td className="px-4 py-3 text-sm font-bold text-gray-100 whitespace-nowrap">{d.competitor_firm || '—'}</td>
+                      <td className="px-4 py-3 text-sm font-bold text-gray-100 whitespace-nowrap">
+                        {d.competitor_firm || signal.companies?.name || '—'}
+                      </td>
                       <td className="px-4 py-3">
                         <span className="text-sm text-gray-200">{d.likely_client || '—'}</span>
-                        <ConfidenceBadge confidence={d.confidence} />
+                        <ConfidenceBadge confidence={d.likely_client_confidence || d.confidence} />
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
-                        {formatDate(d.posting_date)}
-                      </td>
-                      <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                        <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
-                      </td>
-                    </tr>
-                    {isExpanded && (
-                      <tr key={`${signal.id}-exp`}>
-                        <td colSpan={7} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
-                          <ExpandedDetailCard signal={signal} />
-                        </td>
-                      </tr>
-                    )}
-                  </>
-                )
-              })}
-            </tbody>
-          </TableWrapper>
-        </div>
-      )}
-
-      {staleSignals.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-3">
-            <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Stale Job Postings</h2>
-            <span className="px-2 py-0.5 rounded-full bg-gray-700 text-gray-300 text-xs font-bold">
-              {staleSignals.length}
-            </span>
-          </div>
-          <TableWrapper>
-            <thead>
-              <tr>
-                <Th>Type</Th>
-                <Th>Company</Th>
-                <Th>Role</Th>
-                <Th>Location</Th>
-                <Th>Date Posted</Th>
-                <Th>Days Posted</Th>
-                <Th>Claim</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800">
-              {staleSignals.map((signal, i) => {
-                const isExpanded = expandedRows.has(signal.id)
-                const d = parseDetail(signal.signal_detail)
-                const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
-                const daysPosted = d.days_posted || 0
-                const daysCls = daysPosted >= 45
-                  ? 'bg-red-900 text-red-300'
-                  : daysPosted >= 30
-                    ? 'bg-orange-900 text-orange-300'
-                    : 'bg-gray-700 text-gray-300'
-                return (
-                  <>
-                    <tr
-                      key={signal.id}
-                      onClick={() => onToggleRow(signal.id)}
-                      className={`${rowBg} hover:bg-gray-800 cursor-pointer transition-colors`}
-                    >
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <SignalTypeBadge signalType={signal.signal_type} />
-                      </td>
-                      <td className="px-4 py-3 text-sm font-semibold text-white whitespace-nowrap">
-                        {signal.companies?.name || d.company_name || '—'}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-200">{d.job_title || '—'}</td>
                       <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">{d.job_location || '—'}</td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
-                        {formatDate(d.date_posted)}
-                      </td>
-                      <td className="px-4 py-3">
-                        {daysPosted > 0 && (
-                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-mono font-semibold ${daysCls}`}>
-                            {daysPosted}d
-                          </span>
-                        )}
+                        {formatDate(d.posting_date || signal.first_detected_at)}
                       </td>
                       <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                         <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
@@ -588,7 +592,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                     </tr>
                     {isExpanded && (
                       <tr key={`${signal.id}-exp`}>
-                        <td colSpan={7} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                        <td colSpan={6} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
                           <ExpandedDetailCard signal={signal} />
                         </td>
                       </tr>
@@ -598,8 +602,8 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
               })}
             </tbody>
           </TableWrapper>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }
@@ -826,7 +830,15 @@ export default function Home() {
   const activeStatuses = ['new', 'carried_forward', 'claimed', 'contacted']
 
   const tabSignals = {
-    clinical: signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'clinical' && activeStatuses.includes(s.status)),
+    clinical: signals.filter(s => {
+      if (SIGNAL_TYPE_CONFIG[s.signal_type]?.tab !== 'clinical') return false
+      if (!activeStatuses.includes(s.status)) return false
+      const d = parseDetail(s.signal_detail)
+      // Hide Pre-Clinical → anything (too noisy) and anything → ?, NA, N/A (bad data)
+      if (d.phase_from === 'Pre-Clinical') return false
+      if (d.phase_to && ['?', 'NA', 'N/A'].includes(String(d.phase_to).trim())) return false
+      return true
+    }),
     funding:  signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'funding'  && activeStatuses.includes(s.status)),
     jobs:     signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'jobs'      && activeStatuses.includes(s.status)),
     leads:    repName ? signals.filter(s => s.claimed_by === repName) : [],

@@ -32,7 +32,7 @@ const LOOKBACK_DAYS = 14;
 // some studies list academic medical centres that slip through. Reject any sponsor
 // whose name matches these patterns.
 const CT_ACADEMIC_PATTERNS =
-  /university|universite|college|hospital|medical cent(er|re)|health system|health cent(er|re)|children's|childrens|memorial|baptist|presbyterian|methodist|veterans|institute of|school of|foundation|research cent(er|re)|cancer cent(er|re)|\bnih\b|\bnci\b|\bcdc\b|\bva\b(?! pharmaceuticals)/i;
+  /university|universite|college|hospital|medical cent(er|re)|health system|health cent(er|re)|children's|childrens|memorial|baptist|presbyterian|methodist|veterans|institute of|school of|foundation|research cent(er|re)|cancer cent(er|re)|oncology group|cooperative group|intergroupe|francophone|thoracique|sloan kettering|\bmayo\b|cleveland clinic|johns hopkins|\bnih\b|\bnci\b|\bcdc\b|\bva\b(?! pharmaceuticals)/i;
 
 // Module-level counter for debug logging of the first N phase transitions per run
 let phaseDebugCount = 0;
