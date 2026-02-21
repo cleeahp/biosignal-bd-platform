@@ -3,68 +3,49 @@ import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import * as cheerio from 'cheerio'
 
 // ─── Competitor firms seed data ────────────────────────────────────────────────
-// This list is upserted into the competitor_firms table when fewer than 30
-// records exist. Career URLs are verified reachable before insertion.
+// 30 life sciences staffing firms only (no CROs/consulting firms).
+// Upserted into competitor_firms when the table has fewer than 30 rows.
 
 const COMPETITOR_FIRMS_SEED = [
-  // URLs verified via HEAD request 2026-02-21
-  { name: 'Actalent', careers_url: 'https://www.actalentservices.com/careers' },
-  { name: 'Kelly Life Sciences', careers_url: 'https://kellyservices.com/us/jobs/life-sciences/' },
-  { name: 'Alku', careers_url: 'https://www.alku.com/jobs/' },
-  { name: 'Black Diamond Networks', careers_url: 'https://blackdiamondnetworks.com/jobs/' },
-  { name: 'Real Life Sciences', careers_url: 'https://reallifesciences.com/careers/' },
-  { name: 'Oxford Global Resources', careers_url: 'https://www.ogr.com/careers' },
-  { name: 'The Planet Group', careers_url: 'https://www.theplanetgroup.com/jobs' },
-  { name: 'ICON plc', careers_url: 'https://jobs.iconplc.com/jobs' },
-  { name: 'Advanced Clinical', careers_url: 'https://www.advancedclinical.com/careers/' },
-  { name: 'Randstad Life Sciences', careers_url: 'https://www.randstadusa.com/jobs/life-sciences' },
-  { name: 'Joule Staffing', careers_url: 'https://www.joulesolutions.com/find-a-job' },
+  { name: 'Actalent',                  careers_url: 'https://www.actalentservices.com/careers' },
+  { name: 'Kelly Life Sciences',        careers_url: 'https://kellyservices.com/us/jobs' },
+  { name: 'Alku',                       careers_url: 'https://boards.greenhouse.io/alku' },
+  { name: 'Black Diamond Networks',     careers_url: 'https://blackdiamondnetworks.com/jobs/' },
+  { name: 'Real Life Sciences',         careers_url: 'https://reallifesciences.com/careers/' },
+  { name: 'Oxford Global Resources',    careers_url: 'https://www.ogr.com/careers' },
+  { name: 'The Planet Group',           careers_url: 'https://www.theplanetgroup.com/jobs' },
+  { name: 'ICON plc',                   careers_url: 'https://careers.iconplc.com/jobs' },
+  { name: 'Advanced Clinical',          careers_url: 'https://www.advancedclinical.com/careers/' },
+  { name: 'Randstad Life Sciences',     careers_url: 'https://www.randstadlifesciences.com/jobs' },
+  { name: 'Joule Staffing',             careers_url: 'https://www.joulesolutions.com/find-a-job' },
   { name: 'Beacon Hill Staffing Group', careers_url: 'https://www.beaconhillstaffing.com/jobs' },
-  { name: 'ASGN Incorporated', careers_url: 'https://www.asgn.com' },
-  { name: 'Net2Source', careers_url: 'https://www.net2source.com/jobs/' },
-  { name: 'USTech Solutions', careers_url: 'https://ustechsolutions.com/jobs/' },
-  { name: 'Yoh Services', careers_url: 'https://www.yoh.com' },
-  { name: 'Soliant Health', careers_url: 'https://www.soliant.com/jobs/' },
-  { name: 'Medix Staffing', careers_url: 'https://www.medixteam.com/job-search/' },
-  { name: 'Epic Staffing Group', careers_url: 'https://www.epicstaffinggroup.com' },
-  { name: 'Solomon Page', careers_url: 'https://www.solomonpage.com/find-a-job/' },
-  { name: 'Spectra Force', careers_url: 'https://www.spectraforce.com/careers' },
-  { name: 'Mindlance', careers_url: 'https://www.mindlance.com/careers/' },
-  { name: 'Green Key Resources', careers_url: 'https://www.greenkeyresources.com/find-a-job' },
-  { name: 'Phaidon International', careers_url: 'https://phaidoninternational.com/jobs' },
-  { name: 'Peoplelink Group', careers_url: 'https://peoplelinkgroup.com/job-seekers/' },
-  { name: 'Pacer Staffing', careers_url: 'https://www.pacerstaffing.com/job-seekers/' },
-  { name: 'ZP Group', careers_url: 'https://zp.group/job-seekers/' },
-  { name: 'Meet Staffing', careers_url: 'https://meetstaffing.com/jobs/' },
-  { name: 'Ampcus', careers_url: 'https://ampcus.com/jobs/' },
-  { name: 'ClinLab Staffing', careers_url: 'https://clinlabstaffing.com/job-seekers/' },
-  { name: 'Medpace', careers_url: 'https://medpace.com/careers/open-positions/' },
-  { name: 'Syneos Health', careers_url: 'https://jobs.syneoshealth.com' },
-  { name: 'Fortrea', careers_url: 'https://careers.fortrea.com/jobs' },
-  { name: 'Halloran Consulting', careers_url: 'https://www.halloran-consulting.com/careers' },
-  { name: 'Premier Research', careers_url: 'https://premierresearch.com/careers/' },
-  { name: 'Worldwide Clinical Trials', careers_url: 'https://worldwideclinicaltrials.com/careers/' },
-  { name: 'IQVIA', careers_url: 'https://jobs.iqvia.com' },
-  { name: 'Parexel', careers_url: 'https://parexel.com/careers' },
-  { name: 'Labcorp Drug Development', careers_url: 'https://jobs.labcorp.com' },
-  { name: 'ProPharma Group', careers_url: 'https://propharmagroup.com/careers/' },
-  { name: 'TalentBurst', careers_url: 'https://talentburst.com/jobs/' },
-  { name: 'KForce', careers_url: 'https://kforce.com/job-seekers/' },
-  { name: 'WuXi AppTec Clinical', careers_url: 'https://wuxiclinical.com/careers' },
-  { name: 'Charles River Laboratories', careers_url: 'https://careers.crl.com' },
-  { name: 'Integrated Project Management', careers_url: 'https://ipmglobal.com/careers' },
+  { name: 'ASGN Incorporated',          careers_url: 'https://www.asgn.com' },
+  { name: 'Net2Source',                 careers_url: 'https://www.net2source.com/jobs/' },
+  { name: 'USTech Solutions',           careers_url: 'https://ustechsolutions.com/jobs/' },
+  { name: 'Yoh Services',               careers_url: 'https://www.yoh.com' },
+  { name: 'Soliant Health',             careers_url: 'https://www.soliant.com/jobs/' },
+  { name: 'Medix Staffing',             careers_url: 'https://www.medixteam.com/job-search/' },
+  { name: 'Epic Staffing Group',        careers_url: 'https://www.epicstaffinggroup.com' },
+  { name: 'Solomon Page',               careers_url: 'https://www.solomonpage.com/find-a-job/' },
+  { name: 'Spectra Force',              careers_url: 'https://www.spectraforce.com/careers' },
+  { name: 'Mindlance',                  careers_url: 'https://www.mindlance.com/careers/' },
+  { name: 'Green Key Resources',        careers_url: 'https://www.greenkeyresources.com/find-a-job' },
+  { name: 'Phaidon International',      careers_url: 'https://phaidoninternational.com/jobs' },
+  { name: 'Peoplelink Group',           careers_url: 'https://peoplelinkgroup.com/job-seekers/' },
+  { name: 'Pacer Staffing',             careers_url: 'https://www.pacerstaffing.com/job-seekers/' },
+  { name: 'ZP Group',                   careers_url: 'https://zp.group/job-seekers/' },
+  { name: 'Meet Staffing',              careers_url: 'https://meetstaffing.com/jobs/' },
+  { name: 'Ampcus',                     careers_url: 'https://ampcus.com/jobs/' },
+  { name: 'ClinLab Staffing',           careers_url: 'https://clinlabstaffing.com/job-seekers/' },
 ]
 
 const BOT_UA = 'Mozilla/5.0 (compatible; BioSignalBot/1.0)'
 
-// Non-US country names. If the inferred client company name contains one of these
-// it is likely a non-US entity — we only generate signals for US-based clients.
-const NON_US_CLIENT_PATTERNS =
-  /\b(Canada|UK|United Kingdom|Germany|France|Netherlands|Switzerland|Sweden|Australia|Japan|China|India|Korea|Singapore|Ireland|Denmark|Belgium|Italy|Spain|Brazil|Israel|Norway|Finland|Taiwan|GmbH|AG\b|NV\b|BV\b)\b/i
+// Non-US job location filter — used to skip non-US postings
+const NON_US_JOB_LOC =
+  /\b(Canada|UK|United Kingdom|Germany|France|Netherlands|Switzerland|Sweden|Australia|Japan|China|India|Korea|Singapore|Ireland|Denmark|Belgium|Italy|Spain|Brazil|Israel|Norway|Finland|Taiwan)\b/i
 
 // ─── Shared signal helpers ─────────────────────────────────────────────────────
-
-// upsertCompany imported from lib/supabase.js (shared ilike check-then-insert pattern)
 
 async function signalExists(companyId, signalType, sourceUrl) {
   const { data } = await supabase
@@ -137,11 +118,11 @@ async function seedCompetitorFirms() {
 // ─── ATS detection helpers ─────────────────────────────────────────────────────
 
 /**
- * Extract a Greenhouse or Lever board slug from career page HTML.
- * Looks for embedded board URLs like boards.greenhouse.io/{slug} or jobs.lever.co/{slug}.
+ * Extract a Greenhouse, Lever, Jobvite, Workday, or iCIMS board slug
+ * from career page HTML.
  *
  * @param {string} html
- * @returns {{ type: 'greenhouse'|'lever', slug: string }|null}
+ * @returns {{ type: string, slug: string }|null}
  */
 function detectAtsSlug(html) {
   // iCIMS / Workday: log and return a sentinel so callers can skip API attempts
@@ -155,8 +136,7 @@ function detectAtsSlug(html) {
   const ghEmbedMatch = html.match(/boards\.greenhouse\.io\/embed\/job_board\?for=([a-z0-9_-]+)/i)
   if (ghEmbedMatch) return { type: 'greenhouse', slug: ghEmbedMatch[1] }
 
-  // Greenhouse direct path: boards.greenhouse.io/{slug} or boards-api.greenhouse.io/v1/boards/{slug}
-  // Skip non-slug path segments (embed, v1, boards)
+  // Greenhouse direct path
   const ghMatch = html.match(/boards(?:-api)?\.greenhouse\.io\/(?:v1\/boards\/)?([a-z0-9_-]+)/i)
   if (ghMatch && !['embed', 'v1', 'boards', 'jobs'].includes(ghMatch[1].toLowerCase())) {
     return { type: 'greenhouse', slug: ghMatch[1] }
@@ -174,11 +154,9 @@ function detectAtsSlug(html) {
 
 /**
  * Attempt to fetch job listings from a Workday-powered careers site.
- * Derives the Workday tenant slug from the firm name and tries common subdomain
- * patterns (wd1, wd5). Parses JSON-LD or wd-data script blocks from the page.
  *
  * @param {string} firmSlug  Lowercase, no-punctuation firm identifier
- * @returns {Promise<Array<{title: string, location: string, applyUrl: string}>>}
+ * @returns {Promise<Array<{title, location, applyUrl, description, ats_source}>>}
  */
 async function fetchWorkdayJobs(firmSlug) {
   const tenants = [1, 5, 3, 2].map((n) => `https://${firmSlug}.wd${n}.myworkdayjobs.com/en-US/${firmSlug}_External`)
@@ -201,11 +179,13 @@ async function fetchWorkdayJobs(firmSlug) {
 
     if (html.length < 200) continue
 
-    // Try JSON-LD first (Workday sometimes embeds JobPosting schemas)
+    // Try JSON-LD first
     const ldJobs = parseJsonLdJobs(html)
     if (ldJobs.length > 0) {
       console.log(`Workday [${firmSlug}]: ${ldJobs.length} JSON-LD jobs found`)
-      return ldJobs.filter((j) => matchesRoleKeywords(j.title))
+      return ldJobs
+        .filter((j) => matchesRoleKeywords(j.title))
+        .map((j) => ({ ...j, description: '', ats_source: 'workday' }))
     }
 
     // Try Workday's embedded wd-data JSON block
@@ -219,6 +199,8 @@ async function fetchWorkdayJobs(firmSlug) {
           title: j.title || j.jobTitle || j.job_title || '',
           location: j.locationsText || j.location || j.primaryLocation || '',
           applyUrl: j.externalPath ? `${tenantUrl}${j.externalPath}` : tenantUrl,
+          description: '',
+          ats_source: 'workday',
         })).filter((j) => j.title && matchesRoleKeywords(j.title))
         if (jobs.length > 0) {
           console.log(`Workday [${firmSlug}]: ${jobs.length} jobs from wd-data`)
@@ -240,10 +222,9 @@ async function fetchWorkdayJobs(firmSlug) {
 /**
  * Best-effort LinkedIn job search for a firm. LinkedIn typically blocks
  * server-side requests; this is a graceful fallback only.
- * Returns empty array on any error (non-fatal).
  *
  * @param {string} firmName
- * @returns {Promise<Array<{title: string, location: string, applyUrl: string}>>}
+ * @returns {Promise<Array<{title, location, applyUrl, description, ats_source}>>}
  */
 async function fetchLinkedInJobs(firmName) {
   const keyword = 'clinical research regulatory biostatistics'
@@ -267,7 +248,13 @@ async function fetchLinkedInJobs(firmName) {
       if (!title || !matchesRoleKeywords(title)) return
       const location = $el.find('[class*="job-location"], [class*="location"]').first().text().trim()
       const href = $el.find('a').first().attr('href') || url
-      jobs.push({ title, location, applyUrl: href.startsWith('http') ? href : `https://www.linkedin.com${href}` })
+      jobs.push({
+        title,
+        location,
+        applyUrl: href.startsWith('http') ? href : `https://www.linkedin.com${href}`,
+        description: '',
+        ats_source: 'linkedin',
+      })
     })
     console.log(`LinkedIn [${firmName}]: ${jobs.length} matching jobs`)
     return jobs
@@ -278,11 +265,11 @@ async function fetchLinkedInJobs(firmName) {
 }
 
 /**
- * Fetch actual job listings from Greenhouse or Lever public API.
- * Returns array of { title, location, applyUrl } objects filtered by role keywords.
+ * Fetch actual job listings from Greenhouse, Lever, or Jobvite public API.
+ * Returns array of { title, location, applyUrl, description, ats_source } objects.
  *
  * @param {{ type: string, slug: string }} ats
- * @returns {Promise<Array<{title: string, location: string, applyUrl: string}>>}
+ * @returns {Promise<Array<{title, location, applyUrl, description, ats_source}>>}
  */
 async function fetchAtsJobs(ats) {
   // Non-API ATS systems — log and return empty
@@ -306,13 +293,14 @@ async function fetchAtsJobs(ats) {
         title: j.title || j.jobTitle || '',
         location: j.location || j.jobLocation || '',
         applyUrl: j.applyUrl || j.url || url,
+        description: String(j.description || j.jobDescription || '').replace(/<[^>]*>/g, '').slice(0, 500),
+        ats_source: 'jobvite',
       }))
       const matched = jobs.filter((j) => matchesRoleKeywords(j.title))
       console.log(`Jobvite API [${ats.slug}]: ${jobs.length} total jobs, ${matched.length} matching`)
-      console.log(`Jobvite API [${ats.slug}]: all titles: ${jobs.map((j) => j.title).slice(0, 20).join(' | ')}`)
       return matched
     } else if (ats.type === 'greenhouse') {
-      // ?content=true returns full job descriptions; needed for some boards to list all jobs
+      // ?content=true returns full job descriptions
       url = `https://boards-api.greenhouse.io/v1/boards/${ats.slug}/jobs?content=true`
       const resp = await fetch(url, { signal: AbortSignal.timeout(8000) })
       console.log(`Greenhouse API [${ats.slug}]: HTTP ${resp.status}`)
@@ -328,6 +316,8 @@ async function fetchAtsJobs(ats) {
         title: j.title || '',
         location: j.location?.name || '',
         applyUrl: j.absolute_url || url,
+        description: String(j.content || '').replace(/<[^>]*>/g, '').slice(0, 500),
+        ats_source: 'greenhouse',
       }))
       console.log(`Greenhouse API [${ats.slug}]: all titles: ${jobs.map((j) => j.title).slice(0, 20).join(' | ')}`)
       const matched = jobs.filter((j) => matchesRoleKeywords(j.title))
@@ -344,6 +334,8 @@ async function fetchAtsJobs(ats) {
         title: j.text || '',
         location: j.categories?.location || j.workplaceType || '',
         applyUrl: j.hostedUrl || url,
+        description: String(j.descriptionPlain || '').slice(0, 500),
+        ats_source: 'lever',
       }))
       console.log(`Lever API [${ats.slug}]: all titles: ${jobs.map((j) => j.title).slice(0, 20).join(' | ')}`)
       const matched = jobs.filter((j) => matchesRoleKeywords(j.title))
@@ -358,10 +350,9 @@ async function fetchAtsJobs(ats) {
 
 /**
  * Parse JSON-LD JobPosting schema blocks from HTML.
- * Returns matching jobs filtered by role keywords.
  *
  * @param {string} html
- * @returns {Array<{title: string, location: string, applyUrl: string}>}
+ * @returns {Array<{title, location, applyUrl}>}
  */
 function parseJsonLdJobs(html) {
   const jobs = []
@@ -391,16 +382,13 @@ function parseJsonLdJobs(html) {
 
 /**
  * Scrape job listings from static career page HTML by looking for anchor tags
- * whose href contains job-specific URL path segments (/job/, /opening/, etc.)
- * and whose link text matches life sciences role keywords.
- *
- * Falls back to scanning all anchors with matching link text if href-based
- * matching finds nothing.
+ * whose href contains job-specific URL path segments and whose text matches
+ * life sciences role keywords.
  *
  * @param {string} html
  * @param {string} baseUrl  Used to resolve relative hrefs
  * @param {string} firmName Used for logging
- * @returns {Array<{title: string, location: string, applyUrl: string}>}
+ * @returns {Array<{title, location, applyUrl}>}
  */
 function scrapeHtmlJobs(html, baseUrl, firmName) {
   const jobs = []
@@ -416,8 +404,6 @@ function scrapeHtmlJobs(html, baseUrl, firmName) {
       const title = $el.text().trim().replace(/\s+/g, ' ')
       if (!title || title.length < 5 || title.length > 150) return
       if (!matchesRoleKeywords(title)) return
-
-      // Require either a job-related URL path OR just a matching title (no unrelated pages)
       if (!JOB_HREF_RE.test(href) && !href) return
 
       let applyUrl = href
@@ -431,7 +417,6 @@ function scrapeHtmlJobs(html, baseUrl, firmName) {
         }
       }
 
-      // Try to extract a location label from the nearest container
       const $parent = $el.closest('li, div, article, tr')
       const locText = $parent
         .find('[class*="location"], [class*="city"], [class*="loc"]')
@@ -447,14 +432,17 @@ function scrapeHtmlJobs(html, baseUrl, firmName) {
   return jobs
 }
 
-// ─── Client inference from career page HTML + companies table ─────────────────
-// Strategy (in priority order):
-//   1. Detect Greenhouse/Lever ATS embed → fetch actual job list via API
-//   2. Parse JSON-LD JobPosting schema blocks
-//   3. Scrape <a> tags with job-related hrefs from static HTML
-
-async function fetchCareerPageJobs(careersUrl, firmName, knownCompanyNames) {
-  if (!careersUrl) return { jobs: [], likely_client: 'Unknown', confidence: 'low' }
+/**
+ * Fetch job listings from a firm's career page using all available strategies.
+ * Returns array of { title, location, applyUrl, description, ats_source }.
+ * No client inference — returns job data only.
+ *
+ * @param {string} careersUrl
+ * @param {string} firmName
+ * @returns {Promise<Array<{title, location, applyUrl, description, ats_source}>>}
+ */
+async function fetchCareerPageJobs(careersUrl, firmName) {
+  if (!careersUrl) return []
 
   let html = ''
   try {
@@ -463,135 +451,90 @@ async function fetchCareerPageJobs(careersUrl, firmName, knownCompanyNames) {
       signal: AbortSignal.timeout(8000),
       redirect: 'follow',
     })
-    if (!resp.ok) return { jobs: [], likely_client: 'Unknown', confidence: 'low' }
+    if (!resp.ok) return []
     html = await resp.text()
   } catch {
-    return { jobs: [], likely_client: 'Unknown', confidence: 'low' }
+    return []
   }
 
   if (html.length < 200) {
     console.log(`${firmName}: career page response too short (${html.length} chars)`)
-    return { jobs: [], likely_client: 'Unknown', confidence: 'low' }
+    return []
   }
 
-  // ── Strategy 1: ATS API (Greenhouse / Lever) ──────────────────────────────
+  // ── Strategy 1: ATS API (Greenhouse / Lever / Jobvite / Workday) ───────────
   const ats = detectAtsSlug(html)
   if (ats) {
     console.log(`${firmName}: detected ATS ${ats.type}/${ats.slug}`)
     const atsJobs = await fetchAtsJobs(ats)
     if (atsJobs.length > 0) {
       console.log(`${firmName}: ${atsJobs.length} ATS jobs via ${ats.type}`)
-      // Infer client from job titles only — never from full page HTML
-      const likely_client = inferClientFromText(
-        atsJobs.map((j) => j.title).join(' '),
-        firmName,
-        knownCompanyNames
-      )
-      return { jobs: atsJobs, likely_client, confidence: likely_client !== 'Unknown' ? 'high' : 'low' }
+      return atsJobs
     }
   }
 
-  // ── Strategy 2: JSON-LD JobPosting schema ────────────────────────────────
+  // ── Strategy 2: JSON-LD JobPosting schema ──────────────────────────────────
   const ldJobs = parseJsonLdJobs(html)
   if (ldJobs.length > 0) {
     console.log(`${firmName}: ${ldJobs.length} JSON-LD jobs`)
-    const likely_client = inferClientFromText(
-      ldJobs.map((j) => j.title).join(' '),
-      firmName,
-      knownCompanyNames
-    )
-    return { jobs: ldJobs, likely_client, confidence: likely_client !== 'Unknown' ? 'medium' : 'low' }
+    return ldJobs.map((j) => ({ ...j, description: '', ats_source: 'json-ld' }))
   }
 
-  // ── Strategy 3: <a href> scan for job-path anchors ────────────────────────
+  // ── Strategy 3: <a href> scan for job-path anchors ─────────────────────────
   const htmlJobs = scrapeHtmlJobs(html, careersUrl, firmName)
   if (htmlJobs.length > 0) {
     console.log(`${firmName}: ${htmlJobs.length} HTML-scraped jobs`)
-    const likely_client = inferClientFromText(
-      htmlJobs.map((j) => j.title).join(' '),
-      firmName,
-      knownCompanyNames
-    )
-    return { jobs: htmlJobs, likely_client, confidence: 'low' }
+    return htmlJobs.map((j) => ({ ...j, description: '', ats_source: 'html-scrape' }))
   }
 
-  // ── No jobs found — detect JS-rendered vs truly empty ─────────────────────
+  // ── LinkedIn fallback: best-effort for iCIMS / JS-rendered / unknown ATS ───
   const $check = cheerio.load(html)
   $check('nav, footer, script, style, header').remove()
   const visibleText = $check.text().replace(/\s+/g, ' ').trim()
-  if (visibleText.length < 500) {
-    console.log(`${firmName}: JS-rendered career page (${visibleText.length} chars visible) — trying LinkedIn fallback`)
-  } else {
-    console.log(`${firmName}: no job listings found via any method (${visibleText.length} chars visible) — trying LinkedIn fallback`)
-  }
+  console.log(`${firmName}: no job listings found (${visibleText.length} chars visible) — trying LinkedIn fallback`)
 
-  // ── LinkedIn fallback: best-effort for iCIMS / JS-rendered / unknown ATS ──
   const liJobs = await fetchLinkedInJobs(firmName)
   if (liJobs.length > 0) {
-    const likely_client = inferClientFromText(liJobs.map((j) => j.title).join(' '), firmName, knownCompanyNames)
-    return { jobs: liJobs, likely_client, confidence: 'low' }
+    return liJobs
   }
 
-  return { jobs: [], likely_client: 'Unknown', confidence: 'low' }
-}
-
-/** Scan text for known company names — returns first match or 'Unknown'. */
-function inferClientFromText(text, firmName, knownCompanyNames) {
-  const textLower = text.toLowerCase()
-  const firmLower = firmName.toLowerCase()
-  for (const companyName of knownCompanyNames) {
-    if (!companyName || companyName.length < 5) continue
-    if (companyName.toLowerCase().includes(firmLower) || firmLower.includes(companyName.toLowerCase())) continue
-    if (textLower.includes(companyName.toLowerCase())) return companyName
-  }
-  return 'Unknown'
+  return []
 }
 
 // ─── Persist a single competitor activity signal ───────────────────────────────
-// Dedup key is firm + ISO week so one signal per firm per week at most.
+// Dedup key is job URL + title hash per ISO week — one signal per unique job.
 
-async function persistCompetitorSignal(firmName, careersUrl, likelyClient, confidence, jobTitle = 'Active life sciences hiring', jobLocation = '') {
-  // US-only: skip signals where the inferred client is clearly a non-US entity
-  if (likelyClient && likelyClient !== 'Unknown' && NON_US_CLIENT_PATTERNS.test(likelyClient)) {
-    console.log(`[competitorJobBoard] FILTERED (non-US client): ${likelyClient} via ${firmName}`)
+async function persistCompetitorSignal(firmName, jobUrl, jobTitle, jobLocation, jobDescription = '', atsSource = '') {
+  // US-only: skip jobs with a non-US location
+  if (jobLocation && NON_US_JOB_LOC.test(jobLocation)) {
+    console.log(`[competitorJobBoard] FILTERED (non-US job location): "${jobLocation}" — ${jobTitle}`)
     return false
-  }
-
-  // US-only: skip jobs with a non-US location in the posting
-  if (jobLocation) {
-    const NON_US_JOB_LOC = /\b(Canada|UK|United Kingdom|Germany|France|Netherlands|Switzerland|Sweden|Australia|Japan|China|India|Korea|Singapore|Ireland|Denmark|Belgium|Italy|Spain|Brazil|Israel|Norway|Finland|Taiwan)\b/i
-    if (NON_US_JOB_LOC.test(jobLocation)) {
-      console.log(`[competitorJobBoard] FILTERED (non-US job location): "${jobLocation}" — ${jobTitle}`)
-      return false
-    }
   }
 
   const firmCompany = await upsertCompany(supabase, { name: firmName })
   if (!firmCompany) return false
 
-  // Dedup key: careers URL + job title hash (one signal per unique job per firm)
-  const dedupKey = careersUrl || 'https://biosignal.app'
+  // Dedup key: job URL + title slug per week
   const titleSlug = jobTitle.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40)
   const weekNum = Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000))
-  const sourceUrl = `${dedupKey}#${titleSlug}-week-${weekNum}`
+  const sourceUrl = `${jobUrl || 'https://biosignal.app'}#${titleSlug}-week-${weekNum}`
   const exists = await signalExists(firmCompany.id, 'competitor_job_posting', sourceUrl)
   if (exists) return false
 
   const today = new Date().toISOString().split('T')[0]
-  const clientNote = likelyClient !== 'Unknown' ? ` — likely client: ${likelyClient}` : ''
 
   const { error } = await supabase.from('signals').insert({
     company_id: firmCompany.id,
     signal_type: 'competitor_job_posting',
-    signal_summary: `${firmName}: "${jobTitle}"${clientNote}`,
+    signal_summary: `${firmName}: "${jobTitle}"`,
     signal_detail: {
       job_title: jobTitle,
       job_location: jobLocation,
       posting_date: today,
       competitor_firm: firmName,
-      likely_client: likelyClient,
-      likely_client_confidence: confidence,
-      source_url: careersUrl || '',
+      job_url: jobUrl || '',
+      job_description: jobDescription,
+      ats_source: atsSource,
     },
     source_url: sourceUrl,
     source_name: 'CareersPage',
@@ -629,9 +572,7 @@ export async function run() {
   try {
     // ── Step 1: Seed competitor firms table if needed ────────────────────────
     const seedResult = await seedCompetitorFirms()
-    console.log(
-      `Competitor seed: ${seedResult.seeded} inserted, ${seedResult.skipped} skipped`
-    )
+    console.log(`Competitor seed: ${seedResult.seeded} inserted, ${seedResult.skipped} skipped`)
 
     // ── Step 2: Load active firms from DB ───────────────────────────────────
     const { data: allFirms, error: firmsErr } = await supabase
@@ -643,30 +584,14 @@ export async function run() {
     if (firmsErr) throw new Error(`Failed to load competitor firms: ${firmsErr.message}`)
 
     const firmsToCheck = allFirms || []
-    console.log(
-      `Competitor Job Board: processing ALL ${firmsToCheck.length} active firms this run`
-    )
+    console.log(`Competitor Job Board: processing ${firmsToCheck.length} active firms`)
 
     let firmsChecked = 0
 
-    // ── Step 3: Load known Life Sciences companies for client inference ──────
-    const { data: knownCompanies } = await supabase
-      .from('companies')
-      .select('name')
-      .eq('industry', 'Life Sciences')
-      .limit(200)
-    const knownCompanyNames = (knownCompanies || []).map((c) => c.name)
-    console.log(`Loaded ${knownCompanyNames.length} known companies for client inference`)
-
-    // ── Step 4: For each firm, detect ATS / parse JSON-LD / scan HTML ────────
+    // ── Step 3: For each firm, fetch jobs and emit signals ───────────────────
     for (const firm of firmsToCheck) {
       firmsChecked++
-
-      const { jobs, likely_client, confidence } = await fetchCareerPageJobs(
-        firm.careers_url,
-        firm.name,
-        knownCompanyNames
-      )
+      const jobs = await fetchCareerPageJobs(firm.careers_url, firm.name)
 
       if (jobs.length > 0) {
         // Emit one signal per matching job (capped at 5 per firm per run)
@@ -674,27 +599,16 @@ export async function run() {
           const inserted = await persistCompetitorSignal(
             firm.name,
             job.applyUrl || firm.careers_url,
-            likely_client,
-            confidence,
             job.title,
-            job.location
+            job.location || '',
+            job.description || '',
+            job.ats_source || '',
           )
           if (inserted) signalsFound++
         }
-      } else {
-        // Fall back to firm-level "actively hiring" signal
-        const inserted = await persistCompetitorSignal(
-          firm.name,
-          firm.careers_url,
-          likely_client,
-          confidence,
-          'Active life sciences hiring',
-          ''
-        )
-        if (inserted) signalsFound++
       }
 
-      console.log(`${firm.name}: ${jobs.length} jobs, client="${likely_client}" (${confidence})`)
+      console.log(`${firm.name}: ${jobs.length} matching jobs`)
 
       // 400ms delay between firms — balanced against Vercel 300s timeout
       if (firmsChecked < firmsToCheck.length) {
@@ -720,9 +634,7 @@ export async function run() {
       })
       .eq('id', runId)
 
-    console.log(
-      `Competitor Job Board Agent complete — signals: ${signalsFound}, firms checked: ${firmsChecked}`
-    )
+    console.log(`Competitor Job Board Agent complete — signals: ${signalsFound}, firms checked: ${firmsChecked}`)
 
     return {
       signalsFound,

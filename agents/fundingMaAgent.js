@@ -643,23 +643,96 @@ function extractMaTarget(text, acquirerName) {
   if (!text) return '';
 
   const patterns = [
-    /to\s+acqui(?:re|red|ring)\s+([A-Z][A-Za-z0-9\s,\.&]+?)(?:\s*,|\s+for\s|\s+in\s+a|\s*\(|\.)/,
-    /has\s+acqui(?:re|red|ring)\s+([A-Z][A-Za-z0-9\s,\.&]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/,
-    /merger\s+with\s+([A-Z][A-Za-z0-9\s,\.&]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/i,
-    /combination\s+with\s+([A-Z][A-Za-z0-9\s,\.&]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/i,
+    // "entered into a definitive agreement to acquire XYZ"
+    /definitive\s+agreement\s+to\s+acqui(?:re|red)\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*,|\s+for\s|\s+in\s+a|\s*\(|\.)/,
+    // "agreed to acquire XYZ"
+    /agreed\s+to\s+acqui(?:re|red)\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*,|\s+for\s|\s+in\s+a|\s*\(|\.)/,
+    // "to acquire XYZ"
+    /to\s+acqui(?:re|red|ring)\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*,|\s+for\s|\s+in\s+a|\s*\(|\.)/,
+    // "has acquired / will acquire XYZ"
+    /(?:has|will)\s+acqui(?:re|red|ring)\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/,
+    // "acquisition of XYZ"
+    /acquisition\s+of\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/i,
+    // "merger agreement with XYZ"
+    /merger\s+agreement\s+with\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/i,
+    // "merger with XYZ"
+    /merger\s+with\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/i,
+    // "combination with XYZ"
+    /combination\s+with\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/i,
   ];
 
   const acquirerPrefix = acquirerName.toLowerCase().slice(0, 10);
   for (const pat of patterns) {
     const m = text.match(pat);
     if (m) {
-      const name = m[1].trim().replace(/\s+/g, ' ');
+      const name = m[1].trim().replace(/\s+/g, ' ').replace(/\s*(Inc\.|Corp\.|LLC|Ltd\.).*$/, '$1').trim();
       if (name.length >= 3 && name.length <= 80 && !name.toLowerCase().startsWith(acquirerPrefix)) {
         return name;
       }
     }
   }
   return '';
+}
+
+/**
+ * Classify M&A transaction type from 8-K filing text.
+ * Returns 'acquisition', 'merger', 'partnership', or 'ipo'.
+ *
+ * @param {string} text
+ * @returns {'acquisition'|'merger'|'partnership'|'ipo'}
+ */
+function classifyTransactionType(text) {
+  if (!text) return 'acquisition';
+  const lower = text.toLowerCase();
+  if (/merger of equals|merging with|joint venture|equally owned/.test(lower)) return 'merger';
+  if (/licensing agreement|collaboration agreement|co-development|co-promotion|strategic partnership|research collaboration/.test(lower)) return 'partnership';
+  if (/initial public offering|priced its.*offering|filed.*s-1/.test(lower)) return 'ipo';
+  return 'acquisition'; // default for 8-K filings containing acquisition/merger keywords
+}
+
+/**
+ * Search BioSpace for deal details about a company.
+ * Best-effort: returns null on any failure.
+ *
+ * @param {string} companyName
+ * @returns {Promise<{deal_value: string|null, deal_summary: string, article_url: string}|null>}
+ */
+async function searchBioSpaceDeal(companyName) {
+  const searchUrl = `https://www.biospace.com/search?q=${encodeURIComponent(companyName + ' acquisition')}`;
+  try {
+    await sleep(SEC_RATE_LIMIT_MS);
+    const resp = await fetch(searchUrl, {
+      headers: { 'User-Agent': BIOSPACE_BOT_UA, Accept: 'text/html' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!resp.ok) return null;
+    const html = await resp.text();
+
+    const articles = parseBioSpaceArticles(html, 'https://www.biospace.com');
+    if (articles.length === 0) return null;
+
+    // Check if first article title mentions the company
+    const firstArticle = articles.find(a =>
+      a.title.toLowerCase().includes(companyName.toLowerCase().slice(0, 8))
+    ) || articles[0];
+
+    // Fetch the article for deal value
+    await sleep(SEC_RATE_LIMIT_MS);
+    const articleResp = await fetch(firstArticle.url, {
+      headers: { 'User-Agent': BIOSPACE_BOT_UA },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!articleResp.ok) return { deal_value: null, deal_summary: firstArticle.title, article_url: firstArticle.url };
+
+    const articleHtml = await articleResp.text();
+    const articleText = articleHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 3000);
+    const dealValue = extractAmount(articleText);
+
+    return { deal_value: dealValue, deal_summary: firstArticle.title, article_url: firstArticle.url };
+  } catch (err) {
+    console.log(`[fundingMaAgent] BioSpace search failed for "${companyName}": ${err.message}`);
+    return null;
+  }
 }
 
 /**
@@ -720,19 +793,34 @@ async function processMaFilings(sixMonthsAgo, today) {
       const filingBodyText = await fetchMaFilingText(hit);
       const dealAmount = extractAmount(filingBodyText) || extractAmount(filingText);
       const acquiredName = extractMaTarget(filingBodyText, entityName);
+      const transactionType = classifyTransactionType(filingBodyText);
       if (acquiredName) {
-        console.log(`[fundingMaAgent] M&A target found: ${entityName} → ${acquiredName}`);
+        console.log(`[fundingMaAgent] M&A target found: ${entityName} → ${acquiredName} (${transactionType})`);
       }
 
+      // BioSpace enrichment — best-effort, gracefully skipped on failure
+      let bioSpaceDeal = null;
+      try {
+        bioSpaceDeal = await searchBioSpaceDeal(entityName);
+        if (bioSpaceDeal?.deal_summary) {
+          console.log(`[fundingMaAgent] BioSpace deal found for ${entityName}: ${bioSpaceDeal.deal_summary}`);
+        }
+      } catch { /* non-fatal */ }
+
+      const finalDealAmount = dealAmount || bioSpaceDeal?.deal_value || null;
+
       const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, MA_BASE_SCORE);
-      const dealSummary = `${entityName} announced an M&A transaction${acquiredName ? ` to acquire ${acquiredName}` : ''}${dealAmount ? ` valued at ${dealAmount}` : ''}`;
+      const dealSummary = bioSpaceDeal?.deal_summary
+        || `${entityName} announced an M&A transaction${acquiredName ? ` to acquire ${acquiredName}` : ''}${finalDealAmount ? ` valued at ${finalDealAmount}` : ''}`;
       const detail = {
         company_name: entityName,
         acquirer_name: entityName,
         acquired_name: acquiredName,
+        transaction_type: transactionType,
+        deal_value: finalDealAmount,
         adsh,
         funding_type: 'ma',
-        funding_amount: dealAmount,
+        funding_amount: finalDealAmount,
         funding_summary: dealSummary,
         deal_summary: dealSummary,
         date_announced: fileDate,
