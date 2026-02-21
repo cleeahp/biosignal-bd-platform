@@ -763,6 +763,8 @@ export default function Home() {
   const [notes, setNotes]                 = useState({})
   const [savingNotes, setSavingNotes]     = useState(new Set())
   const [leadsGroupOpen, setLeadsGroupOpen] = useState({ clinical: true, funding: true, jobs: true })
+  const [agentRunning, setAgentRunning]     = useState(false)
+  const [toast, setToast]                   = useState(null) // { type: 'success'|'error', message }
   const repInputRef = useRef(null)
 
   const fetchSignals = useCallback(async () => {
@@ -890,6 +892,34 @@ export default function Home() {
     }
   }
 
+  const runAgents = async () => {
+    setAgentRunning(true)
+    setToast(null)
+    try {
+      const token = process.env.NEXT_PUBLIC_AGENT_SECRET_TOKEN
+      const res = await fetch('/api/agents/orchestrator', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setToast({ type: 'error', message: data.error || `HTTP ${res.status}` })
+      } else {
+        const total =
+          data.totalSignals ??
+          data.signalsFound ??
+          Object.values(data.results || {}).reduce((sum, r) => sum + (r.signalsFound || 0), 0)
+        setToast({ type: 'success', message: `Agents complete — ${total} new signals found` })
+        fetchSignals()
+      }
+    } catch (err) {
+      setToast({ type: 'error', message: err.message })
+    } finally {
+      setAgentRunning(false)
+      setTimeout(() => setToast(null), 6000)
+    }
+  }
+
   const saveRepName = () => {
     const trimmed = repInputValue.trim()
     if (trimmed) {
@@ -920,8 +950,39 @@ export default function Home() {
               </span>
             </div>
 
-            {/* Rep identity */}
+            {/* Right-side actions */}
             <div className="flex items-center gap-2">
+              {/* Refresh */}
+              <button
+                onClick={fetchSignals}
+                disabled={loading}
+                title="Refresh signals"
+                className="p-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white disabled:opacity-40 transition-colors"
+              >
+                <svg
+                  className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`}
+                  viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                  strokeLinecap="round" strokeLinejoin="round"
+                >
+                  <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+
+              {/* Run Agents */}
+              <button
+                onClick={runAgents}
+                disabled={agentRunning}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold transition-colors whitespace-nowrap"
+              >
+                {agentRunning ? (
+                  <>
+                    <span className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />
+                    Running…
+                  </>
+                ) : 'Run Agents'}
+              </button>
+
+              {/* Rep identity */}
               {showRepInput ? (
                 <div className="flex items-center gap-2">
                   <span className="text-gray-400 text-xs hidden sm:inline">Your name:</span>
@@ -1004,6 +1065,27 @@ export default function Home() {
           </div>
         </div>
       </header>
+
+      {/* ── Toast notification ── */}
+      {toast && (
+        <div
+          className={`fixed bottom-6 right-6 z-50 flex items-center gap-3 px-5 py-3.5 rounded-lg shadow-2xl text-sm font-medium max-w-sm ${
+            toast.type === 'success'
+              ? 'bg-green-800 text-green-100 border border-green-700'
+              : 'bg-red-900 text-red-100 border border-red-700'
+          }`}
+        >
+          <span className="shrink-0 text-base">{toast.type === 'success' ? '✓' : '✕'}</span>
+          <span className="flex-1 leading-snug">{toast.message}</span>
+          <button
+            onClick={() => setToast(null)}
+            className="shrink-0 ml-1 opacity-60 hover:opacity-100 transition-opacity text-xs leading-none"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* ── Main Content ── */}
       <main className="max-w-screen-xl mx-auto px-4 sm:px-6 py-6">

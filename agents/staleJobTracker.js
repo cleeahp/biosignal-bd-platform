@@ -1,4 +1,4 @@
-import { supabase, normalizeCompanyName } from '../lib/supabase.js'
+import { supabase, upsertCompany } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import * as cheerio from 'cheerio'
 
@@ -6,16 +6,7 @@ const BOT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KH
 
 // ─── Shared signal helpers ─────────────────────────────────────────────────────
 
-async function upsertCompany(name) {
-  const normalized = normalizeCompanyName(name)
-  if (!normalized) return null
-  const { data } = await supabase
-    .from('companies')
-    .upsert({ name: normalized, industry: 'Life Sciences' }, { onConflict: 'name', ignoreDuplicates: false })
-    .select()
-    .maybeSingle()
-  return data
-}
+// upsertCompany imported from lib/supabase.js (shared ilike check-then-insert pattern)
 
 async function signalExists(companyId, signalType, sourceUrl) {
   const { data } = await supabase

@@ -1,21 +1,26 @@
 /**
  * Funding & M&A Agent
  *
- * Monitors five funding sources for INDUSTRY life sciences companies and emits
+ * Monitors four funding sources for INDUSTRY life sciences companies and emits
  * BD signals for grants, M&A, partnerships, IPOs, and venture rounds.
  *
  * Sources:
  *   1. NIH Reporter — SBIR/STTR grants (6-month window)
- *   2. SEC EDGAR 8-K — M&A filings
- *   3. SEC EDGAR 8-K — Pharma partnership / licensing filings
- *   4. SEC EDGAR S-1 — IPO filings
- *   5. SEC EDGAR Form D — Venture capital rounds
+ *   2. SEC EDGAR 8-K — M&A filings (acquirer + acquired signals)
+ *   3. BioSpace /deals/ — Pharma partnerships, licensing, collaborations
+ *   4. BioSpace /funding/ — Venture rounds, IPOs, Series A/B/C raises
  *
  * Only INDUSTRY companies are flagged. Universities, academic medical centers,
  * hospitals, government agencies, and foundations are excluded.
+ *
+ * SEC EDGAR Form D (VC) and S-1 (IPO) were removed — Form D returns VC fund
+ * entities (not portfolio companies) and S-1 returns SPAC vehicles, neither
+ * of which are useful CRO BD signals.
+ * EDGAR 8-K partnership source was replaced by BioSpace /deals/ which returns
+ * the actual biotech company (not just the large pharma filer).
  */
 
-import { supabase, normalizeCompanyName } from '../lib/supabase.js';
+import { supabase, normalizeCompanyName, upsertCompany } from '../lib/supabase.js';
 
 // ── External API base URLs ────────────────────────────────────────────────────
 
@@ -165,30 +170,7 @@ function extractAmount(text) {
 
 // ── Database helpers ──────────────────────────────────────────────────────────
 
-/**
- * Upsert a company into the companies table.
- * On conflict on 'name', returns the existing row.
- *
- * @param {string} name
- * @returns {Promise<object|null>} Row with id and name, or null on error
- */
-async function upsertCompany(name) {
-  const normalized = normalizeCompanyName(name);
-  if (!normalized) return null;
-
-  const { data, error } = await supabase
-    .from('companies')
-    .upsert({ name: normalized, industry: 'Life Sciences' }, { onConflict: 'name', ignoreDuplicates: false })
-    .select('id, name')
-    .maybeSingle();
-
-  if (error) {
-    console.error(`[fundingMaAgent] upsertCompany failed for "${normalized}":`, error.message);
-    return null;
-  }
-
-  return data;
-}
+// upsertCompany is imported from lib/supabase.js (shared ilike check-then-insert pattern)
 
 /**
  * Check whether a signal already exists for the given company, type, and URL.
@@ -660,136 +642,168 @@ async function processMaFilings(sixMonthsAgo, today) {
   return signalsInserted;
 }
 
-// ── Source 3: SEC EDGAR 8-K Pharma Partnership filings ───────────────────────
+// ── BioSpace article parsing helpers ─────────────────────────────────────────
+
+const BIOSPACE_BOT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 /**
- * Process SEC EDGAR 8-K filings for pharma partnerships and licensing deals.
- * Targets the smaller biotech company as the signal entity.
+ * Parse article cards from a BioSpace page.
+ * BioSpace uses <a class="Link" aria-label="Title" href="URL"> inside PagePromo
+ * divs. Falls back to scanning all <a> tags with substantive text content.
  *
- * @param {string} sixMonthsAgo
- * @param {string} today
- * @returns {Promise<number>} Signals inserted
+ * @param {string} html
+ * @param {string} baseUrl - used to resolve relative hrefs
+ * @returns {Array<{title: string, url: string}>}
  */
-async function processPartnershipFilings(sixMonthsAgo, today) {
-  let signalsInserted = 0;
-  const PARTNERSHIP_BASE_SCORE = 28;
+function parseBioSpaceArticles(html, baseUrl) {
+  const cards = [];
+  const seen = new Set();
 
-  const queries = [
-    '"collaboration agreement" "license agreement"',
-    '"co-development" "licensing"',
-  ];
+  // Primary: aria-label on Link anchors (PagePromo structure)
+  const re = /<a[^>]+aria-label="([^"]{10,})"[^>]+href="([^"]+)"/g;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const title = m[1].replace(/&amp;/g, '&').replace(/&#039;/g, "'").trim();
+    const url = m[2].startsWith('http') ? m[2] : `${baseUrl}${m[2]}`;
+    if (!seen.has(url)) { seen.add(url); cards.push({ title, url }); }
+  }
 
-  for (const query of queries) {
-    await sleep(SEC_RATE_LIMIT_MS);
+  // Also try href-first order
+  const re2 = /href="([^"]+)"[^>]*aria-label="([^"]{10,})"/g;
+  while ((m = re2.exec(html)) !== null) {
+    const url = m[1].startsWith('http') ? m[1] : `${baseUrl}${m[1]}`;
+    const title = m[2].replace(/&amp;/g, '&').replace(/&#039;/g, "'").trim();
+    if (!seen.has(url)) { seen.add(url); cards.push({ title, url }); }
+  }
 
-    let hits;
-    try {
-      hits = await fetchEdgarFilings(query, sixMonthsAgo, today, '8-K');
-    } catch (err) {
-      console.error('[fundingMaAgent] Partnership EDGAR fetch failed:', err.message);
-      continue;
-    }
-
-    console.log(`[fundingMaAgent] Partnerships: "${query}" → ${hits.length} hits`);
-
-    for (const hit of hits) {
-      const entityName = extractEntityName(hit);
-      const fileDate = hit._source?.file_date || today;
-      const filingUrl = buildFilingUrl(hit, entityName, '8-K');
-
-      if (!entityName || !isIndustryOrgSec(entityName)) continue;
-      if (!isLifeSciences(entityName)) continue;
-
-      // Skip large pharma entities — we target the smaller biotech
-      if (LARGE_PHARMA_PATTERNS.test(entityName)) continue;
-
-      const dealAmount = extractAmount(hit._source?.period_of_report || '');
-
-      const company = await upsertCompany(entityName);
-      if (!company) continue;
-
-      const alreadyExists = await signalExists(company.id, 'funding_new_award', filingUrl);
-      if (alreadyExists) continue;
-
-      const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, PARTNERSHIP_BASE_SCORE);
-
-      const detail = {
-        company_name: entityName,
-        funding_type: 'pharma_partnership',
-        funding_amount: dealAmount,
-        funding_summary: `${entityName} entered into a pharma collaboration or licensing agreement${dealAmount ? ` valued at ${dealAmount}` : ''}.`,
-        date_announced: fileDate,
-        source_url: filingUrl,
-        ...preHiringDetail,
-      };
-
-      const inserted = await insertSignal({
-        company_id: company.id,
-        signal_type: 'funding_new_award',
-        priority_score: adjustedScore,
-        signal_summary: `${entityName} signed pharma partnership/licensing deal${dealAmount ? ` (${dealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
-        signal_detail: detail,
-        source_url: filingUrl,
-        detected_at: new Date().toISOString(),
-      });
-
-      if (inserted) signalsInserted++;
+  // Fallback: plain <a> links with substantive text
+  if (cards.length === 0) {
+    const re3 = /<a[^>]+href="(https?:\/\/www\.biospace\.com\/[^"]+)"[^>]*>([^<]{20,})<\/a>/g;
+    while ((m = re3.exec(html)) !== null) {
+      const url = m[1];
+      const title = m[2].replace(/&amp;/g, '&').trim();
+      if (!seen.has(url)) { seen.add(url); cards.push({ title, url }); }
     }
   }
 
-  return signalsInserted;
+  return cards;
 }
 
-// ── Source 4: SEC EDGAR S-1 IPO Filings ──────────────────────────────────────
+/**
+ * Infer deal type from article title text.
+ * Returns the funding_type string or null if not a funding/deal article.
+ *
+ * @param {string} text
+ * @returns {'venture_capital'|'pharma_partnership'|'ipo'|'ma'|null}
+ */
+function detectBioSpaceDealType(text) {
+  const t = text.toLowerCase();
+  if (/\bipo\b|initial public offering|\bs-1\b|nasdaq listing|nyse listing/.test(t)) return 'ipo';
+  if (/series\s+[abcde]\d*\b|raises|raised|nabs|secures|closes.*round|venture round|seed round|debut/.test(t)) return 'venture_capital';
+  if (/partnership|collaboration|license|pact|co-develop|licensing|teams with|deal with/.test(t)) return 'pharma_partnership';
+  if (/acquires|acquisition|merger|buys\b|purchase/.test(t)) return 'ma';
+  return null;
+}
 
 /**
- * Process SEC EDGAR S-1 filings for life sciences IPOs.
+ * Extract the most relevant company name from a BioSpace article title.
+ * BioSpace titles follow patterns like:
+ *   "CompanyA Raises $X"  → CompanyA
+ *   "BigPharma Fronts $X for SmallBio's drug"  → SmallBio
+ *   "X-Partnered CompanyB Raises $X"  → CompanyB
+ *   "China's CompanyC Nabs $X"  → CompanyC
  *
- * @param {string} sixMonthsAgo
- * @param {string} today
+ * @param {string} title
+ * @returns {string}
+ */
+function extractCompanyFromBioSpaceTitle(title) {
+  // Clean HTML entities
+  const clean = title.replace(/&amp;/g, '&').replace(/&#039;/g, "'").replace(/&quot;/g, '"');
+
+  // "X-Partnered Y Raises..." → Y is the company raising
+  const partneredM = clean.match(/^[A-Za-z\s]+-Partnered\s+(.+?)\s+(?:Raises|Nabs|Secures|Closes|Files|Completes|Nets|Snags|Debuts)\b/i);
+  if (partneredM) return partneredM[1].trim();
+
+  // "Country's CompanyName Raises/Nabs..." → CompanyName
+  const possessiveM = clean.match(/^(?:China|US|UK|EU|Japan|Korea|Israel|Germany|France)'s\s+(.+?)\s+(?:Raises|Nabs|Secures|Closes|Files|Joins|Signs|Nets)\b/i);
+  if (possessiveM) return possessiveM[1].trim();
+
+  // "BigPharma Fronts/Pays/Invests $X for SmallBio's..." → SmallBio
+  const dealForM = clean.match(/^[A-Za-z\s]+(?:Fronts|Pays|Invests|Bets)[^f]+\s+for\s+([A-Z][A-Za-z]+(?:\s[A-Z][a-z]+)*)'s/);
+  if (dealForM) return dealForM[1].trim();
+
+  // Standard: company name is everything before the first deal/action verb
+  const DEAL_VERB = /\b(Raises|Raised|Bets|Fronts|Nabs|Joins|Signs|Teams|Enters|Announces|Files|Completes|Closes|Acquires|Agrees|Inks|Secures|Lands|Wins|Dives|Keeps|Establishes|Pumps|Launches|Nets|Snags|Debuts|Goes|Steps|Forms|Jumps)\b/;
+  const verbM = clean.match(new RegExp(`^(.+?)\\s+${DEAL_VERB.source}`, 'i'));
+  if (verbM) return verbM[1].trim();
+
+  // Fallback: first 1–3 words
+  return clean.split(/\s+/).slice(0, 3).join(' ');
+}
+
+// ── Source 3: BioSpace /deals/ — Pharma partnerships & licensing ──────────────
+
+/**
+ * Fetch BioSpace /deals/ page and emit pharma partnership signals for
+ * smaller biotech companies entering collaboration/licensing deals.
+ * Replaces EDGAR 8-K partnership source which was filing large-pharma names.
+ *
+ * @param {string} today - YYYY-MM-DD
  * @returns {Promise<number>} Signals inserted
  */
-async function processIpoFilings(sixMonthsAgo, today) {
+async function processBioSpaceDeals(today) {
   let signalsInserted = 0;
-  const IPO_BASE_SCORE = 28;
+  const BASE_SCORE = 28;
+  const SOURCE_URL = 'https://www.biospace.com/deals/';
 
-  await sleep(SEC_RATE_LIMIT_MS);
-
-  let hits;
+  let html;
   try {
-    hits = await fetchEdgarFilings('"initial public offering"', sixMonthsAgo, today, 'S-1');
+    const resp = await fetch(SOURCE_URL, {
+      headers: { 'User-Agent': BIOSPACE_BOT_UA },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!resp.ok) {
+      console.error(`[fundingMaAgent] BioSpace /deals/ HTTP ${resp.status}`);
+      return 0;
+    }
+    html = await resp.text();
   } catch (err) {
-    console.error('[fundingMaAgent] IPO EDGAR fetch failed:', err.message);
+    console.error('[fundingMaAgent] BioSpace /deals/ fetch error:', err.message);
     return 0;
   }
 
-  console.log(`[fundingMaAgent] IPO: Fetched ${hits.length} S-1 hits.`);
+  const articles = parseBioSpaceArticles(html, 'https://www.biospace.com');
+  console.log(`[fundingMaAgent] BioSpace /deals/: ${articles.length} articles parsed`);
 
-  for (const hit of hits) {
-    const entityName = extractEntityName(hit);
-    const fileDate = hit._source?.file_date || today;
-    const filingUrl = buildFilingUrl(hit, entityName, 'S-1');
+  for (const { title, url } of articles) {
+    const dealType = detectBioSpaceDealType(title);
+    if (!dealType || dealType === 'ma') continue; // M&A handled by EDGAR source
 
-    if (!entityName || !isIndustryOrgSec(entityName)) continue;
-    if (!isLifeSciences(entityName)) continue;
+    const rawCompany = extractCompanyFromBioSpaceTitle(title);
+    if (!rawCompany || !isIndustryOrg(rawCompany)) continue;
 
-    const ipoAmount = extractAmount(hit._source?.period_of_report || '');
+    // Skip if it looks like a large pharma filer (we want the smaller biotech)
+    if (LARGE_PHARMA_PATTERNS.test(rawCompany) && dealType === 'pharma_partnership') continue;
 
-    const company = await upsertCompany(entityName);
+    const amount = extractAmount(title);
+    const company = await upsertCompany(rawCompany);
     if (!company) continue;
 
-    const alreadyExists = await signalExists(company.id, 'funding_new_award', filingUrl);
+    const alreadyExists = await signalExists(company.id, 'funding_new_award', url);
     if (alreadyExists) continue;
 
-    const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, IPO_BASE_SCORE);
+    const { adjustedScore, preHiringDetail } = await evalPreHiring(rawCompany, BASE_SCORE);
+
+    const fundingType = dealType === 'ipo' ? 'ipo' : dealType === 'venture_capital' ? 'venture_capital' : 'pharma_partnership';
+    const summaryVerb = fundingType === 'pharma_partnership' ? 'signed pharma deal' : fundingType === 'ipo' ? 'filed for IPO' : 'raised funding round';
 
     const detail = {
-      company_name: entityName,
-      funding_type: 'ipo',
-      funding_amount: ipoAmount,
-      funding_summary: `${entityName} filed an S-1 for an initial public offering${ipoAmount ? ` raising ${ipoAmount}` : ''}.`,
-      date_announced: fileDate,
-      source_url: filingUrl,
+      company_name: rawCompany,
+      funding_type: fundingType,
+      funding_amount: amount,
+      funding_summary: title,
+      date_announced: today,
+      source_url: url,
       ...preHiringDetail,
     };
 
@@ -797,9 +811,9 @@ async function processIpoFilings(sixMonthsAgo, today) {
       company_id: company.id,
       signal_type: 'funding_new_award',
       priority_score: adjustedScore,
-      signal_summary: `${entityName} filed IPO S-1${ipoAmount ? ` (${ipoAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+      signal_summary: `${rawCompany} ${summaryVerb}${amount ? ` (${amount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
       signal_detail: detail,
-      source_url: filingUrl,
+      source_url: url,
       detected_at: new Date().toISOString(),
     });
 
@@ -809,89 +823,84 @@ async function processIpoFilings(sixMonthsAgo, today) {
   return signalsInserted;
 }
 
-// ── Source 5: SEC EDGAR Form D Venture Capital Rounds ────────────────────────
+// ── Source 4: BioSpace /funding/ — Venture rounds & IPOs ─────────────────────
 
 /**
- * Process SEC EDGAR Form D filings for life sciences venture capital rounds.
- * Excludes VC fund entities that are the investors, not the portfolio companies.
+ * Fetch BioSpace /funding/ page and emit VC and IPO signals.
+ * Replaces both SEC EDGAR Form D (VC) and S-1 (IPO) sources.
+ * Form D returns VC fund names, not portfolio companies.
+ * S-1 returns SPAC vehicles and blank-check companies, not true biotech IPOs.
  *
- * @param {string} sixMonthsAgo
- * @param {string} today
+ * @param {string} today - YYYY-MM-DD
  * @returns {Promise<number>} Signals inserted
  */
-async function processVcFilings(sixMonthsAgo, today) {
+async function processBioSpaceFunding(today) {
   let signalsInserted = 0;
-  const VC_BASE_SCORE = 28;
+  const BASE_SCORE = 28;
+  const SOURCE_URL = 'https://www.biospace.com/funding/';
 
-  const queries = [
-    '"Series A" OR "Series B" OR "Series C"',
-    '"venture capital"',
-  ];
-
-  for (const query of queries) {
-    await sleep(SEC_RATE_LIMIT_MS);
-
-    let hits;
-    try {
-      hits = await fetchEdgarFilings(query, sixMonthsAgo, today, 'D');
-    } catch (err) {
-      console.error('[fundingMaAgent] VC EDGAR fetch failed:', err.message);
-      continue;
+  let html;
+  try {
+    const resp = await fetch(SOURCE_URL, {
+      headers: { 'User-Agent': BIOSPACE_BOT_UA },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!resp.ok) {
+      console.error(`[fundingMaAgent] BioSpace /funding/ HTTP ${resp.status}`);
+      return 0;
     }
+    html = await resp.text();
+  } catch (err) {
+    console.error('[fundingMaAgent] BioSpace /funding/ fetch error:', err.message);
+    return 0;
+  }
 
-    console.log(`[fundingMaAgent] VC: "${query}" → ${hits.length} hits`);
+  const articles = parseBioSpaceArticles(html, 'https://www.biospace.com');
+  console.log(`[fundingMaAgent] BioSpace /funding/: ${articles.length} articles parsed`);
 
-    for (const hit of hits) {
-      const entityName = extractEntityName(hit);
-      const fileDate = hit._source?.file_date || today;
-      const filingUrl = buildFilingUrl(hit, entityName, 'D');
+  for (const { title, url } of articles) {
+    const dealType = detectBioSpaceDealType(title);
+    if (!dealType || dealType === 'ma') continue;
 
-      if (!entityName || !isIndustryOrgSec(entityName)) continue;
+    const rawCompany = extractCompanyFromBioSpaceTitle(title);
+    if (!rawCompany || !isIndustryOrg(rawCompany)) continue;
 
-      // Exclude entities that are VC funds themselves (not portfolio companies)
-      if (VC_FUND_PATTERNS.test(entityName)) continue;
+    // Exclude VC fund entities that appear as company names
+    if (VC_FUND_PATTERNS.test(rawCompany)) continue;
 
-      if (!isLifeSciences(entityName)) continue;
+    const amount = extractAmount(title);
+    const company = await upsertCompany(rawCompany);
+    if (!company) continue;
 
-      // Detect the series from the filing text or query context
-      let seriesLabel = 'Venture Round';
-      if (/series\s+a/i.test(query)) seriesLabel = 'Series A';
-      else if (/series\s+b/i.test(query)) seriesLabel = 'Series B';
-      else if (/series\s+c/i.test(query)) seriesLabel = 'Series C';
+    const alreadyExists = await signalExists(company.id, 'funding_new_award', url);
+    if (alreadyExists) continue;
 
-      const roundAmount = extractAmount(hit._source?.period_of_report || '');
+    const { adjustedScore, preHiringDetail } = await evalPreHiring(rawCompany, BASE_SCORE);
 
-      const company = await upsertCompany(entityName);
-      if (!company) continue;
+    const fundingType = dealType === 'ipo' ? 'ipo' : dealType === 'pharma_partnership' ? 'pharma_partnership' : 'venture_capital';
+    const summaryVerb = fundingType === 'ipo' ? 'filed for IPO' : fundingType === 'pharma_partnership' ? 'signed deal' : 'raised funding';
 
-      const alreadyExists = await signalExists(company.id, 'funding_new_award', filingUrl);
-      if (alreadyExists) continue;
+    const detail = {
+      company_name: rawCompany,
+      funding_type: fundingType,
+      funding_amount: amount,
+      funding_summary: title,
+      date_announced: today,
+      source_url: url,
+      ...preHiringDetail,
+    };
 
-      const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, VC_BASE_SCORE);
+    const inserted = await insertSignal({
+      company_id: company.id,
+      signal_type: 'funding_new_award',
+      priority_score: adjustedScore,
+      signal_summary: `${rawCompany} ${summaryVerb}${amount ? ` (${amount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+      signal_detail: detail,
+      source_url: url,
+      detected_at: new Date().toISOString(),
+    });
 
-      const detail = {
-        company_name: entityName,
-        funding_type: 'venture_capital',
-        funding_amount: roundAmount,
-        funding_summary: `${entityName} raised a ${seriesLabel} venture round${roundAmount ? ` of ${roundAmount}` : ''}.`,
-        date_announced: fileDate,
-        source_url: filingUrl,
-        series_label: seriesLabel,
-        ...preHiringDetail,
-      };
-
-      const inserted = await insertSignal({
-        company_id: company.id,
-        signal_type: 'funding_new_award',
-        priority_score: adjustedScore,
-        signal_summary: `${entityName} raised ${seriesLabel}${roundAmount ? ` (${roundAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
-        signal_detail: detail,
-        source_url: filingUrl,
-        detected_at: new Date().toISOString(),
-      });
-
-      if (inserted) signalsInserted++;
-    }
+    if (inserted) signalsInserted++;
   }
 
   return signalsInserted;
@@ -902,10 +911,10 @@ async function processVcFilings(sixMonthsAgo, today) {
 /**
  * Main entry point for the Funding & M&A agent.
  *
- * Orchestrates all five funding source processors. Each source is wrapped in
+ * Orchestrates all four funding source processors. Each source is wrapped in
  * its own try/catch so a failure in one does not prevent the others from running.
  *
- * @returns {Promise<{ signalsFound: number, sourceCounts: { nih: number, ma: number, partnerships: number, ipo: number, vc: number } }>}
+ * @returns {Promise<{ signalsFound: number, sourceCounts: { nih: number, ma: number, biospaceDeals: number, biospaceVcIpo: number } }>}
  */
 export async function run() {
   const runId = await createAgentRun();
@@ -917,7 +926,7 @@ export async function run() {
 
   console.log(`[fundingMaAgent] Starting run. Window: ${sixMonthsAgo} → ${today}`);
 
-  const sourceCounts = { nih: 0, ma: 0, partnerships: 0, ipo: 0, vc: 0 };
+  const sourceCounts = { nih: 0, ma: 0, biospaceDeals: 0, biospaceVcIpo: 0 };
   let signalsFound = 0;
 
   // Source 1: NIH SBIR/STTR grants
@@ -938,31 +947,22 @@ export async function run() {
     console.error('[fundingMaAgent] M&A source failed:', err.message);
   }
 
-  // Source 3: SEC EDGAR Pharma Partnership 8-K filings
+  // Source 3: BioSpace /deals/ — pharma partnerships & licensing
   try {
-    sourceCounts.partnerships = await processPartnershipFilings(sixMonthsAgo, today);
-    signalsFound += sourceCounts.partnerships;
-    console.log(`[fundingMaAgent] Partnerships: ${sourceCounts.partnerships} signals`);
+    sourceCounts.biospaceDeals = await processBioSpaceDeals(today);
+    signalsFound += sourceCounts.biospaceDeals;
+    console.log(`[fundingMaAgent] BioSpace deals: ${sourceCounts.biospaceDeals} signals`);
   } catch (err) {
-    console.error('[fundingMaAgent] Partnerships source failed:', err.message);
+    console.error('[fundingMaAgent] BioSpace /deals/ source failed:', err.message);
   }
 
-  // Source 4: SEC EDGAR S-1 IPO filings
+  // Source 4: BioSpace /funding/ — VC rounds & IPOs
   try {
-    sourceCounts.ipo = await processIpoFilings(sixMonthsAgo, today);
-    signalsFound += sourceCounts.ipo;
-    console.log(`[fundingMaAgent] IPOs: ${sourceCounts.ipo} signals`);
+    sourceCounts.biospaceVcIpo = await processBioSpaceFunding(today);
+    signalsFound += sourceCounts.biospaceVcIpo;
+    console.log(`[fundingMaAgent] BioSpace funding: ${sourceCounts.biospaceVcIpo} signals`);
   } catch (err) {
-    console.error('[fundingMaAgent] IPO source failed:', err.message);
-  }
-
-  // Source 5: SEC EDGAR Form D venture capital
-  try {
-    sourceCounts.vc = await processVcFilings(sixMonthsAgo, today);
-    signalsFound += sourceCounts.vc;
-    console.log(`[fundingMaAgent] VC rounds: ${sourceCounts.vc} signals`);
-  } catch (err) {
-    console.error('[fundingMaAgent] VC source failed:', err.message);
+    console.error('[fundingMaAgent] BioSpace /funding/ source failed:', err.message);
   }
 
   await finaliseAgentRun(runId, 'completed', signalsFound);
