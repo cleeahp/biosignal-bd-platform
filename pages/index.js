@@ -12,14 +12,14 @@ const SIGNAL_TYPE_CONFIG = {
   clinical_trial_new_ind:          { label: 'New IND',          color: 'bg-cyan-500',  tab: 'clinical' },
   clinical_trial_site_activation:  { label: 'Site Activation',  color: 'bg-teal-500',  tab: null },
   clinical_trial_completion:       { label: 'Trial Completion',  color: 'bg-purple-500', tab: null },
-  funding_new_award:               { label: null,                color: null,            tab: 'funding' },
+  funding_new_award:               { label: null,                color: null,            tab: null },
   funding_renewal:                 { label: 'Renewal',           color: 'bg-lime-600',   tab: 'funding' },
   ma_transaction:                  { label: 'M&A',               color: 'bg-orange-500', tab: 'funding' },
   ma_acquirer:                     { label: 'M&A — Acquirer',    color: 'bg-orange-500', tab: null },
   ma_acquired:                     { label: 'M&A — Acquired',    color: 'bg-amber-500',  tab: null },
   competitor_job_posting:          { label: 'Competitor Job',    color: 'bg-red-500',    tab: 'jobs' },
   target_company_job:              { label: 'Target Co. Job',    color: 'bg-violet-500', tab: 'jobs' },
-  stale_job_posting:               { label: 'Stale Job',         color: 'bg-gray-500',   tab: null },
+  stale_job_posting:               { label: 'Stale Job',         color: 'bg-gray-500',   tab: 'jobs' },
 }
 
 const FUNDING_TYPE_CONFIG = {
@@ -253,12 +253,7 @@ function ClinicalDetailCell({ signal }) {
         </span>
       )
     case 'clinical_trial_new_ind':
-      return (
-        <span className="text-sm text-gray-200">
-          {d.therapeutic_area || '—'}
-          {d.enrollment_count ? ` — ${d.enrollment_count} patients` : ''}
-        </span>
-      )
+      return <span className="text-sm text-gray-500">N/A</span>
     case 'clinical_trial_site_activation':
       return (
         <span className="text-sm text-gray-200">
@@ -325,7 +320,7 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
                   <ClinicalDetailCell signal={signal} />
                 </td>
                 <td className="px-4 py-3" style={{ maxWidth: '400px' }}>
-                  <span className="text-xs text-gray-400 leading-snug" style={{ wordBreak: 'break-word', whiteSpace: 'normal', display: 'block' }}>
+                  <span className="text-xs text-gray-400 leading-snug" style={{ wordBreak: 'break-word', overflowWrap: 'break-word', whiteSpace: 'normal', display: 'block' }}>
                     {d.study_summary || signal.signal_summary || '—'}
                   </span>
                 </td>
@@ -397,6 +392,9 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
               >
                 <td className="px-4 py-3 whitespace-nowrap">
                   <SignalTypeBadge signalType={signal.signal_type} fundingType={d.funding_type} />
+                  {signal.signal_type === 'ma_transaction' && d.transaction_type && (
+                    <div className="text-xs text-orange-400 mt-1 capitalize">{d.transaction_type}</div>
+                  )}
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1.5 flex-wrap">
@@ -453,39 +451,40 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
 // ─── Tab: Jobs ────────────────────────────────────────────────────────────────
 
 function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim }) {
-  const targetJobSignals = signals.filter(s => s.signal_type === 'target_company_job')
   const competitorSignals = signals.filter(s => s.signal_type === 'competitor_job_posting')
+  const staleSignals = signals.filter(s =>
+    s.signal_type === 'stale_job_posting' || s.signal_type === 'target_company_job'
+  )
 
   if (signals.length === 0) return <EmptyState message="No active job signals. Run agents to search for open roles." />
 
   return (
     <div className="flex flex-col gap-10">
 
-      {/* ── Section A: Roles at Target Companies ── */}
+      {/* ── Section 1: Competitor Postings ── */}
       <div>
         <div className="flex items-center gap-2 mb-3">
-          <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Roles at Target Companies</h2>
-          <span className="px-2 py-0.5 rounded-full bg-violet-900 text-violet-300 text-xs font-bold">
-            {targetJobSignals.length}
+          <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Competitor Postings</h2>
+          <span className="px-2 py-0.5 rounded-full bg-red-900 text-red-300 text-xs font-bold">
+            {competitorSignals.length}
           </span>
-          <span className="text-xs text-gray-600 italic">Companies already in your pipeline that are hiring</span>
         </div>
-        {targetJobSignals.length === 0 ? (
-          <p className="text-xs text-gray-600 italic px-1">No target company jobs found yet — run agents to search for open roles at signal companies.</p>
+        {competitorSignals.length === 0 ? (
+          <p className="text-xs text-gray-600 italic px-1">No competitor postings found yet.</p>
         ) : (
           <TableWrapper>
             <thead>
               <tr>
-                <Th>Role</Th>
-                <Th>Company</Th>
+                <Th>Role Title</Th>
                 <Th>Location</Th>
-                <Th>Why Warm</Th>
-                <Th>Found</Th>
+                <Th>Competitor</Th>
+                <Th>Date Posted</Th>
+                <Th>View</Th>
                 <Th>Claim</Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800">
-              {targetJobSignals.map((signal, i) => {
+              {competitorSignals.map((signal, i) => {
                 const isExpanded = expandedRows.has(signal.id)
                 const d = parseDetail(signal.signal_detail)
                 const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
@@ -496,30 +495,25 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                       onClick={() => onToggleRow(signal.id)}
                       className={`${rowBg} hover:bg-gray-800 cursor-pointer transition-colors`}
                     >
-                      <td className="px-4 py-3">
-                        {d.job_url ? (
-                          <a
-                            href={d.job_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={e => e.stopPropagation()}
-                            className="text-sm text-blue-400 hover:text-blue-300 font-medium"
-                          >
-                            {d.job_title || '—'}
-                          </a>
-                        ) : (
-                          <span className="text-sm text-white font-medium">{d.job_title || '—'}</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-sm font-semibold text-gray-100 whitespace-nowrap">
-                        {signal.companies?.name || d.company_name || '—'}
-                      </td>
+                      <td className="px-4 py-3 text-sm text-white font-medium">{d.job_title || '—'}</td>
                       <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">{d.job_location || '—'}</td>
-                      <td className="px-4 py-3">
-                        <span className="text-xs font-medium text-amber-400">{d.signal_reason || '—'}</span>
+                      <td className="px-4 py-3 text-sm font-semibold text-gray-100 whitespace-nowrap">
+                        {d.competitor_firm || signal.companies?.name || '—'}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
-                        {formatDate(d.date_found || signal.first_detected_at)}
+                        {formatDate(d.posting_date || signal.first_detected_at)}
+                      </td>
+                      <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                        {(d.job_url || d.source_url) ? (
+                          <a
+                            href={d.job_url || d.source_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-400 hover:text-blue-300 font-medium whitespace-nowrap"
+                          >
+                            View Posting ↗
+                          </a>
+                        ) : <span className="text-xs text-gray-600">—</span>}
                       </td>
                       <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                         <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
@@ -540,33 +534,40 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
         )}
       </div>
 
-      {/* ── Section B: Competitor Activity ── */}
+      {/* ── Section 2: Stale Roles at Target Companies ── */}
       <div>
         <div className="flex items-center gap-2 mb-3">
-          <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Competitor Activity</h2>
-          <span className="px-2 py-0.5 rounded-full bg-red-900 text-red-300 text-xs font-bold">
-            {competitorSignals.length}
+          <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Stale Roles at Target Companies</h2>
+          <span className="px-2 py-0.5 rounded-full bg-amber-900 text-amber-300 text-xs font-bold">
+            {staleSignals.length}
           </span>
+          <span className="text-xs text-gray-600 italic">Long-open roles at companies in your BD pipeline</span>
         </div>
-        {competitorSignals.length === 0 ? (
-          <p className="text-xs text-gray-600 italic px-1">No competitor signals found yet.</p>
+        {staleSignals.length === 0 ? (
+          <p className="text-xs text-gray-600 italic px-1">No stale roles found yet — run agents to search target company career pages and BioSpace.</p>
         ) : (
           <TableWrapper>
             <thead>
               <tr>
-                <Th>Role</Th>
-                <Th>Competitor Firm</Th>
-                <Th>Likely Client</Th>
+                <Th>Role Title</Th>
+                <Th>Company</Th>
                 <Th>Location</Th>
-                <Th>Posted</Th>
+                <Th>Days Open</Th>
+                <Th>View</Th>
                 <Th>Claim</Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800">
-              {competitorSignals.map((signal, i) => {
+              {staleSignals.map((signal, i) => {
                 const isExpanded = expandedRows.has(signal.id)
                 const d = parseDetail(signal.signal_detail)
                 const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
+                const daysOpen = d.days_posted || signal.days_in_queue || 0
+                const dayCls = daysOpen >= 45
+                  ? 'bg-red-900 text-red-300'
+                  : daysOpen >= 30
+                    ? 'bg-orange-900 text-orange-300'
+                    : 'bg-gray-700 text-gray-300'
                 return (
                   <>
                     <tr
@@ -575,16 +576,28 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                       className={`${rowBg} hover:bg-gray-800 cursor-pointer transition-colors`}
                     >
                       <td className="px-4 py-3 text-sm text-white font-medium">{d.job_title || '—'}</td>
-                      <td className="px-4 py-3 text-sm font-bold text-gray-100 whitespace-nowrap">
-                        {d.competitor_firm || signal.companies?.name || '—'}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="text-sm text-gray-200">{d.likely_client || '—'}</span>
-                        <ConfidenceBadge confidence={d.likely_client_confidence || d.confidence} />
+                      <td className="px-4 py-3 text-sm font-semibold text-gray-100 whitespace-nowrap">
+                        {signal.companies?.name || d.company_name || '—'}
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">{d.job_location || '—'}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
-                        {formatDate(d.posting_date || signal.first_detected_at)}
+                      <td className="px-4 py-3">
+                        {daysOpen > 0 ? (
+                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-mono font-semibold ${dayCls}`}>
+                            {daysOpen}d
+                          </span>
+                        ) : <span className="text-xs text-gray-600">—</span>}
+                      </td>
+                      <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                        {(d.job_url || d.careers_url) ? (
+                          <a
+                            href={d.job_url || d.careers_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-400 hover:text-blue-300 font-medium whitespace-nowrap"
+                          >
+                            View ↗
+                          </a>
+                        ) : <span className="text-xs text-gray-600">—</span>}
                       </td>
                       <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                         <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />

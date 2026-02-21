@@ -9,7 +9,7 @@
  * now hiring — a strong indicator they need external support (CRO, staffing).
  */
 
-import { supabase } from '../lib/supabase.js'
+import { supabase, upsertCompany } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import * as cheerio from 'cheerio'
 
@@ -222,6 +222,156 @@ async function fetchTargetCompanyJobs(careersUrl, companyName) {
   return scrapeHtmlJobs(html, careersUrl)
 }
 
+// ─── BioSpace stale jobs source ────────────────────────────────────────────────
+
+/**
+ * Parse a relative or fuzzy date string into an approximate days-ago number.
+ * e.g. "30 days ago" → 30, "2 months ago" → 60, "Jan 15, 2026" → computed diff
+ */
+function parseDaysPosted(dateText) {
+  if (!dateText) return 0
+  const lower = dateText.toLowerCase()
+  const daysMatch = lower.match(/(\d+)\s+day/)
+  if (daysMatch) return parseInt(daysMatch[1])
+  const weeksMatch = lower.match(/(\d+)\s+week/)
+  if (weeksMatch) return parseInt(weeksMatch[1]) * 7
+  const monthsMatch = lower.match(/(\d+)\s+month/)
+  if (monthsMatch) return parseInt(monthsMatch[1]) * 30
+  // Try absolute date parse
+  try {
+    const date = new Date(dateText)
+    if (!isNaN(date.getTime())) {
+      return Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24))
+    }
+  } catch { /* ignore */ }
+  return 0
+}
+
+/**
+ * Fetch stale job listings from BioSpace for a given category.
+ * Only returns jobs where days_posted >= 30 and role matches life sciences keywords.
+ *
+ * @param {'Biotechnology'|'Pharmaceutical'} category
+ * @returns {Promise<Array<{title, company, location, jobUrl, daysPosted, category}>>}
+ */
+async function fetchBioSpaceJobs(category) {
+  const url = `https://www.biospace.com/jobs/?category=${encodeURIComponent(category)}&days=30`
+  const jobs = []
+  try {
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': BOT_UA, Accept: 'text/html' },
+      signal: AbortSignal.timeout(10000),
+    })
+    console.log(`[targetCompanyJobs] BioSpace ${category}: HTTP ${resp.status}`)
+    if (!resp.ok) return jobs
+    const html = await resp.text()
+    const $ = cheerio.load(html)
+
+    // Try common BioSpace job card selectors
+    $('[data-testid="job-card"], .job-card, article[class*="job"], [class*="position-card"], li[class*="job-listing"]').each((_, el) => {
+      if (jobs.length >= 50) return
+      const $el = $(el)
+      const title = $el.find('[data-testid="job-title"], .job-title, h2, h3, [class*="title"]').first().text().trim()
+      const company = $el.find('[data-testid="company-name"], .company-name, [class*="company"]').first().text().trim()
+      const location = $el.find('[data-testid="location"], .location, [class*="location"]').first().text().trim()
+      const dateText = $el.find('time, [data-testid="date"], [class*="date"], [class*="posted"]').first().text().trim()
+      const href = $el.find('a[href*="/jobs/"]').first().attr('href') || $el.find('a').first().attr('href') || ''
+      const jobUrl = href.startsWith('http') ? href : `https://www.biospace.com${href}`
+
+      if (!title || !matchesRoleKeywords(title)) return
+      if (NON_US_JOB_LOC.test(location)) return
+
+      const daysPosted = parseDaysPosted(dateText)
+      if (daysPosted < 30) return
+
+      jobs.push({ title, company, location, jobUrl, daysPosted, category })
+    })
+
+    // Fallback: scan JSON-LD if no cards found
+    if (jobs.length === 0) {
+      const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+      let m
+      while ((m = re.exec(html)) !== null) {
+        try {
+          const schema = JSON.parse(m[1])
+          const items = schema['@type'] === 'JobPosting'
+            ? [schema]
+            : (schema['@graph'] || []).filter((x) => x['@type'] === 'JobPosting')
+          for (const item of items) {
+            if (jobs.length >= 50) break
+            const title = item.title || item.name || ''
+            if (!title || !matchesRoleKeywords(title)) continue
+            const company = item.hiringOrganization?.name || ''
+            const loc = item.jobLocation?.address?.addressLocality || ''
+            const region = item.jobLocation?.address?.addressRegion || ''
+            const location = [loc, region].filter(Boolean).join(', ')
+            if (NON_US_JOB_LOC.test(location)) continue
+            const datePosted = item.datePosted || ''
+            const daysPosted = datePosted ? parseDaysPosted(datePosted) : 30
+            if (daysPosted < 30) continue
+            jobs.push({ title, company, location, jobUrl: item.url || url, daysPosted, category })
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    console.log(`[targetCompanyJobs] BioSpace ${category}: ${jobs.length} stale matching jobs`)
+  } catch (err) {
+    console.log(`[targetCompanyJobs] BioSpace ${category} fetch error: ${err.message}`)
+  }
+  return jobs
+}
+
+/**
+ * Persist a stale_job_posting signal from a BioSpace listing.
+ * Upserts the company if not already in DB.
+ */
+async function persistStaleJobSignal(job) {
+  if (!job.company || job.company.length < 2) return false
+
+  const company = await upsertCompany(supabase, { name: job.company })
+  if (!company) return false
+
+  const titleSlug = job.title.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40)
+  const weekNum = Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000))
+  const sourceUrl = `${job.jobUrl}#stale-${titleSlug}-week-${weekNum}`
+
+  const { data: existing } = await supabase
+    .from('signals')
+    .select('id')
+    .eq('company_id', company.id)
+    .eq('signal_type', 'stale_job_posting')
+    .eq('source_url', sourceUrl)
+    .maybeSingle()
+  if (existing) return false
+
+  const today = new Date().toISOString().split('T')[0]
+  const { error } = await supabase.from('signals').insert({
+    company_id: company.id,
+    signal_type: 'stale_job_posting',
+    signal_summary: `${job.company}: "${job.title}" open ${job.daysPosted}+ days`,
+    signal_detail: {
+      company_name: job.company,
+      job_title: job.title,
+      job_location: job.location || '',
+      job_url: job.jobUrl || '',
+      days_posted: job.daysPosted,
+      date_found: today,
+      source: 'BioSpace',
+      category: job.category,
+    },
+    source_url: sourceUrl,
+    source_name: 'BioSpace',
+    first_detected_at: new Date().toISOString(),
+    status: 'new',
+    priority_score: 20,
+    score_breakdown: { signal_strength: 20 },
+    days_in_queue: 0,
+    is_carried_forward: false,
+  })
+  return !error
+}
+
 // ─── Dedup helper ──────────────────────────────────────────────────────────────
 
 async function targetJobSignalExists(companyId, titleSlug) {
@@ -354,17 +504,38 @@ export async function run() {
       await new Promise((r) => setTimeout(r, 500))
     }
 
+    // ── Step 6: BioSpace stale jobs (days_posted >= 30) ──────────────────────
+    console.log('[targetCompanyJobs] Fetching stale jobs from BioSpace...')
+    const [bioTechJobs, pharmaJobs] = await Promise.all([
+      fetchBioSpaceJobs('Biotechnology').catch(() => []),
+      fetchBioSpaceJobs('Pharmaceutical').catch(() => []),
+    ])
+    // Merge and deduplicate by jobUrl
+    const allBioSpaceJobs = [...bioTechJobs, ...pharmaJobs]
+      .filter((job, i, arr) => arr.findIndex((j) => j.jobUrl === job.jobUrl) === i)
+
+    let staleSignalsFound = 0
+    for (const job of allBioSpaceJobs) {
+      const inserted = await persistStaleJobSignal(job)
+      if (inserted) {
+        signalsFound++
+        staleSignalsFound++
+      }
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    console.log(`[targetCompanyJobs] BioSpace: ${allBioSpaceJobs.length} stale jobs processed, ${staleSignalsFound} new signals`)
+
     await supabase
       .from('agent_runs')
       .update({
         status: 'completed',
         completed_at: new Date().toISOString(),
         signals_found: signalsFound,
-        run_detail: { companies_checked: companiesChecked },
+        run_detail: { companies_checked: companiesChecked, biospace_stale_jobs: allBioSpaceJobs.length },
       })
       .eq('id', runId)
 
-    console.log(`[targetCompanyJobs] Done. ${signalsFound} new signals from ${companiesChecked} companies.`)
+    console.log(`[targetCompanyJobs] Done. ${signalsFound} new signals from ${companiesChecked} companies + BioSpace.`)
     return { signalsFound, companiesChecked }
   } catch (err) {
     console.error('[targetCompanyJobs] Fatal error:', err.message)

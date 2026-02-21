@@ -51,8 +51,31 @@ export default async function handler(req, res) {
       }
     }
 
+    // Also flag clinical trial signals with bad phase data for deletion
+    const { data: phaseSignals, error: phaseErr } = await supabase
+      .from('signals')
+      .select('id, signal_detail')
+      .in('signal_type', ['clinical_trial_phase_transition', 'clinical_trial_new_ind'])
+
+    if (!phaseErr) {
+      for (const signal of phaseSignals || []) {
+        const d = signal.signal_detail || {}
+        const phaseFrom = String(d.phase_from || '')
+        const phaseTo = String(d.phase_to || '')
+        if (
+          phaseFrom === 'Pre-Clinical' ||
+          ['?', 'NA', 'N/A'].includes(phaseTo.trim())
+        ) {
+          if (!toDelete.includes(signal.id)) {
+            toDelete.push(signal.id)
+            console.log(`[cleanup] Pre-Clinical signal: phase_from=${phaseFrom} phase_to=${phaseTo}`)
+          }
+        }
+      }
+    }
+
     if (toDelete.length === 0) {
-      return res.status(200).json({ deleted: 0, message: 'No academic signals found to clean up' })
+      return res.status(200).json({ deleted: 0, message: 'No academic or bad-phase signals found to clean up' })
     }
 
     // Delete in batches of 100 to avoid query size limits
@@ -67,7 +90,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       deleted: totalDeleted,
       total_matched: toDelete.length,
-      message: `Deleted ${totalDeleted} academic/government signals from ${SIGNAL_TYPES_TO_CLEAN.join(', ')}`,
+      message: `Deleted ${totalDeleted} academic/government/bad-phase signals`,
     })
   } catch (err) {
     console.error('[cleanup] Error:', err.message)
