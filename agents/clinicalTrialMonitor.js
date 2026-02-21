@@ -19,18 +19,20 @@ const PAGE_SIZE = 100;
 const SIGNAL_TYPES = {
   PHASE_TRANSITION: { type: 'clinical_trial_phase_transition', score: 30 },
   NEW_IND:          { type: 'clinical_trial_new_ind',           score: 22 },
-  SITE_ACTIVATION:  { type: 'clinical_trial_site_activation',   score: 25 },
-  COMPLETION:       { type: 'clinical_trial_completion',         score: 20 },
 };
 
-// Minimum number of locations to trigger a site_activation signal
-const MIN_SITES_FOR_ACTIVATION = 10;
-
-// Days ahead to look for upcoming primary completions
-const COMPLETION_WINDOW_DAYS = 90;
+// Only emit phase_transition for these four clinically meaningful transitions.
+// Pre-clinical, Phase 4, site activations and completions are excluded.
+const ALLOWED_PHASE_TRANSITIONS = new Set(['Phase 2', 'Phase 3', 'Phase 1/2', 'Phase 2/3']);
 
 // How many days back to look for recently updated studies
 const LOOKBACK_DAYS = 14;
+
+// Academic/government name patterns. Even when leadSponsorClass === 'INDUSTRY',
+// some studies list academic medical centres that slip through. Reject any sponsor
+// whose name matches these patterns.
+const CT_ACADEMIC_PATTERNS =
+  /university|universite|college|hospital|medical cent(er|re)|health system|health cent(er|re)|children's|childrens|memorial|baptist|presbyterian|methodist|veterans|institute of|school of|foundation|research cent(er|re)|cancer cent(er|re)|\bnih\b|\bnci\b|\bcdc\b|\bva\b(?! pharmaceuticals)/i;
 
 // Module-level counter for debug logging of the first N phase transitions per run
 let phaseDebugCount = 0;
@@ -408,10 +410,10 @@ async function finaliseAgentRun(runId, status, signalsFound, errorMessage = null
  * @param {Date} completionCutoff - Furthest future date for completion signals
  * @returns {Promise<number>}
  */
-async function processStudy(study, now, completionCutoff) {
+async function processStudy(study, now) {
   const proto = extractProtocol(study);
 
-  // Hard local guard: only INDUSTRY sponsors (API pre-filters, but we confirm)
+  // Guard 1: only INDUSTRY sponsors (API pre-filters, but we confirm)
   if ((proto.leadSponsorClass || '').toUpperCase() !== 'INDUSTRY') {
     return 0;
   }
@@ -420,11 +422,19 @@ async function processStudy(study, now, completionCutoff) {
     return 0;
   }
 
-  // US-only: skip studies with no US location (API filters first, post-fetch confirms)
+  // Guard 2: name-based academic filter — catches misclassified sponsors
+  if (CT_ACADEMIC_PATTERNS.test(proto.leadSponsorName)) {
+    console.log(`[clinicalTrialMonitor] FILTERED (academic name): ${proto.nctId} — ${proto.leadSponsorName}`);
+    return 0;
+  }
+
+  // Guard 3: US-only (API filters first, post-fetch confirms)
   if (!proto.hasUSLocation) {
     console.log(`[clinicalTrialMonitor] FILTERED (non-US): ${proto.nctId} ${proto.leadSponsorName}`);
     return 0;
   }
+
+  console.log(`[clinicalTrialMonitor] INDUSTRY PASS: ${proto.nctId} — ${proto.leadSponsorName}`);
 
   const { phaseStr, phaseNum, isCombined } = parsePhase(proto.phases);
   const studySummary = buildStudySummary(proto);
@@ -452,47 +462,41 @@ async function processStudy(study, now, completionCutoff) {
     source_url: sourceUrl,
   };
 
-  // ── Signal 1: Phase Transition (Phase 2, 3, or 4 studies) ─────────────────
-  // The dedup URL includes the current phase number so that when the study
-  // advances again to the next phase, a new signal is re-emitted.
-  if (phaseNum !== null && phaseNum >= 2) {
+  // ── Signal 1: Phase Transition ────────────────────────────────────────────
+  // Only emit for the four clinically meaningful transitions:
+  //   Phase 1 → Phase 2 | Phase 2 → Phase 3
+  //   Phase 1 → Phase 1/2 | Phase 2 → Phase 2/3
+  // Pre-clinical, Phase 4, site activations, and completions are excluded.
+  // The dedup URL includes the phase label so re-advancement emits a new signal.
+  if (ALLOWED_PHASE_TRANSITIONS.has(phaseStr)) {
     const phaseFrom = inferPreviousPhase(phaseNum);
-    const dedupUrl = `${sourceUrl}#PHASE${phaseNum}`;
+    const dedupUrl = `${sourceUrl}#PHASE${phaseStr.replace(/\s/g, '')}`;
 
-    // Debug logging for the first 3 phase transition signals per run
     if (phaseDebugCount < 3) {
       console.log(
         `[clinicalTrialMonitor] Phase debug [${proto.nctId}]: ` +
         `phase_from="${phaseFrom}", phase_to="${phaseStr}", ` +
-        `raw_phases=${JSON.stringify(proto.phases)}, phaseNum=${phaseNum}`
+        `raw_phases=${JSON.stringify(proto.phases)}`
       );
       phaseDebugCount++;
     }
 
     const alreadyExists = await signalExists(company.id, SIGNAL_TYPES.PHASE_TRANSITION.type, dedupUrl);
-
     if (!alreadyExists) {
-      const detail = {
-        ...baseDetail,
-        phase_from: phaseFrom,
-        phase_to: phaseStr,
-      };
-
       const inserted = await insertSignal({
         company_id: company.id,
         signal_type: SIGNAL_TYPES.PHASE_TRANSITION.type,
         priority_score: SIGNAL_TYPES.PHASE_TRANSITION.score,
         signal_summary: `${proto.leadSponsorName} study advanced from ${phaseFrom} to ${phaseStr}: ${proto.briefTitle}`,
-        signal_detail: detail,
+        signal_detail: { ...baseDetail, phase_from: phaseFrom, phase_to: phaseStr },
         source_url: dedupUrl,
         created_at: new Date().toISOString(),
       });
-
       if (inserted) signalsInserted++;
     }
   }
 
-  // ── Signal 2: New IND — Phase 1 ONLY, no combined 1/2 ────────────────────
+  // ── Signal 2: New IND — pure Phase 1 ONLY (no combined 1/2) ──────────────
   const isPhase1Only =
     !isCombined &&
     proto.phases.length === 1 &&
@@ -500,93 +504,18 @@ async function processStudy(study, now, completionCutoff) {
 
   if (isPhase1Only) {
     const dedupUrl = `${sourceUrl}#IND`;
-
     const alreadyExists = await signalExists(company.id, SIGNAL_TYPES.NEW_IND.type, dedupUrl);
-
     if (!alreadyExists) {
-      const detail = {
-        ...baseDetail,
-        phase_from: 'PRE-CLINICAL',
-        phase_to: 'PHASE1',
-      };
-
       const inserted = await insertSignal({
         company_id: company.id,
         signal_type: SIGNAL_TYPES.NEW_IND.type,
         priority_score: SIGNAL_TYPES.NEW_IND.score,
         signal_summary: `${proto.leadSponsorName} filed new IND / initiated Phase 1: ${proto.briefTitle}`,
-        signal_detail: detail,
+        signal_detail: { ...baseDetail, phase_from: 'Pre-Clinical', phase_to: 'Phase 1' },
         source_url: dedupUrl,
         created_at: new Date().toISOString(),
       });
-
       if (inserted) signalsInserted++;
-    }
-  }
-
-  // ── Signal 3: Site Activation (more than MIN_SITES_FOR_ACTIVATION sites) ──
-  if (proto.locationCount > MIN_SITES_FOR_ACTIVATION) {
-    // Include the location count in the dedup URL so that a re-expansion to
-    // even more sites is treated as a distinct event.
-    const dedupUrl = `${sourceUrl}#SITES${proto.locationCount}`;
-
-    const alreadyExists = await signalExists(company.id, SIGNAL_TYPES.SITE_ACTIVATION.type, dedupUrl);
-
-    if (!alreadyExists) {
-      const detail = {
-        ...baseDetail,
-        phase_from: phaseNum ? inferPreviousPhase(phaseNum) : 'N/A',
-        phase_to: phaseStr,
-      };
-
-      const inserted = await insertSignal({
-        company_id: company.id,
-        signal_type: SIGNAL_TYPES.SITE_ACTIVATION.type,
-        priority_score: SIGNAL_TYPES.SITE_ACTIVATION.score,
-        signal_summary: `${proto.leadSponsorName} has activated ${proto.locationCount} sites: ${proto.briefTitle}`,
-        signal_detail: detail,
-        source_url: dedupUrl,
-        created_at: new Date().toISOString(),
-      });
-
-      if (inserted) signalsInserted++;
-    }
-  }
-
-  // ── Signal 4: Upcoming Primary Completion (within next 90 days) ───────────
-  if (proto.primaryCompletionDate) {
-    const completionDate = new Date(proto.primaryCompletionDate);
-
-    if (!isNaN(completionDate.getTime()) && completionDate >= now && completionDate <= completionCutoff) {
-      const dedupUrl = `${sourceUrl}#COMPLETION${proto.primaryCompletionDate}`;
-
-      const alreadyExists = await signalExists(company.id, SIGNAL_TYPES.COMPLETION.type, dedupUrl);
-
-      if (!alreadyExists) {
-        const daysUntilCompletion = Math.ceil(
-          (completionDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
-        );
-
-        const detail = {
-          ...baseDetail,
-          phase_from: phaseNum ? inferPreviousPhase(phaseNum) : 'N/A',
-          phase_to: phaseStr,
-          primary_completion_date: proto.primaryCompletionDate,
-          days_until_completion: daysUntilCompletion,
-        };
-
-        const inserted = await insertSignal({
-          company_id: company.id,
-          signal_type: SIGNAL_TYPES.COMPLETION.type,
-          priority_score: SIGNAL_TYPES.COMPLETION.score,
-          signal_summary: `${proto.leadSponsorName} study completes in ${daysUntilCompletion} days (${proto.primaryCompletionDate}): ${proto.briefTitle}`,
-          signal_detail: detail,
-          source_url: dedupUrl,
-          created_at: new Date().toISOString(),
-        });
-
-        if (inserted) signalsInserted++;
-      }
     }
   }
 
@@ -607,7 +536,6 @@ export async function run() {
   const runId = await createAgentRun();
   const now = new Date();
   const lookbackDate = daysAgo(LOOKBACK_DAYS);
-  const completionCutoff = daysFromNow(COMPLETION_WINDOW_DAYS);
   const lastUpdateGte = formatDate(lookbackDate);
 
   let signalsFound = 0;
@@ -625,12 +553,11 @@ export async function run() {
       studiesProcessed++;
 
       const proto = extractProtocol(study);
-
       if ((proto.leadSponsorClass || '').toUpperCase() === 'INDUSTRY') {
         industryFiltered++;
       }
 
-      const inserted = await processStudy(study, now, completionCutoff);
+      const inserted = await processStudy(study, now);
       signalsFound += inserted;
     }
 

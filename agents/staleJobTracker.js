@@ -477,9 +477,10 @@ async function discoverSponsorCareerPages() {
 
       $c('nav, footer, script, style').remove()
 
-      let found = false
+      const MAX_JOBS_PER_COMPANY = 5
+      let foundCount = 0
       $c('a, h1, h2, h3, h4, li').each((_, el) => {
-        if (found) return
+        if (foundCount >= MAX_JOBS_PER_COMPANY) return
         const text = $c(el).text().trim()
         if (!text || text.length < 5 || text.length > 200) return
         if (!matchesRoleKeywords(text)) return
@@ -501,11 +502,13 @@ async function discoverSponsorCareerPages() {
           source_url: jobUrl,
           job_board: 'company_career_site',
         })
-        found = true
+        foundCount++
       })
 
-      if (!found) {
+      if (foundCount === 0) {
         console.log(`No matching roles on ${careerUrl} for ${companyName}`)
+      } else {
+        console.log(`Career site: found ${foundCount} role(s) at ${companyName}`)
       }
     } catch (err) {
       console.warn(`Career page fetch failed for ${companyName}: ${err.message}`)
