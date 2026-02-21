@@ -125,8 +125,8 @@ async function processNihIndustryGrants() {
   const body = {
     criteria: {
       award_notice_date: { from_date: fromDate },
-      // SBIR/STTR activity codes target private companies
-      activity_codes: ['R44', 'R43', 'R41', 'R42', 'U44', 'SB1', 'SB2'],
+      // SBIR/STTR activity codes target private companies (R43/R44 = SBIR, R41/R42 = STTR, U43/U44 = cooperative)
+      activity_codes: ['R43', 'R44', 'R41', 'R42', 'U43', 'U44'],
     },
     offset: 0,
     limit: 100,
@@ -165,8 +165,8 @@ async function processNihIndustryGrants() {
     if (!orgName) continue
     if (!isLifeSciencesText(`${orgName} ${projectTitle}`)) continue
 
-    // Distinguish new award vs renewal: R44/R42/SB2 = Phase II (renewal), R43/R41/SB1 = Phase I (new)
-    const isRenewal = ['R44', 'R42', 'SB2', 'U44'].includes(activityCode.toUpperCase())
+    // Distinguish new award vs renewal: R44/R42 = SBIR Phase II, R41 = STTR Phase I, R42 = STTR Phase II, U44 = cooperative Phase II
+    const isRenewal = ['R44', 'R42', 'U44'].includes(activityCode.toUpperCase())
     const signalType = isRenewal ? 'funding_renewal' : 'funding_new_award'
     const sourceUrl = projectNum
       ? `https://reporter.nih.gov/project-details/${projectNum}`
@@ -232,13 +232,15 @@ async function processSecMaFilings() {
   const startdt = sevenDaysAgo.toISOString().split('T')[0]
   const enddt = new Date().toISOString().split('T')[0]
 
+  // Include life sciences terms directly in the query so EDGAR's full-text search
+  // filters documents (not just metadata) — EDGAR metadata is often just "CURRENT REPORT"
+  // with no pharma terms, causing the post-fetch isLifeSciencesText check to drop all results.
   const params = new URLSearchParams({
-    q: MA_KEYWORDS.slice(0, 3).join(' '),
+    q: '(acquisition OR merger OR acquires) AND (pharmaceutical OR biotech OR therapeutics OR biopharmaceutical OR "life sciences" OR oncology OR clinical)',
     dateRange: 'custom',
     startdt,
     enddt,
     forms: '8-K',
-    hits: '100',
   })
 
   let filings = []
@@ -354,13 +356,14 @@ async function processSecPartnershipFilings() {
   const startdt = sevenDaysAgo.toISOString().split('T')[0]
   const enddt = new Date().toISOString().split('T')[0]
 
+  // Combine partnership keywords with life sciences industry terms so EDGAR full-text
+  // search returns only relevant pharma/biotech filings.
   const params = new URLSearchParams({
-    q: '"collaboration agreement" OR "license agreement" OR "licensing agreement"',
+    q: '("collaboration agreement" OR "license agreement" OR "licensing agreement") AND (pharmaceutical OR biotech OR therapeutics OR biopharmaceutical OR "life sciences" OR oncology)',
     dateRange: 'custom',
     startdt,
     enddt,
     forms: '8-K',
-    hits: '50',
   })
 
   let filings = []
@@ -433,7 +436,6 @@ async function processSecIpoFilings() {
     startdt,
     enddt,
     forms: 'S-1',
-    hits: '50',
   })
 
   let filings = []
@@ -505,7 +507,6 @@ async function processSecFormDFilings() {
     startdt,
     enddt,
     forms: 'D',
-    hits: '100',
   })
 
   let filings = []
@@ -604,7 +605,7 @@ export async function runFundingMaAgent() {
       .eq('id', runId)
 
     console.log(`Funding/MA Agent complete. Signals: NIH=${nihCount} M&A=${maCount} Partnership=${partnershipCount} IPO=${ipoCount} VC=${vcCount}`)
-    return { success: true, signalsFound }
+    return { success: true, signalsFound, breakdown: { nihCount, maCount, partnershipCount, ipoCount, vcCount } }
   } catch (error) {
     await supabase
       .from('agent_runs')
