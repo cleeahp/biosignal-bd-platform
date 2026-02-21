@@ -2,18 +2,6 @@ import { supabase } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import * as cheerio from 'cheerio'
 
-// ─── Indeed RSS search keywords ────────────────────────────────────────────────
-const INDEED_KEYWORDS = [
-  'Clinical Research Associate CRO',
-  'SDTM Programmer clinical',
-  'Regulatory Affairs Specialist biotech',
-  'Biostatistician pharmaceutical',
-  'Pharmacovigilance clinical trials',
-  'Clinical Data Manager CRO',
-  'Quality Assurance pharmaceutical',
-  'Clinical Trial Manager CRO',
-]
-
 const BOT_UA = 'Mozilla/5.0 (compatible; BioSignalBot/1.0)'
 
 // ─── Shared signal helpers ─────────────────────────────────────────────────────
@@ -47,77 +35,7 @@ function computeScore(daysPosted) {
   return Math.min(score, 20)
 }
 
-// ─── SOURCE 1: Indeed RSS ──────────────────────────────────────────────────────
-
-async function fetchIndeedRss(keyword) {
-  const jobs = []
-  const q = encodeURIComponent(keyword)
-  const url = `https://www.indeed.com/rss?q=${q}&fromage=30&sort=date`
-
-  let xml
-  try {
-    const resp = await fetch(url, {
-      headers: { 'User-Agent': BOT_UA },
-      signal: AbortSignal.timeout(8000),
-    })
-    if (!resp.ok) {
-      console.warn(`Indeed RSS HTTP ${resp.status} for "${keyword}"`)
-      return jobs
-    }
-    xml = await resp.text()
-  } catch (err) {
-    console.warn(`Indeed RSS fetch error for "${keyword}": ${err.message}`)
-    return jobs
-  }
-
-  // Validate that the response is actually RSS/XML, not a CAPTCHA/HTML page
-  if (!xml.includes('<rss') && !xml.includes('<item>')) {
-    console.warn(`Indeed RSS non-XML response for "${keyword}" — skipping`)
-    return jobs
-  }
-
-  const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || []
-  for (const item of items) {
-    const title = item.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/s)?.[1]?.trim() || ''
-    const link = item.match(/<link>(.*?)<\/link>/s)?.[1]?.trim() || ''
-    const pubDateStr = item.match(/<pubDate>(.*?)<\/pubDate>/s)?.[1]?.trim() || ''
-    const company =
-      item.match(/<source[^>]*>(.*?)<\/source>/s)?.[1]?.trim() ||
-      item.match(/<author>(.*?)<\/author>/s)?.[1]?.trim() ||
-      ''
-    const descRaw =
-      item.match(/<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/s)?.[1] || ''
-
-    if (!title || !link) continue
-    if (!matchesRoleKeywords(title)) continue
-
-    const pubDate = pubDateStr ? new Date(pubDateStr) : null
-    const daysPosted = pubDate
-      ? Math.floor((Date.now() - pubDate.getTime()) / 86400000)
-      : 30
-    const datePosted = pubDate ? pubDate.toISOString().split('T')[0] : null
-
-    // Extract "City, ST" pattern from stripped description HTML
-    const descText = descRaw.replace(/<[^>]+>/g, ' ')
-    const locMatch = descText.match(/([A-Z][a-zA-Z\s]{1,25},\s*[A-Z]{2})\b/)
-    const jobLocation = locMatch ? locMatch[1].trim() : ''
-
-    jobs.push({
-      job_title: title,
-      company_name: company || 'Unknown Company',
-      job_location: jobLocation,
-      date_posted: datePosted,
-      days_posted: daysPosted,
-      source_url: link,
-      job_board: 'indeed',
-    })
-  }
-
-  console.log(`Indeed RSS "${keyword}": ${jobs.length} matched jobs`)
-  return jobs
-}
-
-// ─── SOURCE 2: BioSpace.com ────────────────────────────────────────────────────
+// ─── SOURCE 1: BioSpace.com ────────────────────────────────────────────────────
 
 async function fetchBioSpaceJobs() {
   const jobs = []
@@ -138,6 +56,11 @@ async function fetchBioSpaceJobs() {
     html = await resp.text()
   } catch (err) {
     console.warn(`BioSpace fetch error: ${err.message}`)
+    return jobs
+  }
+
+  if (html.length < 1000) {
+    console.warn(`BioSpace: response too short (${html.length} chars) — may be blocked`)
     return jobs
   }
 
@@ -227,7 +150,273 @@ async function fetchBioSpaceJobs() {
   return jobs
 }
 
-// ─── SOURCE 3: Career site discovery via ClinicalTrials.gov sponsors ──────────
+// ─── SOURCE 2: MedZilla.com ────────────────────────────────────────────────────
+
+async function fetchMedZillaJobs() {
+  const jobs = []
+
+  // MedZilla is an older life sciences job board with server-rendered HTML
+  // Try the main search page and a generic jobs listing URL
+  const candidateUrls = [
+    'https://www.medzilla.com/search.cfm',
+    'https://www.medzilla.com/jobs/',
+    'https://www.medzilla.com/',
+  ]
+
+  let html = null
+  let successUrl = null
+
+  for (const url of candidateUrls) {
+    try {
+      const resp = await fetch(url, {
+        headers: {
+          'User-Agent': BOT_UA,
+          Accept: 'text/html,application/xhtml+xml,*/*',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        signal: AbortSignal.timeout(12000),
+      })
+      if (resp.ok) {
+        const text = await resp.text()
+        if (text.length > 500) {
+          html = text
+          successUrl = url
+          console.log(`MedZilla: fetched ${html.length} chars from ${url}`)
+          break
+        }
+        console.warn(`MedZilla ${url}: response too short (${text.length} chars)`)
+      } else {
+        console.warn(`MedZilla ${url}: HTTP ${resp.status}`)
+      }
+    } catch (err) {
+      console.warn(`MedZilla ${url} fetch error: ${err.message}`)
+    }
+  }
+
+  if (!html) {
+    console.warn('MedZilla: no reachable URL found — skipping source')
+    return jobs
+  }
+
+  const $ = cheerio.load(html)
+  let parsed = 0
+
+  // Strategy 1: table rows (MedZilla historically uses tables)
+  $('table tr').each((_, el) => {
+    if (parsed >= 30) return
+    const $el = $(el)
+    const $link = $el.find('a').first()
+    const title = $link.text().trim()
+    if (!title || title.length < 5 || !matchesRoleKeywords(title)) return
+
+    const href = $link.attr('href') || ''
+    const sourceUrl = href.startsWith('http')
+      ? href
+      : href
+      ? `https://www.medzilla.com${href}`
+      : successUrl
+
+    // Company is often in the 2nd or 3rd td
+    const cells = $el.find('td')
+    const companyName =
+      cells.eq(1).text().trim() ||
+      cells.eq(2).text().trim() ||
+      'Unknown Company'
+
+    jobs.push({
+      job_title: title.substring(0, 120),
+      company_name: companyName.substring(0, 100),
+      job_location: cells.eq(3)?.text().trim() || '',
+      date_posted: null,
+      days_posted: 30,
+      source_url: sourceUrl,
+      job_board: 'medzilla',
+    })
+    parsed++
+  })
+
+  // Strategy 2: list or div containers with job/listing class names
+  if (parsed === 0) {
+    $(
+      '[class*="job"], [class*="listing"], [class*="result"], [class*="position"]'
+    ).each((_, el) => {
+      if (parsed >= 30) return
+      const $el = $(el)
+      const $link = $el.find('a').first()
+      const title =
+        $link.text().trim() ||
+        $el.find('h2, h3, h4').first().text().trim()
+
+      if (!title || !matchesRoleKeywords(title)) return
+
+      const href = $link.attr('href') || ''
+      const sourceUrl = href.startsWith('http')
+        ? href
+        : href
+        ? `https://www.medzilla.com${href}`
+        : successUrl
+
+      const companyName =
+        $el.find('[class*="company"], [class*="employer"]').first().text().trim() ||
+        'Unknown Company'
+
+      jobs.push({
+        job_title: title.substring(0, 120),
+        company_name: companyName.substring(0, 100),
+        job_location: '',
+        date_posted: null,
+        days_posted: 30,
+        source_url: sourceUrl,
+        job_board: 'medzilla',
+      })
+      parsed++
+    })
+  }
+
+  // Strategy 3: scan all anchors for matching job titles
+  if (parsed === 0) {
+    $('a').each((_, el) => {
+      if (parsed >= 20) return
+      const $el = $(el)
+      const title = $el.text().trim()
+      if (!title || title.length < 5 || title.length > 120) return
+      if (!matchesRoleKeywords(title)) return
+
+      const href = $el.attr('href') || ''
+      if (!href || href === '#') return
+      const sourceUrl = href.startsWith('http')
+        ? href
+        : `https://www.medzilla.com${href}`
+
+      jobs.push({
+        job_title: title.substring(0, 120),
+        company_name: 'Unknown Company',
+        job_location: '',
+        date_posted: null,
+        days_posted: 30,
+        source_url: sourceUrl,
+        job_board: 'medzilla',
+      })
+      parsed++
+    })
+  }
+
+  console.log(`MedZilla: ${jobs.length} matched jobs`)
+  return jobs
+}
+
+// ─── SOURCE 3: ClinicalTrialsArena.com/jobs/ ──────────────────────────────────
+
+async function fetchClinicalTrialsArenaJobs() {
+  const jobs = []
+  let html
+
+  try {
+    const resp = await fetch('https://www.clinicaltrialsarena.com/jobs/', {
+      headers: {
+        'User-Agent': BOT_UA,
+        Accept: 'text/html,application/xhtml+xml,*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(12000),
+    })
+    if (!resp.ok) {
+      console.warn(`ClinicalTrialsArena: HTTP ${resp.status}`)
+      return jobs
+    }
+    html = await resp.text()
+  } catch (err) {
+    console.warn(`ClinicalTrialsArena fetch error: ${err.message}`)
+    return jobs
+  }
+
+  if (html.length < 500) {
+    console.warn(
+      `ClinicalTrialsArena: response too short (${html.length} chars) — may be blocked`
+    )
+    return jobs
+  }
+
+  console.log(`ClinicalTrialsArena: fetched ${html.length} chars`)
+  const $ = cheerio.load(html)
+  let parsed = 0
+
+  // Strategy 1: article or structured job listing containers
+  $(
+    'article, .job, [class*="job-post"], [class*="job-list"] li, .jobs-list__item, [class*="vacancy"], [class*="career"]'
+  ).each((_, el) => {
+    if (parsed >= 30) return
+    const $el = $(el)
+
+    const $titleLink = $el.find('h2 a, h3 a, h4 a, a[class*="title"]').first()
+    const title =
+      $titleLink.text().trim() ||
+      $el.find('h2, h3, h4').first().text().trim()
+
+    if (!title || !matchesRoleKeywords(title)) return
+
+    const $link = $titleLink.length ? $titleLink : $el.find('a').first()
+    const href = $link.attr('href') || ''
+    const sourceUrl = href.startsWith('http')
+      ? href
+      : href
+      ? `https://www.clinicaltrialsarena.com${href}`
+      : 'https://www.clinicaltrialsarena.com/jobs/'
+
+    const companyName =
+      $el
+        .find('[class*="company"], [class*="employer"], [class*="organisation"]')
+        .first()
+        .text()
+        .trim() || 'Unknown Company'
+    const location =
+      $el.find('[class*="location"], [class*="city"]').first().text().trim() || ''
+
+    jobs.push({
+      job_title: title.substring(0, 120),
+      company_name: companyName,
+      job_location: location,
+      date_posted: null,
+      days_posted: 30,
+      source_url: sourceUrl,
+      job_board: 'clinicaltrialsarena',
+    })
+    parsed++
+  })
+
+  // Strategy 2: generic anchor scan for role keyword matches
+  if (parsed === 0) {
+    $('a').each((_, el) => {
+      if (parsed >= 20) return
+      const $el = $(el)
+      const title = $el.text().trim()
+      if (!title || title.length < 5 || title.length > 150) return
+      if (!matchesRoleKeywords(title)) return
+
+      const href = $el.attr('href') || ''
+      if (!href || href === '#') return
+      const sourceUrl = href.startsWith('http')
+        ? href
+        : `https://www.clinicaltrialsarena.com${href}`
+
+      jobs.push({
+        job_title: title.substring(0, 120),
+        company_name: 'Unknown Company',
+        job_location: '',
+        date_posted: null,
+        days_posted: 30,
+        source_url: sourceUrl,
+        job_board: 'clinicaltrialsarena',
+      })
+      parsed++
+    })
+  }
+
+  console.log(`ClinicalTrialsArena: ${jobs.length} matched jobs`)
+  return jobs
+}
+
+// ─── SOURCE 4: Career site discovery via ClinicalTrials.gov sponsors ──────────
 
 async function discoverSponsorCareerPages() {
   const jobs = []
@@ -343,7 +532,6 @@ async function discoverSponsorCareerPages() {
       const locMatch = line.match(/([A-Z][a-zA-Z\s]{1,25},\s*[A-Z]{2})\b/)
       const jobLocation = locMatch ? locMatch[1].trim() : ''
 
-      // Check dedup before adding (avoid duplicate source URLs)
       jobs.push({
         job_title: line.replace(/\s+/g, ' ').slice(0, 120),
         company_name: companyName,
@@ -418,29 +606,33 @@ export async function run() {
   const runId = runEntry?.id
 
   let signalsFound = 0
-  const sourceCounts = { indeed: 0, biospace: 0, careerSites: 0 }
+  const sourceCounts = { biospace: 0, medzilla: 0, clinicalTrialsArena: 0, careerSites: 0 }
 
   try {
     const allJobs = []
 
-    // ── Source 1: Indeed RSS — all keywords fetched sequentially to avoid
-    //   rate-limit hammering; each fetch is independent so errors are isolated
-    for (const keyword of INDEED_KEYWORDS) {
-      const results = await fetchIndeedRss(keyword)
-      for (const job of results) {
-        job._source = 'indeed'
-        allJobs.push(job)
-      }
-    }
-
-    // ── Source 2: BioSpace
+    // ── Source 1: BioSpace.com ─────────────────────────────────────────────────
     const bioSpaceJobs = await fetchBioSpaceJobs()
     for (const job of bioSpaceJobs) {
       job._source = 'biospace'
       allJobs.push(job)
     }
 
-    // ── Source 3: ClinicalTrials.gov sponsor career pages
+    // ── Source 2: MedZilla.com ─────────────────────────────────────────────────
+    const medZillaJobs = await fetchMedZillaJobs()
+    for (const job of medZillaJobs) {
+      job._source = 'medzilla'
+      allJobs.push(job)
+    }
+
+    // ── Source 3: ClinicalTrialsArena.com/jobs/ ────────────────────────────────
+    const ctArenaJobs = await fetchClinicalTrialsArenaJobs()
+    for (const job of ctArenaJobs) {
+      job._source = 'clinicalTrialsArena'
+      allJobs.push(job)
+    }
+
+    // ── Source 4: ClinicalTrials.gov sponsor career pages ──────────────────────
     const careerSiteJobs = await discoverSponsorCareerPages()
     for (const job of careerSiteJobs) {
       job._source = 'careerSites'
@@ -465,8 +657,9 @@ export async function run() {
       const inserted = await persistJobSignal(job)
       if (inserted) {
         signalsFound++
-        if (job._source === 'indeed') sourceCounts.indeed++
-        else if (job._source === 'biospace') sourceCounts.biospace++
+        if (job._source === 'biospace') sourceCounts.biospace++
+        else if (job._source === 'medzilla') sourceCounts.medzilla++
+        else if (job._source === 'clinicalTrialsArena') sourceCounts.clinicalTrialsArena++
         else sourceCounts.careerSites++
       }
     }
@@ -483,8 +676,9 @@ export async function run() {
           jobs_found_total: jobsFound,
           jobs_deduped: uniqueJobs.length,
           source_counts: {
-            indeed_raw: allJobs.filter((j) => j._source === 'indeed').length,
             biospace_raw: allJobs.filter((j) => j._source === 'biospace').length,
+            medzilla_raw: allJobs.filter((j) => j._source === 'medzilla').length,
+            clinicaltrialsarena_raw: allJobs.filter((j) => j._source === 'clinicalTrialsArena').length,
             career_sites_raw: allJobs.filter((j) => j._source === 'careerSites').length,
           },
           signals_by_source: sourceCounts,

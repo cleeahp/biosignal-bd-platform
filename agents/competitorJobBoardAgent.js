@@ -276,21 +276,6 @@ async function persistCompetitorSignal(firmName, trial, nctId) {
   return true
 }
 
-// ─── Firm rotation: pick 5 active firms based on day-of-month modulo ──────────
-// Distributes coverage across the full firm list over the month without
-// requiring any state beyond the current date.
-
-function selectFirmsForToday(firms, count) {
-  if (firms.length <= count) return firms
-  const dayIndex = new Date().getDate() - 1 // 0-based day offset
-  const startIdx = (dayIndex * count) % firms.length
-  const selected = []
-  for (let i = 0; i < count; i++) {
-    selected.push(firms[(startIdx + i) % firms.length])
-  }
-  return selected
-}
-
 // ─── Main export ───────────────────────────────────────────────────────────────
 
 export async function run() {
@@ -323,15 +308,14 @@ export async function run() {
 
     if (firmsErr) throw new Error(`Failed to load competitor firms: ${firmsErr.message}`)
 
-    // Select 5 firms for this run based on day-of-month rotation
-    const firmsToCheck = selectFirmsForToday(allFirms || [], 5)
+    const firmsToCheck = allFirms || []
     console.log(
-      `Competitor Job Board: checking ${firmsToCheck.length} firms this run (of ${allFirms?.length ?? 0} active)`
+      `Competitor Job Board: processing ALL ${firmsToCheck.length} active firms this run`
     )
 
     let firmsChecked = 0
 
-    // ── Step 3: For each selected firm, query ClinicalTrials.gov ────────────
+    // ── Step 3: For each firm, query ClinicalTrials.gov (2s delay between firms)
     for (const firm of firmsToCheck) {
       const studies = await fetchTrialsForFirm(firm.name)
       firmsChecked++
@@ -343,6 +327,11 @@ export async function run() {
 
         const inserted = await persistCompetitorSignal(firm.name, study, nctId)
         if (inserted) signalsFound++
+      }
+
+      // 2s delay between firms to avoid rate limiting
+      if (firmsChecked < firmsToCheck.length) {
+        await new Promise((r) => setTimeout(r, 2000))
       }
     }
 
