@@ -6,32 +6,33 @@ import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 // records exist. Career URLs are verified reachable before insertion.
 
 const COMPETITOR_FIRMS_SEED = [
-  { name: 'Actalent', careers_url: 'https://actalentservices.com/careers' },
+  // URLs verified via HEAD request 2026-02-21
+  { name: 'Actalent', careers_url: 'https://www.actalentservices.com/careers' },
   { name: 'Kelly Life Sciences', careers_url: 'https://kellyservices.com/us/jobs/life-sciences/' },
-  { name: 'Alku', careers_url: 'https://alku.com/jobs' },
+  { name: 'Alku', careers_url: 'https://www.alku.com/jobs/' },
   { name: 'Black Diamond Networks', careers_url: 'https://blackdiamondnetworks.com/jobs/' },
-  { name: 'Real Life Sciences', careers_url: 'https://reallifesciences.com/jobs/' },
-  { name: 'Oxford Global Resources', careers_url: 'https://oxfordglobal.com/jobs' },
-  { name: 'The Planet Group', careers_url: 'https://theplanetgroup.com/jobs/' },
+  { name: 'Real Life Sciences', careers_url: 'https://reallifesciences.com/careers/' },
+  { name: 'Oxford Global Resources', careers_url: 'https://www.ogr.com/careers' },
+  { name: 'The Planet Group', careers_url: 'https://www.theplanetgroup.com/jobs' },
   { name: 'ICON plc', careers_url: 'https://jobs.iconplc.com/jobs' },
-  { name: 'Advanced Clinical', careers_url: 'https://advancedclinical.com/careers/' },
-  { name: 'Randstad Life Sciences', careers_url: 'https://www.randstadusa.com/jobs/q-life-sciences/' },
-  { name: 'Joule Staffing', careers_url: 'https://joulesolutions.com/find-a-job/' },
-  { name: 'Beacon Hill Staffing Group', careers_url: 'https://beaconhillstaffing.com/find-a-job/' },
-  { name: 'ASGN Incorporated', careers_url: 'https://asgn.com/find-jobs/' },
-  { name: 'Net2Source', careers_url: 'https://net2source.com/jobs/' },
-  { name: 'USTech Solutions', careers_url: 'https://www.ustechsolutions.com/jobs/' },
-  { name: 'Yoh Services', careers_url: 'https://yoh.com/job-seekers' },
-  { name: 'Soliant Health', careers_url: 'https://soliant.com/jobs/' },
-  { name: 'Medix Staffing', careers_url: 'https://medixteam.com/candidates/job-search/' },
-  { name: 'Epic Staffing Group', careers_url: 'https://www.epicstaffinggroup.com/jobs/' },
-  { name: 'Solomon Page', careers_url: 'https://solomonpage.com/candidates' },
-  { name: 'Spectra Force', careers_url: 'https://spectraforce.com/job-seekers/' },
-  { name: 'Mindlance', careers_url: 'https://mindlance.com/find-jobs/' },
-  { name: 'Green Key Resources', careers_url: 'https://greenkeyresources.com/find-a-job/' },
+  { name: 'Advanced Clinical', careers_url: 'https://www.advancedclinical.com/careers/' },
+  { name: 'Randstad Life Sciences', careers_url: 'https://www.randstadusa.com/jobs/life-sciences' },
+  { name: 'Joule Staffing', careers_url: 'https://www.joulesolutions.com/find-a-job' },
+  { name: 'Beacon Hill Staffing Group', careers_url: 'https://www.beaconhillstaffing.com/jobs' },
+  { name: 'ASGN Incorporated', careers_url: 'https://www.asgn.com' },
+  { name: 'Net2Source', careers_url: 'https://www.net2source.com/jobs/' },
+  { name: 'USTech Solutions', careers_url: 'https://ustechsolutions.com/jobs/' },
+  { name: 'Yoh Services', careers_url: 'https://www.yoh.com' },
+  { name: 'Soliant Health', careers_url: 'https://www.soliant.com/jobs/' },
+  { name: 'Medix Staffing', careers_url: 'https://www.medixteam.com/job-search/' },
+  { name: 'Epic Staffing Group', careers_url: 'https://www.epicstaffinggroup.com' },
+  { name: 'Solomon Page', careers_url: 'https://www.solomonpage.com/find-a-job/' },
+  { name: 'Spectra Force', careers_url: 'https://www.spectraforce.com/careers' },
+  { name: 'Mindlance', careers_url: 'https://www.mindlance.com/careers/' },
+  { name: 'Green Key Resources', careers_url: 'https://www.greenkeyresources.com/find-a-job' },
   { name: 'Phaidon International', careers_url: 'https://phaidoninternational.com/jobs' },
   { name: 'Peoplelink Group', careers_url: 'https://peoplelinkgroup.com/job-seekers/' },
-  { name: 'Pacer Staffing', careers_url: 'https://pacerstaffing.com/find-a-job/' },
+  { name: 'Pacer Staffing', careers_url: 'https://www.pacerstaffing.com/job-seekers/' },
   { name: 'ZP Group', careers_url: 'https://zp.group/job-seekers/' },
   { name: 'Meet Staffing', careers_url: 'https://meetstaffing.com/jobs/' },
   { name: 'Ampcus', careers_url: 'https://ampcus.com/jobs/' },
@@ -315,7 +316,7 @@ export async function run() {
 
     let firmsChecked = 0
 
-    // ── Step 3: For each firm, query ClinicalTrials.gov (2s delay between firms)
+    // ── Step 3: For each firm, query ClinicalTrials.gov (400ms delay between firms)
     for (const firm of firmsToCheck) {
       const studies = await fetchTrialsForFirm(firm.name)
       firmsChecked++
@@ -329,9 +330,9 @@ export async function run() {
         if (inserted) signalsFound++
       }
 
-      // 2s delay between firms to avoid rate limiting
+      // 400ms delay between firms — balanced against Vercel 300s timeout
       if (firmsChecked < firmsToCheck.length) {
-        await new Promise((r) => setTimeout(r, 2000))
+        await new Promise((r) => setTimeout(r, 400))
       }
     }
 

@@ -512,16 +512,43 @@ async function fetchEdgarFilings(query, startdt, enddt, forms = '8-K') {
 /**
  * Extract the entity name from a SEC EDGAR filing hit.
  *
+ * The EDGAR search-index API returns display_names as an array of strings:
+ * "COMPANY NAME  (TICKER)  (CIK 0001234567)"
+ * The entity_name field is null in the search-index endpoint.
+ *
  * @param {object} hit - EDGAR search hit object
  * @returns {string}
  */
 function extractEntityName(hit) {
-  return (
-    hit._source?.entity_name ||
-    hit._source?.display_names?.[0]?.name ||
-    hit._source?.file_date ||
-    ''
-  );
+  const displayNames = hit._source?.display_names || [];
+  const raw = hit._source?.entity_name ||
+    (typeof displayNames[0] === 'string' ? displayNames[0] :
+     displayNames[0]?.name || '');
+  // Strip ticker symbols and CIK parentheticals:
+  // "BIOMARIN PHARMACEUTICAL INC  (BMRN)  (CIK 0001477720)" → "BIOMARIN PHARMACEUTICAL INC"
+  return raw.replace(/\s*\([^)]*\)\s*/g, '').trim();
+}
+
+/**
+ * Construct a EDGAR filing URL from accession number and CIK.
+ * Falls back to a company search URL if fields are missing.
+ *
+ * @param {object} hit - EDGAR search hit object
+ * @param {string} entityName - Cleaned entity name for fallback URL
+ * @param {string} formType - Form type for fallback URL (e.g. '8-K', 'S-1', 'D')
+ * @returns {string}
+ */
+function buildFilingUrl(hit, entityName, formType) {
+  const adsh = hit._source?.adsh || '';
+  const ciks = hit._source?.ciks || [];
+  const cik = ciks[0] ? parseInt(ciks[0], 10) : null;
+
+  if (adsh && cik) {
+    const adshNoDash = adsh.replace(/-/g, '');
+    return `https://www.sec.gov/Archives/edgar/data/${cik}/${adshNoDash}/`;
+  }
+
+  return `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=${encodeURIComponent(formType)}&dateb=&owner=include&count=40`;
 }
 
 /**
@@ -556,15 +583,13 @@ async function processMaFilings(sixMonthsAgo, today) {
     for (const hit of hits) {
       const entityName = extractEntityName(hit);
       const fileDate = hit._source?.file_date || today;
-      const filingText = hit._source?.period_of_report || hit._source?.file_date || '';
-      const filingUrl = hit._source?.file_url
-        ? `https://www.sec.gov${hit._source.file_url}`
-        : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=8-K`;
+      const filingText = hit._source?.period_of_report || '';
+      const filingUrl = buildFilingUrl(hit, entityName, '8-K');
 
       if (!entityName || !isIndustryOrgSec(entityName)) continue;
       if (!isLifeSciences(entityName) && !isLifeSciences(filingText)) continue;
 
-      const dealAmount = extractAmount(hit._source?.file_date || '');
+      const dealAmount = extractAmount(filingText);
 
       // Emit acquirer signal
       const acquirerCompany = await upsertCompany(entityName);
@@ -667,9 +692,7 @@ async function processPartnershipFilings(sixMonthsAgo, today) {
     for (const hit of hits) {
       const entityName = extractEntityName(hit);
       const fileDate = hit._source?.file_date || today;
-      const filingUrl = hit._source?.file_url
-        ? `https://www.sec.gov${hit._source.file_url}`
-        : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=8-K`;
+      const filingUrl = buildFilingUrl(hit, entityName, '8-K');
 
       if (!entityName || !isIndustryOrgSec(entityName)) continue;
       if (!isLifeSciences(entityName)) continue;
@@ -742,9 +765,7 @@ async function processIpoFilings(sixMonthsAgo, today) {
   for (const hit of hits) {
     const entityName = extractEntityName(hit);
     const fileDate = hit._source?.file_date || today;
-    const filingUrl = hit._source?.file_url
-      ? `https://www.sec.gov${hit._source.file_url}`
-      : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=S-1`;
+    const filingUrl = buildFilingUrl(hit, entityName, 'S-1');
 
     if (!entityName || !isIndustryOrgSec(entityName)) continue;
     if (!isLifeSciences(entityName)) continue;
@@ -820,9 +841,7 @@ async function processVcFilings(sixMonthsAgo, today) {
     for (const hit of hits) {
       const entityName = extractEntityName(hit);
       const fileDate = hit._source?.file_date || today;
-      const filingUrl = hit._source?.file_url
-        ? `https://www.sec.gov${hit._source.file_url}`
-        : `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(entityName)}&type=D`;
+      const filingUrl = buildFilingUrl(hit, entityName, 'D');
 
       if (!entityName || !isIndustryOrgSec(entityName)) continue;
 
