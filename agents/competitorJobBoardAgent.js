@@ -56,6 +56,11 @@ const COMPETITOR_FIRMS_SEED = [
 
 const BOT_UA = 'Mozilla/5.0 (compatible; BioSignalBot/1.0)'
 
+// Non-US country names. If the inferred client company name contains one of these
+// it is likely a non-US entity — we only generate signals for US-based clients.
+const NON_US_CLIENT_PATTERNS =
+  /\b(Canada|UK|United Kingdom|Germany|France|Netherlands|Switzerland|Sweden|Australia|Japan|China|India|Korea|Singapore|Ireland|Denmark|Belgium|Italy|Spain|Brazil|Israel|Norway|Finland|Taiwan|GmbH|AG\b|NV\b|BV\b)\b/i
+
 // ─── Shared signal helpers ─────────────────────────────────────────────────────
 
 // upsertCompany imported from lib/supabase.js (shared ilike check-then-insert pattern)
@@ -171,6 +176,12 @@ async function inferClientFromCareerPage(careersUrl, firmName, knownCompanyNames
 // Dedup key is firm + ISO week so one signal per firm per week at most.
 
 async function persistCompetitorSignal(firmName, careersUrl, likelyClient, confidence) {
+  // US-only: skip signals where the inferred client is clearly a non-US entity
+  if (likelyClient && likelyClient !== 'Unknown' && NON_US_CLIENT_PATTERNS.test(likelyClient)) {
+    console.log(`[competitorJobBoard] FILTERED (non-US client): ${likelyClient} via ${firmName}`)
+    return false
+  }
+
   const firmCompany = await upsertCompany(supabase, { name: firmName })
   if (!firmCompany) return false
 
