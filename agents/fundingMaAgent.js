@@ -52,6 +52,12 @@ const LIFE_SCIENCES_PATTERNS =
 const VC_FUND_PATTERNS =
   /\bfund\b|\bcapital\b|\bventures\b|\bpartners\b|\bmanagement\b|\binvestments\b/i;
 
+// Non-US country indicators. Used to skip SEC filers and BioSpace articles that
+// are clearly non-US entities. We only staff US positions.
+// GmbH/AG/NV/BV/SA/KK/AB are European/Asian legal suffixes.
+const NON_US_COUNTRY_PATTERNS =
+  /\b(Canada|Canadian|UK\b|United Kingdom|Britain|British|Germany|German|GmbH|France|French|Netherlands|Dutch|Switzerland|Swiss|Sweden|Swedish|Australia|Australian|Japan|Japanese|China|Chinese|Korea|Korean|India|Indian|Israel|Israeli|Denmark|Danish|Belgium|Belgian|Finland|Finnish|Italy|Italian|Spain|Spanish|Ireland|Irish|Norway|Norwegian|Singapore|Taiwan|Brazil|Brazilian|Argentina)\b|\bAG\b|\bNV\b|\bBV\b|\bKK\b|\bAB\b/;
+
 // Large pharma indicators used when finding the smaller biotech in partnerships
 const LARGE_PHARMA_PATTERNS =
   /\bpharma\b.*\bplc\b|\binc\b.*\bpharm|\bsanofi\b|\bpfizer\b|\broche\b|\bnovartis\b|\bmerck\b|\babbvie\b|\bastrazene\b|\beli lilly\b|\bbristol.myers\b/i;
@@ -451,7 +457,7 @@ async function processNihGrants(sixMonthsAgo, today, currentYear) {
       signal_summary: `${fundingSummary}${signalSummaryLabel}`,
       signal_detail: detail,
       source_url: sourceUrl,
-      detected_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
     });
 
     if (inserted) signalsInserted++;
@@ -573,6 +579,11 @@ async function processMaFilings(sixMonthsAgo, today) {
 
       if (!entityName || !isIndustryOrgSec(entityName)) continue;
       if (!isLifeSciences(entityName) && !isLifeSciences(filingText)) continue;
+      // US-only: skip entities whose names contain non-US country/legal indicators
+      if (NON_US_COUNTRY_PATTERNS.test(entityName)) {
+        console.log(`[fundingMaAgent] FILTERED (non-US entity): ${entityName}`);
+        continue;
+      }
 
       const dealAmount = extractAmount(filingText);
 
@@ -600,7 +611,7 @@ async function processMaFilings(sixMonthsAgo, today) {
             signal_summary: `${entityName} is acquiring in life sciences M&A${dealAmount ? ` (${dealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
             signal_detail: detail,
             source_url: filingUrl,
-            detected_at: new Date().toISOString(),
+            created_at: new Date().toISOString(),
           });
 
           if (inserted) signalsInserted++;
@@ -630,7 +641,7 @@ async function processMaFilings(sixMonthsAgo, today) {
             signal_summary: `${entityName} involved in acquisition/merger filing${dealAmount ? ` (${dealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
             signal_detail: detail,
             source_url: filingUrl,
-            detected_at: new Date().toISOString(),
+            created_at: new Date().toISOString(),
           });
 
           if (inserted) signalsInserted++;
@@ -779,6 +790,12 @@ async function processBioSpaceDeals(today) {
     const dealType = detectBioSpaceDealType(title);
     if (!dealType || dealType === 'ma') continue; // M&A handled by EDGAR source
 
+    // US-only: skip articles about non-US companies (title contains country indicator)
+    if (NON_US_COUNTRY_PATTERNS.test(title)) {
+      console.log(`[fundingMaAgent] FILTERED BioSpace /deals/ (non-US title): ${title}`);
+      continue;
+    }
+
     const rawCompany = extractCompanyFromBioSpaceTitle(title);
     if (!rawCompany || !isIndustryOrg(rawCompany)) continue;
 
@@ -814,7 +831,7 @@ async function processBioSpaceDeals(today) {
       signal_summary: `${rawCompany} ${summaryVerb}${amount ? ` (${amount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
       signal_detail: detail,
       source_url: url,
-      detected_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
     });
 
     if (inserted) signalsInserted++;
@@ -862,6 +879,12 @@ async function processBioSpaceFunding(today) {
     const dealType = detectBioSpaceDealType(title);
     if (!dealType || dealType === 'ma') continue;
 
+    // US-only: skip articles about non-US companies
+    if (NON_US_COUNTRY_PATTERNS.test(title)) {
+      console.log(`[fundingMaAgent] FILTERED BioSpace /funding/ (non-US title): ${title}`);
+      continue;
+    }
+
     const rawCompany = extractCompanyFromBioSpaceTitle(title);
     if (!rawCompany || !isIndustryOrg(rawCompany)) continue;
 
@@ -897,7 +920,7 @@ async function processBioSpaceFunding(today) {
       signal_summary: `${rawCompany} ${summaryVerb}${amount ? ` (${amount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
       signal_detail: detail,
       source_url: url,
-      detected_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
     });
 
     if (inserted) signalsInserted++;

@@ -88,18 +88,19 @@ function buildQueryUrl(lastUpdateGte, pageToken = null) {
     'PrimaryCompletionDate',
     'LastUpdatePostDate',
     'OverallStatus',
-    'LocationCount',
     'EnrollmentCount',
     'ConditionMeshTerm',
     'InterventionType',
+    'LocationCountry',
   ].join(',');
 
   // Note: query.term with AREA[] syntax and filter.lastUpdatePostDate.gte both return
   // HTTP 400 from Vercel IPs. The working approach is a single filter.advanced using
-  // RANGE syntax. INDUSTRY filter is confirmed working inside filter.advanced AND is
-  // also enforced post-fetch in processStudy() for defence-in-depth.
+  // RANGE syntax. LocationCount is NOT a valid CT.gov v2 field (returns 400) — use
+  // LocationCountry instead and count locations from the response locations array.
+  // US-only filter applied at the API level AND post-fetch for defence-in-depth.
   const params = new URLSearchParams({
-    'filter.advanced': `AREA[LastUpdatePostDate]RANGE[${lastUpdateGte},MAX]`,
+    'filter.advanced': `AREA[LastUpdatePostDate]RANGE[${lastUpdateGte},MAX] AND AREA[LocationCountry]United States`,
     pageSize: String(PAGE_SIZE),
     fields,
   });
@@ -200,14 +201,14 @@ function extractProtocol(study) {
   const primaryIntervention =
     interventionList.length > 0 ? interventionList[0].name : null;
 
-  // LocationCount may be returned as a top-level scalar on the study object
-  // when requested via the fields param, or counted from the locations array.
-  let locationCount = 0;
-  if (typeof study.locationCount === 'number') {
-    locationCount = study.locationCount;
-  } else if (Array.isArray(contacts.locations)) {
-    locationCount = contacts.locations.length;
-  }
+  // Derive location count and US presence from the locations array.
+  // LocationCount is NOT a valid CT.gov v2 API field — removed from fields param.
+  const locationsList = Array.isArray(contacts.locations) ? contacts.locations : [];
+  const locationCount = locationsList.length;
+  const hasUSLocation =
+    locationCount === 0 // no location data returned — do not exclude
+      ? true
+      : locationsList.some((loc) => loc.country === 'United States');
 
   return {
     nctId: id.nctId || null,
@@ -220,6 +221,7 @@ function extractProtocol(study) {
     lastUpdatePostDate: status.lastUpdatePostDateStruct?.date || null,
     overallStatus: status.overallStatus || '',
     locationCount,
+    hasUSLocation,
     enrollmentCount: design.enrollmentInfo?.count || null,
     conditionMeshTerm,
     primaryIntervention,
@@ -418,6 +420,12 @@ async function processStudy(study, now, completionCutoff) {
     return 0;
   }
 
+  // US-only: skip studies with no US location (API filters first, post-fetch confirms)
+  if (!proto.hasUSLocation) {
+    console.log(`[clinicalTrialMonitor] FILTERED (non-US): ${proto.nctId} ${proto.leadSponsorName}`);
+    return 0;
+  }
+
   const { phaseStr, phaseNum, isCombined } = parsePhase(proto.phases);
   const studySummary = buildStudySummary(proto);
   const sourceUrl = `${CT_STUDY_BASE}/${proto.nctId}`;
@@ -477,7 +485,7 @@ async function processStudy(study, now, completionCutoff) {
         signal_summary: `${proto.leadSponsorName} study advanced from ${phaseFrom} to ${phaseStr}: ${proto.briefTitle}`,
         signal_detail: detail,
         source_url: dedupUrl,
-        detected_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       });
 
       if (inserted) signalsInserted++;
@@ -509,7 +517,7 @@ async function processStudy(study, now, completionCutoff) {
         signal_summary: `${proto.leadSponsorName} filed new IND / initiated Phase 1: ${proto.briefTitle}`,
         signal_detail: detail,
         source_url: dedupUrl,
-        detected_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       });
 
       if (inserted) signalsInserted++;
@@ -538,7 +546,7 @@ async function processStudy(study, now, completionCutoff) {
         signal_summary: `${proto.leadSponsorName} has activated ${proto.locationCount} sites: ${proto.briefTitle}`,
         signal_detail: detail,
         source_url: dedupUrl,
-        detected_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       });
 
       if (inserted) signalsInserted++;
@@ -574,7 +582,7 @@ async function processStudy(study, now, completionCutoff) {
           signal_summary: `${proto.leadSponsorName} study completes in ${daysUntilCompletion} days (${proto.primaryCompletionDate}): ${proto.briefTitle}`,
           signal_detail: detail,
           source_url: dedupUrl,
-          detected_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
         });
 
         if (inserted) signalsInserted++;

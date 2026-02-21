@@ -4,6 +4,11 @@ import * as cheerio from 'cheerio'
 
 const BOT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
+// Non-US country names in job location strings. Jobs located outside the US are
+// skipped — we only staff US positions. Blank/Remote locations are kept.
+const NON_US_LOCATION_PATTERNS =
+  /\b(Canada|Ontario|Quebec|British Columbia|Alberta|UK|United Kingdom|England|Scotland|Wales|Germany|France|Netherlands|Switzerland|Sweden|Australia|Japan|China|India|Korea|Singapore|Ireland|Denmark|Belgium|Italy|Spain|Brazil|Israel|Norway|Finland|Taiwan|New Zealand|South Africa|Mexico|Argentina)\b/i
+
 // ─── Shared signal helpers ─────────────────────────────────────────────────────
 
 // upsertCompany imported from lib/supabase.js (shared ilike check-then-insert pattern)
@@ -516,6 +521,14 @@ async function discoverSponsorCareerPages() {
 // ─── Persist a single job as a signal ─────────────────────────────────────────
 
 async function persistJobSignal(job) {
+  // US-only: skip jobs where the location is clearly outside the US.
+  // Blank or "Remote" locations are kept (may be US-based remote).
+  const loc = job.job_location || ''
+  if (loc && NON_US_LOCATION_PATTERNS.test(loc)) {
+    console.log(`[staleJobTracker] FILTERED (non-US location): "${loc}" — ${job.job_title} @ ${job.company_name}`)
+    return false
+  }
+
   const company = await upsertCompany(supabase, { name: job.company_name })
   if (!company) return false
 
