@@ -8,7 +8,7 @@
  * government/academic entities are rejected at both the API query level and locally.
  */
 
-import { supabase, normalizeCompanyName } from '../lib/supabase.js';
+import { supabase, upsertCompany } from '../lib/supabase.js';
 
 const CT_API_BASE = 'https://clinicaltrials.gov/api/v2/studies';
 const CT_STUDY_BASE = 'https://clinicaltrials.gov/study';
@@ -300,30 +300,7 @@ function buildStudySummary(proto) {
   return `${condition} evaluating ${intervention}`;
 }
 
-/**
- * Upsert a company record into the companies table.
- * On conflict on the 'name' column, returns the existing row.
- *
- * @param {string} name - Company name
- * @returns {Promise<object|null>} The row with id and name, or null on error
- */
-async function upsertCompany(name) {
-  const normalized = normalizeCompanyName(name);
-  if (!normalized) return null;
-
-  const { data, error } = await supabase
-    .from('companies')
-    .upsert({ name: normalized, industry: 'Life Sciences' }, { onConflict: 'name', ignoreDuplicates: false })
-    .select('id, name')
-    .maybeSingle();
-
-  if (error) {
-    console.error(`[clinicalTrialMonitor] upsertCompany failed for "${normalized}":`, error.message);
-    return null;
-  }
-
-  return data;
-}
+// upsertCompany imported from lib/supabase.js (shared ilike check-then-insert pattern)
 
 /**
  * Check whether a signal with the given company_id, signal_type, and source_url
