@@ -1,4 +1,4 @@
-import { runStaleJobTracker } from '../../../agents/staleJobTracker.js'
+import { run as runStaleJobTracker } from '../../../agents/staleJobTracker.js'
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {

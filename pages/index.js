@@ -3,773 +3,1033 @@ import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-const realtimeClient =
-  supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null
+const supabase = supabaseUrl && supabaseAnonKey
+  ? createClient(supabaseUrl, supabaseAnonKey)
+  : null
 
-// ─── Signal type metadata ──────────────────────────────────────────────────────
-const SIGNAL_META = {
-  clinical_trial_phase_transition: { label: 'Phase Transition', color: 'bg-blue-100 text-blue-800' },
-  clinical_trial_new_ind:          { label: 'New IND',          color: 'bg-cyan-100 text-cyan-800' },
-  clinical_trial_site_activation:  { label: 'Site Activation',  color: 'bg-teal-100 text-teal-800' },
-  clinical_trial_completion:       { label: 'Trial Completion',  color: 'bg-purple-100 text-purple-800' },
-  funding_new_award:               { label: 'New Award',         color: 'bg-green-100 text-green-800' },
-  funding_renewal:                 { label: 'Funding Renewal',   color: 'bg-lime-100 text-lime-800' },
-  ma_acquirer:                     { label: 'M&A Acquirer',      color: 'bg-orange-100 text-orange-800' },
-  ma_acquired:                     { label: 'M&A Acquired',      color: 'bg-amber-100 text-amber-800' },
-  competitor_job_posting:          { label: 'Competitor Job',    color: 'bg-red-100 text-red-800' },
-  stale_job_posting:               { label: 'Stale Job',         color: 'bg-gray-100 text-gray-700' },
+const SIGNAL_TYPE_CONFIG = {
+  clinical_trial_phase_transition: { label: 'Phase Transition', color: 'bg-blue-500', tab: 'clinical' },
+  clinical_trial_new_ind:          { label: 'New IND',          color: 'bg-cyan-500',  tab: 'clinical' },
+  clinical_trial_site_activation:  { label: 'Site Activation',  color: 'bg-teal-500',  tab: 'clinical' },
+  clinical_trial_completion:       { label: 'Trial Completion',  color: 'bg-purple-500', tab: 'clinical' },
+  funding_new_award:               { label: null,                color: null,            tab: 'funding' },
+  funding_renewal:                 { label: 'Renewal',           color: 'bg-lime-600',   tab: 'funding' },
+  ma_acquirer:                     { label: 'M&A — Acquirer',    color: 'bg-orange-500', tab: 'funding' },
+  ma_acquired:                     { label: 'M&A — Acquired',    color: 'bg-amber-500',  tab: 'funding' },
+  competitor_job_posting:          { label: 'Competitor Job',    color: 'bg-red-500',    tab: 'jobs' },
+  stale_job_posting:               { label: 'Stale Job',         color: 'bg-gray-500',   tab: 'jobs' },
 }
 
-const WARMTH_META = {
-  active_client: { label: 'Active Client', color: 'bg-green-500 text-white' },
-  past_client:   { label: 'Past Client',   color: 'bg-blue-500 text-white' },
-  in_ats:        { label: 'In ATS',        color: 'bg-gray-400 text-white' },
-  new_prospect:  { label: 'New Prospect',  color: 'border border-gray-300 text-gray-600' },
-}
-
-const KANBAN_COLUMNS = [
-  { key: 'new',             label: 'New Signals' },
-  { key: 'carried_forward', label: 'Carried Forward' },
-  { key: 'claimed',         label: 'Claimed' },
-  { key: 'contacted',       label: 'Contacted' },
-  { key: 'closed',          label: 'Closed' },
-]
-
-const ALL_SIGNAL_TYPES = Object.keys(SIGNAL_META)
-const ALL_WARMTH_TYPES = Object.keys(WARMTH_META)
-
-// ─── Signal-type column definitions ───────────────────────────────────────────
-// Each entry defines the columns shown for that signal type in the table view.
-// 'key' is the path into signal_detail (or a computed value), 'label' is the header.
-const SIGNAL_TYPE_COLUMNS = {
-  clinical_trial_phase_transition: [
-    { label: 'Transition',    key: 'transition',    render: (d) => d ? `${d.phase_from || '?'} → ${d.phase_to || '?'}` : '—' },
-    { label: 'Study Summary', key: 'study_summary', render: (d) => d?.study_summary || d?.nct_id || '—' },
-    { label: 'Date Updated',  key: 'date_updated',  render: (d) => fmtDate(d?.date_updated) },
-  ],
-  clinical_trial_new_ind: [
-    { label: 'Phase',         key: 'phases',        render: (d) => (d?.phases || []).join(', ') || 'Phase 1' },
-    { label: 'Study Summary', key: 'study_summary', render: (d) => d?.study_summary || '—' },
-    { label: 'Date Updated',  key: 'date_updated',  render: (d) => fmtDate(d?.date_updated) },
-  ],
-  clinical_trial_site_activation: [
-    { label: 'Sites',         key: 'n_locations',   render: (d) => d?.n_locations ? `${d.n_locations} sites` : '—' },
-    { label: 'Study Summary', key: 'study_summary', render: (d) => d?.study_summary || '—' },
-    { label: 'Date Updated',  key: 'date_updated',  render: (d) => fmtDate(d?.date_updated) },
-  ],
-  clinical_trial_completion: [
-    { label: 'Days to Close', key: 'days_until_completion', render: (d) => d?.days_until_completion != null ? `${d.days_until_completion}d` : '—' },
-    { label: 'Study Summary', key: 'study_summary',         render: (d) => d?.study_summary || '—' },
-    { label: 'Completion',    key: 'primary_completion_date', render: (d) => fmtDate(d?.primary_completion_date) },
-  ],
-  funding_new_award: [
-    { label: 'Funding Type',  key: 'funding_type',    render: (d) => fmtFundingType(d?.funding_type) },
-    { label: 'Amount',        key: 'funding_amount',  render: (d) => d?.funding_amount || '—' },
-    { label: 'Summary',       key: 'funding_summary', render: (d) => trunc(d?.funding_summary, 80) },
-    { label: 'Date',          key: 'date_announced',  render: (d) => fmtDate(d?.date_announced) },
-  ],
-  funding_renewal: [
-    { label: 'Funding Type',  key: 'funding_type',    render: (d) => fmtFundingType(d?.funding_type) },
-    { label: 'Amount',        key: 'funding_amount',  render: (d) => d?.funding_amount || '—' },
-    { label: 'Summary',       key: 'funding_summary', render: (d) => trunc(d?.funding_summary, 80) },
-    { label: 'Date',          key: 'date_announced',  render: (d) => fmtDate(d?.date_announced) },
-  ],
-  ma_acquirer: [
-    { label: 'Deal Summary', key: 'funding_summary', render: (d) => trunc(d?.funding_summary || d?.description, 100) },
-    { label: 'Date',         key: 'date_announced',  render: (d) => fmtDate(d?.date_announced) },
-  ],
-  ma_acquired: [
-    { label: 'Deal Summary', key: 'funding_summary', render: (d) => trunc(d?.funding_summary || d?.description, 100) },
-    { label: 'Date',         key: 'date_announced',  render: (d) => fmtDate(d?.date_announced) },
-  ],
-  competitor_job_posting: [
-    { label: 'Role',             key: 'job_title',              render: (d) => d?.job_title || '—' },
-    { label: 'Location',         key: 'job_location',           render: (d) => d?.job_location || '—' },
-    { label: 'Competitor Firm',  key: 'competitor_firm',        render: (d) => d?.competitor_firm || '—' },
-    { label: 'Likely Client',    key: 'likely_client',          render: (d) => likelyClientCell(d) },
-    { label: 'Posted',           key: 'posting_date',           render: (d) => fmtDate(d?.posting_date) },
-  ],
-  stale_job_posting: [
-    { label: 'Role',        key: 'job_title',    render: (d) => d?.job_title || '—' },
-    { label: 'Location',    key: 'job_location', render: (d) => d?.job_location || '—' },
-    { label: 'Date Posted', key: 'date_posted',  render: (d) => fmtDate(d?.date_posted) },
-    { label: 'Days Posted', key: 'days_posted',  render: (d) => d?.days_posted != null ? `${d.days_posted}d` : '—' },
-  ],
-}
-
-// Default columns for signal types without specific definitions
-const DEFAULT_COLUMNS = [
-  { label: 'Summary', key: 'summary', render: () => null }, // uses signal_summary instead
-]
-
-function getColumnsForType(signalType) {
-  return SIGNAL_TYPE_COLUMNS[signalType] || DEFAULT_COLUMNS
-}
-
-// ─── Formatters ───────────────────────────────────────────────────────────────
-function fmtDate(str) {
-  if (!str) return '—'
-  const d = new Date(str)
-  if (isNaN(d)) return str
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })
-}
-
-function fmtFundingType(type) {
-  const map = {
-    venture_capital: 'VC Round',
-    ipo: 'IPO',
-    pharma_partnership: 'Partnership',
-    government_grant: 'Gov Grant',
-    acquisition: 'Acquisition',
-  }
-  return map[type] || type || '—'
-}
-
-function likelyClientCell(d) {
-  if (!d?.likely_client || d.likely_client === 'Unknown') return <span className="text-gray-400">Unknown</span>
-  const conf = d?.likely_client_confidence
-  const color = conf === 'high' ? 'text-green-700' : conf === 'medium' ? 'text-amber-700' : 'text-gray-500'
-  return (
-    <span>
-      <span className="font-medium">{d.likely_client}</span>
-      {conf && <span className={`ml-1 text-xs ${color}`}>({conf})</span>}
-    </span>
-  )
-}
-
-function trunc(str, max = 80) {
-  if (!str) return '—'
-  return str.length > max ? str.slice(0, max) + '…' : str
+const FUNDING_TYPE_CONFIG = {
+  venture_capital:    { label: 'Venture Capital',    color: 'bg-green-600' },
+  ipo:                { label: 'IPO',                color: 'bg-emerald-600' },
+  pharma_partnership: { label: 'Pharma Partnership', color: 'bg-blue-600' },
+  government_grant:   { label: 'Government Grant',   color: 'bg-orange-600' },
+  ma:                 { label: 'M&A',                color: 'bg-amber-600' },
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function initials(name) {
+
+function formatDate(dateStr) {
+  if (!dateStr) return '—'
+  const d = new Date(dateStr)
+  if (isNaN(d)) return '—'
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function daysAgo(dateStr) {
+  if (!dateStr) return 0
+  return Math.floor((Date.now() - new Date(dateStr)) / 86400000)
+}
+
+function getRepInitials(name) {
   if (!name) return '?'
-  return name.split(/\s+/).filter(Boolean).map((w) => w[0].toUpperCase()).slice(0, 2).join('')
+  const parts = name.trim().split(/\s+/)
+  return parts.length >= 2
+    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+    : name.substring(0, 2).toUpperCase()
 }
 
-// ─── SignalTypeBadge ───────────────────────────────────────────────────────────
-function SignalTypeBadge({ type }) {
-  const meta = SIGNAL_META[type] || { label: type, color: 'bg-gray-100 text-gray-700' }
-  return (
-    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${meta.color}`}>
-      {meta.label}
-    </span>
-  )
+function truncate(str, n) {
+  if (!str) return ''
+  return str.length > n ? str.substring(0, n) + '...' : str
 }
 
-// ─── WarmthBadge ──────────────────────────────────────────────────────────────
-function WarmthBadge({ warmth }) {
-  const meta = WARMTH_META[warmth] || WARMTH_META.new_prospect
-  return (
-    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${meta.color}`}>
-      {meta.label}
-    </span>
-  )
-}
+// ─── Shared UI components ─────────────────────────────────────────────────────
 
-// ─── ContactStatusBadge ────────────────────────────────────────────────────────
-function ContactStatusBadge({ hasContacts }) {
-  if (hasContacts) {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-800">
-        <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
-        Contact Ready
-      </span>
-    )
+function SignalTypeBadge({ signalType, fundingType }) {
+  let label, color
+  const config = SIGNAL_TYPE_CONFIG[signalType]
+  if (signalType === 'funding_new_award' && fundingType) {
+    const ftConfig = FUNDING_TYPE_CONFIG[fundingType]
+    label = ftConfig?.label || 'New Award'
+    color = ftConfig?.color || 'bg-green-600'
+  } else {
+    label = config?.label || signalType
+    color = config?.color || 'bg-gray-600'
   }
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-800">
-      <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 inline-block" />
-      Contact Needed
+    <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold text-white whitespace-nowrap ${color}`}>
+      {label}
     </span>
   )
 }
 
-// ─── ClaimButton ──────────────────────────────────────────────────────────────
-function ClaimButton({ signal, currentRep, onClaim }) {
-  const claimed = signal.claimed_by && signal.claimed_by.trim() !== ''
-  const claimedByMe = claimed && signal.claimed_by === currentRep
+function DaysInQueueBadge({ dateStr }) {
+  const days = daysAgo(dateStr)
+  let cls = 'bg-gray-700 text-gray-300'
+  if (days > 14) cls = 'bg-red-900 text-red-300'
+  else if (days > 7) cls = 'bg-orange-900 text-orange-300'
+  return (
+    <span className={`inline-block px-2 py-0.5 rounded text-xs font-mono font-semibold ${cls}`}>
+      {days}d
+    </span>
+  )
+}
 
-  if (!claimed) {
+function ConfidenceBadge({ confidence }) {
+  if (!confidence) return null
+  const map = {
+    high:   'bg-green-900 text-green-300',
+    medium: 'bg-yellow-900 text-yellow-300',
+    low:    'bg-gray-700 text-gray-400',
+  }
+  const cls = map[confidence] || map.low
+  return (
+    <span className={`inline-block ml-1 px-1.5 py-0.5 rounded text-xs font-medium ${cls}`}>
+      {confidence}
+    </span>
+  )
+}
+
+function ClaimCell({ signal, repName, onClaim, onUnclaim }) {
+  if (!repName) {
+    return <span className="text-xs text-gray-600 italic">Set name</span>
+  }
+  if (!signal.claimed_by) {
     return (
       <button
-        onClick={(e) => { e.stopPropagation(); onClaim(signal.id, currentRep) }}
-        className="px-3 py-1 text-xs font-semibold rounded bg-green-600 text-white hover:bg-green-700 transition"
+        onClick={(e) => { e.stopPropagation(); onClaim(signal) }}
+        className="px-3 py-1 rounded text-xs font-semibold bg-green-700 hover:bg-green-600 text-white transition-colors"
       >
         Claim
       </button>
     )
   }
-  if (claimedByMe) {
+  if (signal.claimed_by === repName) {
     return (
-      <button
-        onClick={(e) => { e.stopPropagation(); onClaim(signal.id, '') }}
-        className="px-3 py-1 text-xs font-semibold rounded bg-blue-100 text-blue-700 border border-blue-300 hover:bg-blue-200 transition"
-      >
-        Claimed by You
-      </button>
+      <span className="inline-flex items-center gap-1">
+        <span className="px-2 py-1 rounded text-xs font-semibold bg-blue-700 text-blue-100">Claimed</span>
+        <button
+          onClick={(e) => { e.stopPropagation(); onUnclaim(signal) }}
+          className="w-5 h-5 flex items-center justify-center rounded-full bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-white text-xs transition-colors"
+          title="Unclaim"
+        >
+          ×
+        </button>
+      </span>
     )
   }
   return (
     <span
-      className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-gray-200 text-gray-700 text-xs font-bold"
+      className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-gray-700 text-gray-300 text-xs font-bold"
       title={signal.claimed_by}
-      onClick={(e) => e.stopPropagation()}
     >
-      {initials(signal.claimed_by)}
+      {getRepInitials(signal.claimed_by)}
     </span>
   )
 }
 
-// ─── SignalDetailCard: expandable row content ──────────────────────────────────
-function SignalDetailCard({ signal }) {
-  const detail = signal.signal_detail || {}
-
+function ExpandedDetailCard({ signal }) {
+  const d = signal.signal_detail || {}
+  const fields = Object.entries(d).filter(([k, v]) => k !== 'rep_notes' && v !== null && v !== undefined && v !== '')
   return (
-    <div className="bg-blue-50 border-t border-blue-100 px-6 py-4">
-      <div className="flex flex-wrap gap-6">
-        {/* Left: structured fields from signal_detail */}
-        <div className="flex-1 min-w-0">
-          <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Signal Detail</h4>
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
-            {Object.entries(detail)
-              .filter(([k, v]) => v != null && v !== '' && k !== 'sample_titles')
-              .map(([key, value]) => (
-                <div key={key} className="contents">
-                  <dt className="text-gray-400 font-medium capitalize">{key.replace(/_/g, ' ')}</dt>
-                  <dd className="text-gray-800 truncate max-w-xs">
-                    {typeof value === 'object' ? JSON.stringify(value) : String(value)}
-                  </dd>
-                </div>
-              ))}
-          </dl>
-          {/* Sample titles for competitor job signals */}
-          {Array.isArray(detail.sample_titles) && detail.sample_titles.length > 0 && (
-            <div className="mt-2">
-              <span className="text-xs font-medium text-gray-400">Sample Roles: </span>
-              <span className="text-xs text-gray-700">{detail.sample_titles.slice(0, 8).join(' · ')}</span>
-            </div>
-          )}
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-10 gap-y-3 text-sm">
+      {signal.companies?.name && (
+        <div className="sm:col-span-2">
+          <span className="block text-gray-500 text-xs uppercase tracking-wide mb-0.5">Company</span>
+          <p className="text-white font-semibold">{signal.companies.name}</p>
         </div>
-
-        {/* Right: metadata */}
-        <div className="w-48 shrink-0">
-          <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Metadata</h4>
-          <div className="space-y-1.5 text-xs">
-            <div>
-              <span className="text-gray-400">Score: </span>
-              <span className="font-semibold text-blue-700">{signal.priority_score}</span>
-            </div>
-            <div>
-              <span className="text-gray-400">Status: </span>
-              <span className="capitalize">{signal.status}</span>
-            </div>
-            {signal.claimed_by && (
-              <div>
-                <span className="text-gray-400">Claimed: </span>
-                <span>{signal.claimed_by}</span>
-              </div>
-            )}
-            {signal.days_in_queue > 0 && (
-              <div>
-                <span className="text-gray-400">In Queue: </span>
-                <span className={signal.days_in_queue >= 7 ? 'text-red-600 font-semibold' : ''}>{signal.days_in_queue}d</span>
-              </div>
+      )}
+      {fields.map(([key, value]) => {
+        const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+        const isUrl = typeof value === 'string' && (value.startsWith('http://') || value.startsWith('https://'))
+        return (
+          <div key={key}>
+            <span className="block text-gray-500 text-xs uppercase tracking-wide mb-0.5">{label}</span>
+            {isUrl ? (
+              <a
+                href={value}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={e => e.stopPropagation()}
+                className="text-blue-400 hover:text-blue-300 underline break-all text-sm"
+              >
+                {value}
+              </a>
+            ) : (
+              <p className="text-gray-200 text-sm">{typeof value === 'object' ? JSON.stringify(value) : String(value)}</p>
             )}
           </div>
-          {signal.source_url && !signal.source_url.includes('#') && (
-            <a
-              href={signal.source_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="mt-3 block text-xs text-blue-600 hover:underline truncate"
-            >
-              View source ↗
-            </a>
+        )
+      })}
+      {signal.signal_summary && (
+        <div className="sm:col-span-2 mt-1">
+          <span className="block text-gray-500 text-xs uppercase tracking-wide mb-0.5">Signal Summary</span>
+          <p className="text-gray-200 text-sm leading-relaxed">{signal.signal_summary}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TableWrapper({ children }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-gray-800">
+      <table className="min-w-full divide-y divide-gray-800">{children}</table>
+    </div>
+  )
+}
+
+function Th({ children, className = '' }) {
+  return (
+    <th
+      className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-gray-900 whitespace-nowrap ${className}`}
+    >
+      {children}
+    </th>
+  )
+}
+
+function EmptyState({ message }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 text-center">
+      <div className="w-12 h-12 rounded-full bg-gray-800 flex items-center justify-center mb-3">
+        <span className="text-gray-600 text-xl font-mono">—</span>
+      </div>
+      <p className="text-gray-400 text-sm">{message}</p>
+    </div>
+  )
+}
+
+// ─── Tab: Clinical Trials ─────────────────────────────────────────────────────
+
+function ClinicalDetailCell({ signal }) {
+  const d = signal.signal_detail || {}
+  switch (signal.signal_type) {
+    case 'clinical_trial_phase_transition':
+      return (
+        <div>
+          <span className="text-sm text-white font-medium">
+            Phase {d.phase_from || '?'} → Phase {d.phase_to || '?'}
+          </span>
+          {d.study_summary && (
+            <p className="text-xs text-gray-400 mt-0.5 leading-snug">{truncate(d.study_summary, 80)}</p>
           )}
         </div>
-      </div>
+      )
+    case 'clinical_trial_new_ind':
+      return (
+        <span className="text-sm text-gray-200">
+          {d.therapeutic_area || '—'}
+          {d.enrollment_count ? ` — ${d.enrollment_count} patients` : ''}
+        </span>
+      )
+    case 'clinical_trial_site_activation':
+      return (
+        <span className="text-sm text-gray-200">
+          {d.num_sites ? `${d.num_sites} sites activated` : '—'}
+          {d.enrollment_count ? ` — ${d.enrollment_count} enrolled` : ''}
+        </span>
+      )
+    case 'clinical_trial_completion':
+      return (
+        <div>
+          <span className="text-sm text-gray-200">{truncate(d.study_summary, 80)}</span>
+          {d.primary_completion_date && (
+            <p className="text-xs text-gray-400 mt-0.5">
+              completion {formatDate(d.primary_completion_date)}
+            </p>
+          )}
+        </div>
+      )
+    default:
+      return <span className="text-sm text-gray-400">{truncate(signal.signal_summary, 90) || '—'}</span>
+  }
+}
+
+function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim }) {
+  if (signals.length === 0) return <EmptyState message="No active clinical trial signals." />
+  return (
+    <TableWrapper>
+      <thead>
+        <tr>
+          <Th>Type</Th>
+          <Th>Company</Th>
+          <Th className="min-w-72">Detail</Th>
+          <Th>Date Updated</Th>
+          <Th>Queue</Th>
+          <Th>Claim</Th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-gray-800">
+        {signals.map((signal, i) => {
+          const isExpanded = expandedRows.has(signal.id)
+          const d = signal.signal_detail || {}
+          const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
+          return (
+            <>
+              <tr
+                key={signal.id}
+                onClick={() => onToggleRow(signal.id)}
+                className={`${rowBg} hover:bg-gray-800 cursor-pointer transition-colors`}
+              >
+                <td className="px-4 py-3 whitespace-nowrap">
+                  <SignalTypeBadge signalType={signal.signal_type} />
+                </td>
+                <td className="px-4 py-3">
+                  <div className="text-sm font-semibold text-white whitespace-nowrap">
+                    {signal.companies?.name || d.sponsor || '—'}
+                  </div>
+                  {signal.companies?.industry && (
+                    <div className="text-xs text-gray-500 mt-0.5">{signal.companies.industry}</div>
+                  )}
+                </td>
+                <td className="px-4 py-3 min-w-72">
+                  <ClinicalDetailCell signal={signal} />
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
+                  {formatDate(d.date_updated || signal.updated_at)}
+                </td>
+                <td className="px-4 py-3">
+                  <DaysInQueueBadge dateStr={signal.first_detected_at} />
+                </td>
+                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                  <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
+                </td>
+              </tr>
+              {isExpanded && (
+                <tr key={`${signal.id}-exp`}>
+                  <td colSpan={6} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                    <ExpandedDetailCard signal={signal} />
+                  </td>
+                </tr>
+              )}
+            </>
+          )
+        })}
+      </tbody>
+    </TableWrapper>
+  )
+}
+
+// ─── Tab: Funding & M&A ───────────────────────────────────────────────────────
+
+function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim }) {
+  if (signals.length === 0) return <EmptyState message="No active funding or M&A signals." />
+  return (
+    <TableWrapper>
+      <thead>
+        <tr>
+          <Th>Type</Th>
+          <Th>Company</Th>
+          <Th>Amount</Th>
+          <Th className="min-w-64">Summary</Th>
+          <Th>Date</Th>
+          <Th>Queue</Th>
+          <Th>Claim</Th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-gray-800">
+        {signals.map((signal, i) => {
+          const isExpanded = expandedRows.has(signal.id)
+          const d = signal.signal_detail || {}
+          const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
+          return (
+            <>
+              <tr
+                key={signal.id}
+                onClick={() => onToggleRow(signal.id)}
+                className={`${rowBg} hover:bg-gray-800 cursor-pointer transition-colors`}
+              >
+                <td className="px-4 py-3 whitespace-nowrap">
+                  <SignalTypeBadge signalType={signal.signal_type} fundingType={d.funding_type} />
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-sm font-semibold text-white whitespace-nowrap">
+                      {signal.companies?.name || d.company_name || '—'}
+                    </span>
+                    {d.pre_hiring_signal && (
+                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-semibold bg-yellow-900 text-yellow-300">
+                        ★ Pre-hiring
+                      </span>
+                    )}
+                  </div>
+                  {signal.companies?.industry && (
+                    <div className="text-xs text-gray-500 mt-0.5">{signal.companies.industry}</div>
+                  )}
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-green-400">
+                  {d.funding_amount || '—'}
+                </td>
+                <td className="px-4 py-3 min-w-64">
+                  <span className="text-sm text-gray-200">
+                    {truncate(d.funding_summary || signal.signal_summary, 100)}
+                  </span>
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
+                  {formatDate(d.date_announced || signal.first_detected_at)}
+                </td>
+                <td className="px-4 py-3">
+                  <DaysInQueueBadge dateStr={signal.first_detected_at} />
+                </td>
+                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                  <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
+                </td>
+              </tr>
+              {isExpanded && (
+                <tr key={`${signal.id}-exp`}>
+                  <td colSpan={7} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                    <ExpandedDetailCard signal={signal} />
+                  </td>
+                </tr>
+              )}
+            </>
+          )
+        })}
+      </tbody>
+    </TableWrapper>
+  )
+}
+
+// ─── Tab: Jobs ────────────────────────────────────────────────────────────────
+
+function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim }) {
+  const competitorSignals = signals.filter(s => s.signal_type === 'competitor_job_posting')
+  const staleSignals = signals.filter(s => s.signal_type === 'stale_job_posting')
+
+  if (signals.length === 0) return <EmptyState message="No active job signals." />
+
+  return (
+    <div className="flex flex-col gap-8">
+      {competitorSignals.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Competitor Job Postings</h2>
+            <span className="px-2 py-0.5 rounded-full bg-red-900 text-red-300 text-xs font-bold">
+              {competitorSignals.length}
+            </span>
+          </div>
+          <TableWrapper>
+            <thead>
+              <tr>
+                <Th>Type</Th>
+                <Th>Role</Th>
+                <Th>Location</Th>
+                <Th>Competitor Firm</Th>
+                <Th>Likely Client</Th>
+                <Th>Posted</Th>
+                <Th>Claim</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800">
+              {competitorSignals.map((signal, i) => {
+                const isExpanded = expandedRows.has(signal.id)
+                const d = signal.signal_detail || {}
+                const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
+                return (
+                  <>
+                    <tr
+                      key={signal.id}
+                      onClick={() => onToggleRow(signal.id)}
+                      className={`${rowBg} hover:bg-gray-800 cursor-pointer transition-colors`}
+                    >
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <SignalTypeBadge signalType={signal.signal_type} />
+                      </td>
+                      <td className="px-4 py-3 text-sm text-white font-medium">{d.job_title || '—'}</td>
+                      <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">{d.job_location || '—'}</td>
+                      <td className="px-4 py-3 text-sm font-bold text-gray-100 whitespace-nowrap">{d.competitor_firm || '—'}</td>
+                      <td className="px-4 py-3">
+                        <span className="text-sm text-gray-200">{d.likely_client || '—'}</span>
+                        <ConfidenceBadge confidence={d.confidence} />
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
+                        {formatDate(d.posting_date)}
+                      </td>
+                      <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                        <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr key={`${signal.id}-exp`}>
+                        <td colSpan={7} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                          <ExpandedDetailCard signal={signal} />
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                )
+              })}
+            </tbody>
+          </TableWrapper>
+        </div>
+      )}
+
+      {staleSignals.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Stale Job Postings</h2>
+            <span className="px-2 py-0.5 rounded-full bg-gray-700 text-gray-300 text-xs font-bold">
+              {staleSignals.length}
+            </span>
+          </div>
+          <TableWrapper>
+            <thead>
+              <tr>
+                <Th>Type</Th>
+                <Th>Company</Th>
+                <Th>Role</Th>
+                <Th>Location</Th>
+                <Th>Date Posted</Th>
+                <Th>Days Posted</Th>
+                <Th>Claim</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800">
+              {staleSignals.map((signal, i) => {
+                const isExpanded = expandedRows.has(signal.id)
+                const d = signal.signal_detail || {}
+                const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
+                const daysPosted = d.days_posted || 0
+                const daysCls = daysPosted > 60
+                  ? 'bg-red-900 text-red-300'
+                  : daysPosted > 30
+                    ? 'bg-orange-900 text-orange-300'
+                    : 'bg-gray-700 text-gray-300'
+                return (
+                  <>
+                    <tr
+                      key={signal.id}
+                      onClick={() => onToggleRow(signal.id)}
+                      className={`${rowBg} hover:bg-gray-800 cursor-pointer transition-colors`}
+                    >
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <SignalTypeBadge signalType={signal.signal_type} />
+                      </td>
+                      <td className="px-4 py-3 text-sm font-semibold text-white whitespace-nowrap">
+                        {signal.companies?.name || d.company_name || '—'}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-200">{d.job_title || '—'}</td>
+                      <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">{d.job_location || '—'}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
+                        {formatDate(d.date_posted)}
+                      </td>
+                      <td className="px-4 py-3">
+                        {daysPosted > 0 && (
+                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-mono font-semibold ${daysCls}`}>
+                            {daysPosted}d
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                        <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr key={`${signal.id}-exp`}>
+                        <td colSpan={7} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                          <ExpandedDetailCard signal={signal} />
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                )
+              })}
+            </tbody>
+          </TableWrapper>
+        </div>
+      )}
     </div>
   )
 }
 
-// ─── RepModal ─────────────────────────────────────────────────────────────────
-function RepModal({ onSave }) {
-  const [name, setName] = useState('')
+// ─── Tab: My Leads ────────────────────────────────────────────────────────────
+
+function LeadsNoteCell({ signal, notes, onSaveNotes, savingNotes }) {
+  const d = signal.signal_detail || {}
+  const serverNote = d.rep_notes || notes[signal.id] || ''
+  const [localNote, setLocalNote] = useState(serverNote)
+  const isSaving = savingNotes.has(signal.id)
+  const isDirty = localNote !== serverNote
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60">
-      <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm">
-        <h2 className="text-xl font-bold text-gray-900 mb-2">Welcome to BioSignal</h2>
-        <p className="text-gray-500 text-sm mb-6">Enter your name so teammates can see who claimed leads.</p>
-        <input
-          autoFocus
-          type="text"
-          placeholder="Your full name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && name.trim() && onSave(name.trim())}
-          className="w-full border border-gray-300 rounded-lg px-4 py-2 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
+    <div className="flex flex-col gap-1.5">
+      <textarea
+        rows={2}
+        value={localNote}
+        onChange={e => setLocalNote(e.target.value)}
+        onBlur={() => { if (isDirty) onSaveNotes(signal.id, localNote) }}
+        placeholder="Add outreach notes..."
+        className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500 resize-none min-w-48"
+      />
+      {isDirty && (
         <button
-          disabled={!name.trim()}
-          onClick={() => onSave(name.trim())}
-          className="w-full bg-blue-600 text-white rounded-lg py-2 font-semibold text-sm disabled:opacity-40 hover:bg-blue-700 transition"
+          onClick={() => onSaveNotes(signal.id, localNote)}
+          disabled={isSaving}
+          className="self-end px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-xs text-white font-medium transition-colors"
         >
-          Continue
+          {isSaving ? 'Saving...' : 'Save'}
         </button>
-      </div>
+      )}
     </div>
   )
 }
 
-// ─── KanbanCard ───────────────────────────────────────────────────────────────
-function KanbanCard({ signal, onDragStart }) {
+function LeadsGroup({ groupKey, label, signals, notes, savingNotes, onSaveNotes, onUpdateStatus, groupOpen, setGroupOpen }) {
+  const isOpen = groupOpen[groupKey] !== false
+  const toggle = () => setGroupOpen(prev => ({ ...prev, [groupKey]: !isOpen }))
+
   return (
-    <div
-      draggable
-      onDragStart={(e) => onDragStart(e, signal.id)}
-      className="bg-white rounded-xl shadow-sm border border-gray-100 p-3 mb-2 cursor-grab active:cursor-grabbing hover:shadow-md transition"
-    >
-      <div className="flex items-start justify-between gap-2 mb-1">
-        <span className="font-semibold text-gray-800 text-sm leading-tight">{signal.company_name}</span>
-        <span className="text-xs text-gray-400 whitespace-nowrap">#{signal.priority_score}</span>
-      </div>
-      <div className="mb-1.5">
-        <SignalTypeBadge type={signal.signal_type} />
-      </div>
-      <p className="text-xs text-gray-500 line-clamp-2 mb-2">{signal.signal_summary}</p>
-      <div className="flex items-center justify-between text-xs text-gray-400">
-        <span>{signal.days_in_queue ?? 0}d in queue</span>
-        {signal.claimed_by && (
-          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-200 text-gray-600 text-xs font-bold">
-            {initials(signal.claimed_by)}
-          </span>
-        )}
-      </div>
+    <div className="rounded-lg border border-gray-800 overflow-hidden">
+      <button
+        onClick={toggle}
+        className="w-full flex items-center justify-between px-5 py-3.5 bg-gray-900 hover:bg-gray-850 transition-colors text-left"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-gray-300 uppercase tracking-widest">{label}</span>
+          <span className="px-2 py-0.5 rounded-full bg-blue-900 text-blue-300 text-xs font-bold">{signals.length}</span>
+        </div>
+        <span className="text-gray-500 text-xs">{isOpen ? '▲' : '▼'}</span>
+      </button>
+
+      {isOpen && (
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-800">
+            <thead>
+              <tr>
+                <Th>Type</Th>
+                <Th>Company</Th>
+                <Th className="min-w-64">Summary</Th>
+                <Th>Date Claimed</Th>
+                <Th>Status</Th>
+                <Th className="min-w-52">Notes</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800">
+              {signals.map((signal, i) => {
+                const d = signal.signal_detail || {}
+                const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
+                return (
+                  <tr key={signal.id} className={`${rowBg} hover:bg-gray-800 transition-colors`}>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <SignalTypeBadge signalType={signal.signal_type} fundingType={d.funding_type} />
+                    </td>
+                    <td className="px-4 py-3 text-sm font-semibold text-white whitespace-nowrap">
+                      {signal.companies?.name || d.company_name || d.sponsor || '—'}
+                    </td>
+                    <td className="px-4 py-3 min-w-64">
+                      <span className="text-sm text-gray-300 leading-snug">
+                        {truncate(d.funding_summary || d.study_summary || signal.signal_summary, 90)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
+                      {formatDate(signal.updated_at)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <select
+                        value={signal.status}
+                        onChange={e => onUpdateStatus(signal, e.target.value)}
+                        onClick={e => e.stopPropagation()}
+                        className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-blue-500 cursor-pointer"
+                      >
+                        <option value="claimed">Claimed</option>
+                        <option value="contacted">Contacted</option>
+                        <option value="closed">Closed</option>
+                      </select>
+                    </td>
+                    <td className="px-4 py-3">
+                      <LeadsNoteCell
+                        signal={signal}
+                        notes={notes}
+                        onSaveNotes={onSaveNotes}
+                        savingNotes={savingNotes}
+                      />
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
 
-// ─── KanbanColumn ─────────────────────────────────────────────────────────────
-function KanbanColumn({ column, signals, onDrop, onDragOver, onDragStart }) {
+function LeadsTab({ signals, repName, notes, savingNotes, onSaveNotes, onUpdateStatus, groupOpen, setGroupOpen }) {
+  if (!repName) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 text-center">
+        <div className="w-14 h-14 rounded-full bg-gray-800 flex items-center justify-center mb-4">
+          <span className="text-gray-500 text-2xl font-bold">?</span>
+        </div>
+        <p className="text-gray-300 text-base font-semibold mb-1">Set your name above to see your leads.</p>
+        <p className="text-gray-500 text-sm">Your claimed signals will appear here for tracking and outreach notes.</p>
+      </div>
+    )
+  }
+
+  if (signals.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 text-center">
+        <div className="w-14 h-14 rounded-full bg-gray-800 flex items-center justify-center mb-4">
+          <span className="text-gray-500 text-2xl font-mono">—</span>
+        </div>
+        <p className="text-gray-300 text-base font-semibold mb-1">No leads claimed yet.</p>
+        <p className="text-gray-500 text-sm">Claim signals from the other tabs to track them here.</p>
+      </div>
+    )
+  }
+
+  const clinicalSignals = signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'clinical')
+  const fundingSignals  = signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'funding')
+  const jobsSignals     = signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'jobs')
+
+  const groups = [
+    { key: 'clinical', label: 'Clinical Trials',  items: clinicalSignals },
+    { key: 'funding',  label: 'Funding & M&A',    items: fundingSignals },
+    { key: 'jobs',     label: 'Jobs',              items: jobsSignals },
+  ].filter(g => g.items.length > 0)
+
   return (
-    <div className="flex-1 min-w-0" onDragOver={onDragOver} onDrop={(e) => onDrop(e, column.key)}>
-      <div className="flex items-center gap-2 mb-3">
-        <h3 className="font-semibold text-gray-700 text-sm">{column.label}</h3>
-        <span className="text-xs bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full font-medium">{signals.length}</span>
-      </div>
-      <div className="min-h-32 bg-gray-50 rounded-xl p-2 border-2 border-dashed border-gray-200">
-        {signals.map((s) => <KanbanCard key={s.id} signal={s} onDragStart={onDragStart} />)}
-        {signals.length === 0 && <p className="text-center text-gray-300 text-xs pt-8">Drop signals here</p>}
-      </div>
+    <div className="flex flex-col gap-5">
+      {groups.map(group => (
+        <LeadsGroup
+          key={group.key}
+          groupKey={group.key}
+          label={group.label}
+          signals={group.items}
+          notes={notes}
+          savingNotes={savingNotes}
+          onSaveNotes={onSaveNotes}
+          onUpdateStatus={onUpdateStatus}
+          groupOpen={groupOpen}
+          setGroupOpen={setGroupOpen}
+        />
+      ))}
     </div>
   )
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
-export default function Home() {
-  const [signals, setSignals]           = useState([])
-  const [stats, setStats]               = useState({ totalActive: 0, newToday: 0, claimed: 0 })
-  const [lastUpdated, setLastUpdated]   = useState(null)
-  const [loading, setLoading]           = useState(true)
-  const [error, setError]               = useState(null)
-  const [currentRep, setCurrentRep]     = useState(null)
-  const [showRepModal, setShowRepModal] = useState(false)
-  const [editingRep, setEditingRep]     = useState(false)
-  const [repInput, setRepInput]         = useState('')
-  const [view, setView]                 = useState('table')
-  const [filterTypes, setFilterTypes]   = useState([])
-  const [filterWarmth, setFilterWarmth] = useState('')
-  const [filterClaimed, setFilterClaimed] = useState('')
-  const [sortBy, setSortBy]             = useState('priority_score')
-  const [expandedRows, setExpandedRows] = useState(new Set())
-  const dragSignalId = useRef(null)
 
-  useEffect(() => {
-    const stored = localStorage.getItem('biosignal_rep')
-    if (stored) setCurrentRep(stored)
-    else setShowRepModal(true)
-  }, [])
+export default function Home() {
+  const [activeTab, setActiveTab]         = useState('clinical')
+  const [signals, setSignals]             = useState([])
+  const [loading, setLoading]             = useState(true)
+  const [repName, setRepName]             = useState('')
+  const [showRepInput, setShowRepInput]   = useState(false)
+  const [repInputValue, setRepInputValue] = useState('')
+  const [expandedRows, setExpandedRows]   = useState(new Set())
+  const [notes, setNotes]                 = useState({})
+  const [savingNotes, setSavingNotes]     = useState(new Set())
+  const [leadsGroupOpen, setLeadsGroupOpen] = useState({ clinical: true, funding: true, jobs: true })
+  const repInputRef = useRef(null)
 
   const fetchSignals = useCallback(async () => {
     try {
-      const resp = await fetch('/api/signals')
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-      const json = await resp.json()
-      setSignals(json.signals || [])
-      setStats(json.stats || { totalActive: 0, newToday: 0, claimed: 0 })
-      setLastUpdated(json.lastUpdated)
-      setError(null)
+      const res = await fetch('/api/signals')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      setSignals(data.signals || [])
     } catch (err) {
-      setError(err.message)
+      console.error('Error fetching signals:', err)
     } finally {
       setLoading(false)
     }
   }, [])
 
-  useEffect(() => { fetchSignals() }, [fetchSignals])
-
   useEffect(() => {
-    if (!realtimeClient) return
-    const channel = realtimeClient
-      .channel('signals-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'signals' }, () => fetchSignals())
-      .subscribe()
-    return () => { realtimeClient.removeChannel(channel) }
+    const stored = localStorage.getItem('biosignal_rep_name')
+    if (stored) setRepName(stored)
+    fetchSignals()
   }, [fetchSignals])
 
-  const handleClaim = useCallback(async (signalId, repName) => {
-    setSignals((prev) =>
-      prev.map((s) => (s.id === signalId ? { ...s, claimed_by: repName, status: repName ? 'claimed' : 'new' } : s))
-    )
-    await fetch('/api/signals', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: signalId, claimed_by: repName, status: repName ? 'claimed' : 'new' }),
-    })
-  }, [])
+  useEffect(() => {
+    if (!supabase) return
+    const channel = supabase
+      .channel('signals-changes')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'signals' }, () => fetchSignals())
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'signals' }, () => fetchSignals())
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'signals' }, () => fetchSignals())
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [fetchSignals])
 
-  const handleDragStart = useCallback((e, signalId) => {
-    dragSignalId.current = signalId
-    e.dataTransfer.effectAllowed = 'move'
-  }, [])
+  useEffect(() => {
+    if (showRepInput && repInputRef.current) repInputRef.current.focus()
+  }, [showRepInput])
 
-  const handleDragOver = useCallback((e) => {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-  }, [])
+  const activeStatuses = ['new', 'carried_forward', 'claimed', 'contacted']
 
-  const handleDrop = useCallback(async (e, targetStatus) => {
-    e.preventDefault()
-    const id = dragSignalId.current
-    if (!id) return
-    setSignals((prev) => prev.map((s) => (s.id === id ? { ...s, status: targetStatus } : s)))
-    await fetch('/api/signals', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, status: targetStatus }),
-    })
-    dragSignalId.current = null
-  }, [])
+  const tabSignals = {
+    clinical: signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'clinical' && activeStatuses.includes(s.status)),
+    funding:  signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'funding'  && activeStatuses.includes(s.status)),
+    jobs:     signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'jobs'      && activeStatuses.includes(s.status)),
+    leads:    repName ? signals.filter(s => s.claimed_by === repName) : [],
+  }
 
-  const handleRepSave = useCallback((name) => {
-    localStorage.setItem('biosignal_rep', name)
-    setCurrentRep(name)
-    setShowRepModal(false)
-    setEditingRep(false)
-  }, [])
+  const tabCounts = {
+    clinical: tabSignals.clinical.length,
+    funding:  tabSignals.funding.length,
+    jobs:     tabSignals.jobs.length,
+    leads:    tabSignals.leads.length,
+  }
 
-  const toggleRow = useCallback((id) => {
-    setExpandedRows((prev) => {
+  const toggleRow = (id) => {
+    setExpandedRows(prev => {
       const next = new Set(prev)
       next.has(id) ? next.delete(id) : next.add(id)
       return next
     })
-  }, [])
-
-  const filteredSignals = signals
-    .filter((s) => {
-      if (filterTypes.length > 0 && !filterTypes.includes(s.signal_type)) return false
-      if (filterWarmth && s.relationship_warmth !== filterWarmth) return false
-      if (filterClaimed === 'claimed' && (!s.claimed_by || s.claimed_by.trim() === '')) return false
-      if (filterClaimed === 'unclaimed' && s.claimed_by && s.claimed_by.trim() !== '') return false
-      if (filterClaimed === 'mine' && s.claimed_by !== currentRep) return false
-      return true
-    })
-    .sort((a, b) => {
-      if (sortBy === 'priority_score') return (b.priority_score || 0) - (a.priority_score || 0)
-      if (sortBy === 'company_name') return (a.company_name || '').localeCompare(b.company_name || '')
-      if (sortBy === 'days_in_queue') return (b.days_in_queue || 0) - (a.days_in_queue || 0)
-      return 0
-    })
-
-  const kanbanGroups = KANBAN_COLUMNS.reduce((acc, col) => {
-    acc[col.key] = filteredSignals.filter((s) => s.status === col.key)
-    return acc
-  }, {})
-
-  const formatDate = (iso) => {
-    if (!iso) return '—'
-    return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
   }
 
-  const toggleTypeFilter = (type) => {
-    setFilterTypes((prev) => prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type])
+  const claimSignal = async (signal) => {
+    if (!repName) return
+    setSignals(prev => prev.map(s => s.id === signal.id ? { ...s, claimed_by: repName, status: 'claimed' } : s))
+    try {
+      await fetch('/api/signals', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: signal.id, claimed_by: repName, status: 'claimed' }),
+      })
+      fetchSignals()
+    } catch (err) {
+      console.error('Error claiming signal:', err)
+      fetchSignals()
+    }
   }
+
+  const unclaimSignal = async (signal) => {
+    setSignals(prev => prev.map(s => s.id === signal.id ? { ...s, claimed_by: null, status: 'new' } : s))
+    try {
+      await fetch('/api/signals', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: signal.id, claimed_by: null, status: 'new' }),
+      })
+      fetchSignals()
+    } catch (err) {
+      console.error('Error unclaiming signal:', err)
+      fetchSignals()
+    }
+  }
+
+  const updateStatus = async (signal, newStatus) => {
+    setSignals(prev => prev.map(s => s.id === signal.id ? { ...s, status: newStatus } : s))
+    try {
+      await fetch('/api/signals', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: signal.id, status: newStatus }),
+      })
+      fetchSignals()
+    } catch (err) {
+      console.error('Error updating status:', err)
+      fetchSignals()
+    }
+  }
+
+  const saveNotes = async (signalId, text) => {
+    setSavingNotes(prev => new Set(prev).add(signalId))
+    setNotes(prev => ({ ...prev, [signalId]: text }))
+    try {
+      await fetch('/api/signals', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: signalId, notes: text }),
+      })
+      fetchSignals()
+    } catch (err) {
+      console.error('Error saving notes:', err)
+    } finally {
+      setSavingNotes(prev => {
+        const next = new Set(prev)
+        next.delete(signalId)
+        return next
+      })
+    }
+  }
+
+  const saveRepName = () => {
+    const trimmed = repInputValue.trim()
+    if (trimmed) {
+      setRepName(trimmed)
+      localStorage.setItem('biosignal_rep_name', trimmed)
+    }
+    setShowRepInput(false)
+  }
+
+  const tabs = [
+    { key: 'clinical', label: 'Clinical Trials' },
+    { key: 'funding',  label: 'Funding & M&A' },
+    { key: 'jobs',     label: 'Jobs' },
+    { key: 'leads',    label: 'My Leads' },
+  ]
 
   return (
-    <div className="min-h-screen bg-gray-50 font-sans">
-      {showRepModal && <RepModal onSave={handleRepSave} />}
-
+    <div className="min-h-screen bg-gray-950 text-gray-100">
       {/* ── Header ── */}
-      <header style={{ backgroundColor: '#0f172a' }} className="text-white px-6 py-4 shadow-lg">
-        <div className="max-w-screen-xl mx-auto flex items-center justify-between flex-wrap gap-3">
-          <div>
+      <header className="bg-gray-900 border-b border-gray-800 sticky top-0 z-50">
+        <div className="max-w-screen-xl mx-auto px-4 sm:px-6">
+          {/* Top row */}
+          <div className="flex items-center justify-between h-14">
             <div className="flex items-center gap-3">
-              <span className="text-2xl font-extrabold tracking-tight text-white">BioSignal</span>
-              <span className="hidden sm:inline text-sm text-blue-300 font-medium mt-0.5">
-                Daily BD Intelligence for Life Sciences Staffing
+              <span className="text-white font-extrabold text-xl tracking-tight">BioSignal BD</span>
+              <span className="hidden sm:inline text-gray-500 text-xs font-medium uppercase tracking-widest">
+                Life Sciences Intelligence
               </span>
             </div>
-            {lastUpdated && <p className="text-xs text-slate-400 mt-0.5">Last updated: {formatDate(lastUpdated)}</p>}
+
+            {/* Rep identity */}
+            <div className="flex items-center gap-2">
+              {showRepInput ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-400 text-xs hidden sm:inline">Your name:</span>
+                  <input
+                    ref={repInputRef}
+                    type="text"
+                    value={repInputValue}
+                    onChange={e => setRepInputValue(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') saveRepName()
+                      if (e.key === 'Escape') setShowRepInput(false)
+                    }}
+                    className="bg-gray-800 border border-gray-700 rounded px-2.5 py-1 text-sm text-white focus:outline-none focus:border-blue-500 w-36"
+                    placeholder="First Last"
+                  />
+                  <button
+                    onClick={saveRepName}
+                    className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded font-semibold transition-colors"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => setShowRepInput(false)}
+                    className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : repName ? (
+                <button
+                  onClick={() => { setRepInputValue(repName); setShowRepInput(true) }}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-800 hover:bg-gray-700 transition-colors group"
+                >
+                  <span className="w-6 h-6 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold text-white select-none">
+                    {getRepInitials(repName)}
+                  </span>
+                  <span className="text-sm text-gray-300 group-hover:text-white">{repName}</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => { setRepInputValue(''); setShowRepInput(true) }}
+                  className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors"
+                >
+                  Set name →
+                </button>
+              )}
+            </div>
           </div>
 
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex gap-2">
-              <span className="bg-blue-600 text-white text-xs font-bold px-3 py-1 rounded-full">{stats.totalActive} Active</span>
-              <span className="bg-green-600 text-white text-xs font-bold px-3 py-1 rounded-full">{stats.newToday} New Today</span>
-              <span className="bg-orange-500 text-white text-xs font-bold px-3 py-1 rounded-full">{stats.claimed} Claimed</span>
-            </div>
-            <div className="flex bg-slate-700 rounded-lg overflow-hidden">
-              <button
-                onClick={() => setView('table')}
-                className={`px-3 py-1.5 text-xs font-semibold transition ${view === 'table' ? 'bg-blue-600 text-white' : 'text-slate-300 hover:text-white'}`}
-              >
-                Table
-              </button>
-              <button
-                onClick={() => setView('kanban')}
-                className={`px-3 py-1.5 text-xs font-semibold transition ${view === 'kanban' ? 'bg-blue-600 text-white' : 'text-slate-300 hover:text-white'}`}
-              >
-                Kanban
-              </button>
-            </div>
-            {editingRep ? (
-              <div className="flex gap-1">
-                <input
-                  autoFocus type="text" value={repInput}
-                  onChange={(e) => setRepInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && repInput.trim() && handleRepSave(repInput.trim())}
-                  className="bg-slate-700 text-white text-xs px-2 py-1 rounded border border-slate-500 w-28 focus:outline-none"
-                  placeholder="Your name"
-                />
-                <button onClick={() => repInput.trim() && handleRepSave(repInput.trim())} className="bg-blue-600 text-white text-xs px-2 py-1 rounded hover:bg-blue-700">Save</button>
-              </div>
-            ) : (
-              <button
-                onClick={() => { setRepInput(currentRep || ''); setEditingRep(true) }}
-                className="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition"
-              >
-                <span className="w-5 h-5 rounded-full bg-blue-500 text-white text-xs font-bold flex items-center justify-center">
-                  {initials(currentRep || '?')}
-                </span>
-                {currentRep || 'Set Name'}
-              </button>
-            )}
+          {/* Tab bar */}
+          <div className="flex items-end">
+            {tabs.map(tab => {
+              const isActive = activeTab === tab.key
+              const count = tabCounts[tab.key]
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`
+                    flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors
+                    ${isActive
+                      ? 'text-white border-white'
+                      : 'text-gray-400 border-transparent hover:text-gray-200'
+                    }
+                  `}
+                >
+                  {tab.label}
+                  {count > 0 && (
+                    <span
+                      className={`inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full text-xs font-bold ${
+                        isActive ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300'
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
           </div>
         </div>
       </header>
 
-      {/* ── Filters ── */}
-      <div className="bg-white border-b border-gray-200 px-6 py-3">
-        <div className="max-w-screen-xl mx-auto flex flex-wrap items-center gap-3">
-          <div className="flex flex-wrap gap-1.5 items-center">
-            <span className="text-xs font-semibold text-gray-500 mr-1">Type:</span>
-            {ALL_SIGNAL_TYPES.map((type) => {
-              const meta = SIGNAL_META[type]
-              const active = filterTypes.includes(type)
-              return (
-                <button
-                  key={type}
-                  onClick={() => toggleTypeFilter(type)}
-                  className={`text-xs px-2 py-0.5 rounded-full border transition font-medium ${
-                    active ? meta.color + ' border-transparent' : 'border-gray-300 text-gray-500 hover:border-gray-400'
-                  }`}
-                >
-                  {meta.label}
-                </button>
-              )
-            })}
-            {filterTypes.length > 0 && (
-              <button onClick={() => setFilterTypes([])} className="text-xs text-gray-400 hover:text-gray-600 underline ml-1">Clear</button>
-            )}
-          </div>
-          <div className="h-4 w-px bg-gray-200 hidden sm:block" />
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs font-semibold text-gray-500">Relationship:</span>
-            <select value={filterWarmth} onChange={(e) => setFilterWarmth(e.target.value)}
-              className="text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
-              <option value="">All</option>
-              {ALL_WARMTH_TYPES.map((w) => <option key={w} value={w}>{WARMTH_META[w].label}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs font-semibold text-gray-500">Claimed:</span>
-            <select value={filterClaimed} onChange={(e) => setFilterClaimed(e.target.value)}
-              className="text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
-              <option value="">All</option>
-              <option value="unclaimed">Unclaimed</option>
-              <option value="claimed">Claimed</option>
-              <option value="mine">Mine</option>
-            </select>
-          </div>
-          <div className="flex items-center gap-1.5 ml-auto">
-            <span className="text-xs font-semibold text-gray-500">Sort:</span>
-            <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
-              className="text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
-              <option value="priority_score">Priority Score</option>
-              <option value="company_name">Company Name</option>
-              <option value="days_in_queue">Days in Queue</option>
-            </select>
-          </div>
-          <button onClick={fetchSignals} className="ml-2 text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 transition font-semibold">
-            ↻ Refresh
-          </button>
-        </div>
-      </div>
-
       {/* ── Main Content ── */}
-      <main className="max-w-screen-xl mx-auto px-4 py-6">
-        {loading && (
-          <div className="flex items-center justify-center py-20 text-gray-400 text-sm">Loading signals...</div>
-        )}
-        {error && !loading && (
-          <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-red-700 text-sm">
-            Failed to load signals: {error}
+      <main className="max-w-screen-xl mx-auto px-4 sm:px-6 py-6">
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-24 gap-3">
+            <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            <span className="text-gray-400 text-sm">Loading signals...</span>
           </div>
-        )}
-        {!loading && !error && filteredSignals.length === 0 && (
-          <div className="text-center py-20 text-gray-400">
-            <p className="text-lg font-medium mb-1">No signals found</p>
-            <p className="text-sm">Try adjusting your filters or run the orchestrator to generate signals.</p>
-          </div>
-        )}
-
-        {/* ── TABLE VIEW ── */}
-        {!loading && !error && view === 'table' && filteredSignals.length > 0 && (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider w-12">#</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Company</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
-                    {/* Dynamic signal-type columns — shown for the most common type in current filter */}
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider min-w-48">Details</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Relationship</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider w-20">Days</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider w-28">Claim</th>
-                    <th className="px-4 py-3 w-8"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {filteredSignals.map((signal, idx) => {
-                    const cols = getColumnsForType(signal.signal_type)
-                    const detail = signal.signal_detail || {}
-                    const isExpanded = expandedRows.has(signal.id)
-
-                    return (
-                      <>
-                        <tr
-                          key={signal.id}
-                          onClick={() => toggleRow(signal.id)}
-                          className={`hover:bg-blue-50 transition cursor-pointer ${isExpanded ? 'bg-blue-50' : ''}`}
-                        >
-                          {/* Rank + score */}
-                          <td className="px-4 py-3">
-                            <div className="flex flex-col items-center">
-                              <span className="text-xs font-bold text-gray-400">{idx + 1}</span>
-                              <span className="text-xs font-semibold text-blue-600">{signal.priority_score}</span>
-                            </div>
-                          </td>
-
-                          {/* Company */}
-                          <td className="px-4 py-3">
-                            <div className="font-semibold text-gray-900 text-sm">{signal.company_name}</div>
-                            {signal.is_carried_forward && (
-                              <span className="inline-block mt-0.5 text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">
-                                ↑ Carried
-                              </span>
-                            )}
-                          </td>
-
-                          {/* Signal Type badge */}
-                          <td className="px-4 py-3">
-                            <SignalTypeBadge type={signal.signal_type} />
-                          </td>
-
-                          {/* Signal-type-specific detail columns */}
-                          <td className="px-4 py-3 text-xs text-gray-700">
-                            {cols.length === 1 && cols[0].key === 'summary' ? (
-                              // Default: show signal_summary
-                              <span className="line-clamp-2 text-gray-600">{signal.signal_summary}</span>
-                            ) : (
-                              // Type-specific: show first 2 key fields inline
-                              <div className="space-y-0.5">
-                                {cols.slice(0, 2).map((col) => {
-                                  const rendered = col.render(detail)
-                                  return rendered ? (
-                                    <div key={col.key} className="flex gap-1">
-                                      <span className="text-gray-400 shrink-0">{col.label}:</span>
-                                      <span className="text-gray-800 truncate max-w-48">{rendered}</span>
-                                    </div>
-                                  ) : null
-                                })}
-                              </div>
-                            )}
-                          </td>
-
-                          {/* Relationship */}
-                          <td className="px-4 py-3">
-                            <WarmthBadge warmth={signal.relationship_warmth} />
-                          </td>
-
-                          {/* Days in queue */}
-                          <td className="px-4 py-3">
-                            <span className={`text-xs font-semibold ${signal.days_in_queue >= 7 ? 'text-red-600' : signal.days_in_queue >= 3 ? 'text-amber-600' : 'text-gray-500'}`}>
-                              {signal.days_in_queue ?? 0}d
-                            </span>
-                          </td>
-
-                          {/* Claim */}
-                          <td className="px-4 py-3">
-                            <ClaimButton signal={signal} currentRep={currentRep} onClaim={handleClaim} />
-                          </td>
-
-                          {/* Expand chevron */}
-                          <td className="px-2 py-3 text-gray-400 text-xs">
-                            {isExpanded ? '▲' : '▼'}
-                          </td>
-                        </tr>
-
-                        {/* Expanded detail row */}
-                        {isExpanded && (
-                          <tr key={`${signal.id}-detail`}>
-                            <td colSpan={8} className="p-0">
-                              <SignalDetailCard signal={signal} />
-                            </td>
-                          </tr>
-                        )}
-                      </>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-            <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 text-xs text-gray-400">
-              Showing {filteredSignals.length} of {signals.length} signals · Click any row to expand details
-            </div>
-          </div>
-        )}
-
-        {/* ── KANBAN VIEW ── */}
-        {!loading && !error && view === 'kanban' && (
-          <div className="flex gap-4 overflow-x-auto pb-4">
-            {KANBAN_COLUMNS.map((col) => (
-              <div key={col.key} className="min-w-56 flex-1">
-                <KanbanColumn
-                  column={col}
-                  signals={kanbanGroups[col.key] || []}
-                  onDrop={handleDrop}
-                  onDragOver={handleDragOver}
-                  onDragStart={handleDragStart}
-                />
-              </div>
-            ))}
-          </div>
+        ) : (
+          <>
+            {activeTab === 'clinical' && (
+              <ClinicalTab
+                signals={tabSignals.clinical}
+                repName={repName}
+                expandedRows={expandedRows}
+                onToggleRow={toggleRow}
+                onClaim={claimSignal}
+                onUnclaim={unclaimSignal}
+              />
+            )}
+            {activeTab === 'funding' && (
+              <FundingTab
+                signals={tabSignals.funding}
+                repName={repName}
+                expandedRows={expandedRows}
+                onToggleRow={toggleRow}
+                onClaim={claimSignal}
+                onUnclaim={unclaimSignal}
+              />
+            )}
+            {activeTab === 'jobs' && (
+              <JobsTab
+                signals={tabSignals.jobs}
+                repName={repName}
+                expandedRows={expandedRows}
+                onToggleRow={toggleRow}
+                onClaim={claimSignal}
+                onUnclaim={unclaimSignal}
+              />
+            )}
+            {activeTab === 'leads' && (
+              <LeadsTab
+                signals={tabSignals.leads}
+                repName={repName}
+                notes={notes}
+                savingNotes={savingNotes}
+                onSaveNotes={saveNotes}
+                onUpdateStatus={updateStatus}
+                groupOpen={leadsGroupOpen}
+                setGroupOpen={setLeadsGroupOpen}
+              />
+            )}
+          </>
         )}
       </main>
     </div>

@@ -1,4 +1,4 @@
-import { runCompetitorJobBoardAgent } from '../../../agents/competitorJobBoardAgent.js'
+import { run as runCompetitorJobBoardAgent } from '../../../agents/competitorJobBoardAgent.js'
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {

@@ -1,8 +1,8 @@
 import { supabase } from '../lib/supabase.js'
-import { runClinicalTrialMonitor } from './clinicalTrialMonitor.js'
-import { runFundingMaAgent } from './fundingMaAgent.js'
-import { runCompetitorJobBoardAgent } from './competitorJobBoardAgent.js'
-import { runStaleJobTracker } from './staleJobTracker.js'
+import { run as runClinicalTrialMonitor } from './clinicalTrialMonitor.js'
+import { run as runFundingMaAgent } from './fundingMaAgent.js'
+import { run as runCompetitorJobBoardAgent } from './competitorJobBoardAgent.js'
+import { run as runStaleJobTracker } from './staleJobTracker.js'
 
 // ─── Priority score recalculation ─────────────────────────────────────────────
 

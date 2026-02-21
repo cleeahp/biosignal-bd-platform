@@ -1,4 +1,4 @@
-import { runClinicalTrialMonitor } from '../../../agents/clinicalTrialMonitor.js'
+import { run as runClinicalTrialMonitor } from '../../../agents/clinicalTrialMonitor.js'
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
