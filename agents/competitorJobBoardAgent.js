@@ -1,5 +1,6 @@
 import { supabase, upsertCompany } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
+import { createLinkedInClient } from '../lib/linkedinClient.js'
 import * as cheerio from 'cheerio'
 
 // ─── Competitor firms seed data ────────────────────────────────────────────────
@@ -588,7 +589,20 @@ export async function run() {
 
     let firmsChecked = 0
 
-    // ── Step 3: For each firm, fetch jobs and emit signals ───────────────────
+    // ── Step 3: Initialise LinkedIn client (Source A) ────────────────────────
+    // Max 10 LinkedIn requests per run (one per firm). Returns null when
+    // LINKEDIN_EMAIL / LINKEDIN_PASSWORD are not set — fails gracefully.
+    let linkedin = null;
+    try {
+      linkedin = await createLinkedInClient()
+      if (linkedin) {
+        console.log('[competitorJobBoard] LinkedIn client ready — will supplement career-page results')
+      }
+    } catch (err) {
+      console.log(`[competitorJobBoard] LinkedIn init error: ${err.message} — continuing without LinkedIn`)
+    }
+
+    // ── Step 4: For each firm, fetch jobs and emit signals ───────────────────
     for (const firm of firmsToCheck) {
       firmsChecked++
       const jobs = await fetchCareerPageJobs(firm.careers_url, firm.name)
@@ -608,7 +622,35 @@ export async function run() {
         }
       }
 
-      console.log(`${firm.name}: ${jobs.length} matching jobs`)
+      // ── LinkedIn Source A: supplement with LinkedIn job search ─────────────
+      // Cap at first 10 firms to stay within the 10-request-per-run limit.
+      if (linkedin?.isAvailable && firmsChecked <= 10) {
+        try {
+          const ROLE_KEYWORDS = 'clinical trial coordinator regulatory affairs CRA'
+          const liJobs = await linkedin.searchJobs(ROLE_KEYWORDS, firm.name)
+          let liInserted = 0
+          for (const job of liJobs.slice(0, 5)) {
+            if (!matchesRoleKeywords(job.title)) continue
+            if (NON_US_JOB_LOC.test(job.location)) continue
+            const inserted = await persistCompetitorSignal(
+              firm.name,
+              job.jobUrl || firm.careers_url,
+              job.title,
+              job.location || '',
+              '',
+              'linkedin',
+            )
+            if (inserted) { signalsFound++; liInserted++ }
+          }
+          if (liInserted > 0) {
+            console.log(`${firm.name}: +${liInserted} LinkedIn jobs`)
+          }
+        } catch (err) {
+          console.log(`[competitorJobBoard] LinkedIn error for ${firm.name}: ${err.message}`)
+        }
+      }
+
+      console.log(`${firm.name}: ${jobs.length} matching jobs (career page)`)
 
       // 400ms delay between firms — balanced against Vercel 300s timeout
       if (firmsChecked < firmsToCheck.length) {

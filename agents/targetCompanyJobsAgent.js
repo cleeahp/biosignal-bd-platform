@@ -11,6 +11,7 @@
 
 import { supabase, upsertCompany } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
+import { createLinkedInClient } from '../lib/linkedinClient.js'
 import * as cheerio from 'cheerio'
 
 const BOT_UA = 'Mozilla/5.0 (compatible; BioSignalBot/1.0)'
@@ -323,8 +324,10 @@ async function fetchBioSpaceJobs(category) {
 }
 
 /**
- * Persist a stale_job_posting signal from a BioSpace listing.
+ * Persist a stale_job_posting signal from BioSpace or LinkedIn.
  * Upserts the company if not already in DB.
+ *
+ * @param {{ company, title, location, jobUrl, daysPosted, category, source? }} job
  */
 async function persistStaleJobSignal(job) {
   if (!job.company || job.company.length < 2) return false
@@ -332,6 +335,7 @@ async function persistStaleJobSignal(job) {
   const company = await upsertCompany(supabase, { name: job.company })
   if (!company) return false
 
+  const source = job.source || 'BioSpace'
   const titleSlug = job.title.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40)
   const weekNum = Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000))
   const sourceUrl = `${job.jobUrl}#stale-${titleSlug}-week-${weekNum}`
@@ -357,11 +361,11 @@ async function persistStaleJobSignal(job) {
       job_url: job.jobUrl || '',
       days_posted: job.daysPosted,
       date_found: today,
-      source: 'BioSpace',
-      category: job.category,
+      source,
+      category: job.category || source,
     },
     source_url: sourceUrl,
-    source_name: 'BioSpace',
+    source_name: source,
     first_detected_at: new Date().toISOString(),
     status: 'new',
     priority_score: 20,
@@ -504,7 +508,18 @@ export async function run() {
       await new Promise((r) => setTimeout(r, 500))
     }
 
-    // ── Step 6: BioSpace stale jobs (days_posted >= 30) ──────────────────────
+    // ── Step 6: Initialise LinkedIn client (Source B) ────────────────────────
+    let linkedin = null
+    try {
+      linkedin = await createLinkedInClient()
+      if (linkedin) {
+        console.log('[targetCompanyJobs] LinkedIn client ready — will search for stale roles')
+      }
+    } catch (err) {
+      console.log(`[targetCompanyJobs] LinkedIn init error: ${err.message} — continuing without LinkedIn`)
+    }
+
+    // ── Step 7: BioSpace stale jobs (days_posted >= 30) ──────────────────────
     console.log('[targetCompanyJobs] Fetching stale jobs from BioSpace...')
     const [bioTechJobs, pharmaJobs] = await Promise.all([
       fetchBioSpaceJobs('Biotechnology').catch(() => []),
@@ -525,17 +540,50 @@ export async function run() {
     }
     console.log(`[targetCompanyJobs] BioSpace: ${allBioSpaceJobs.length} stale jobs processed, ${staleSignalsFound} new signals`)
 
+    // ── Step 8: LinkedIn stale jobs (Source B — 30+ days, 20 jobs max) ───────
+    let liStaleCount = 0
+    if (linkedin?.isAvailable) {
+      try {
+        const ROLE_KEYWORDS = 'clinical research associate regulatory affairs clinical trial coordinator'
+        const liJobs = await linkedin.searchJobs(ROLE_KEYWORDS)
+        for (const job of liJobs) {
+          if (liStaleCount >= 20) break
+          if (!matchesRoleKeywords(job.title)) continue
+          if (NON_US_JOB_LOC.test(job.location)) continue
+          if ((job.daysPosted || 0) < 30) continue
+          if (!job.company) continue
+          const inserted = await persistStaleJobSignal({
+            title:      job.title,
+            company:    job.company,
+            location:   job.location || '',
+            jobUrl:     job.jobUrl || '',
+            daysPosted: job.daysPosted || 30,
+            source:     'LinkedIn',
+          })
+          if (inserted) { signalsFound++; liStaleCount++ }
+          await new Promise((r) => setTimeout(r, 100))
+        }
+        console.log(`[targetCompanyJobs] LinkedIn Source B: ${liStaleCount} new stale job signals`)
+      } catch (err) {
+        console.log(`[targetCompanyJobs] LinkedIn Source B error: ${err.message}`)
+      }
+    }
+
     await supabase
       .from('agent_runs')
       .update({
         status: 'completed',
         completed_at: new Date().toISOString(),
         signals_found: signalsFound,
-        run_detail: { companies_checked: companiesChecked, biospace_stale_jobs: allBioSpaceJobs.length },
+        run_detail: {
+          companies_checked:    companiesChecked,
+          biospace_stale_jobs:  allBioSpaceJobs.length,
+          linkedin_stale_jobs:  liStaleCount,
+        },
       })
       .eq('id', runId)
 
-    console.log(`[targetCompanyJobs] Done. ${signalsFound} new signals from ${companiesChecked} companies + BioSpace.`)
+    console.log(`[targetCompanyJobs] Done. ${signalsFound} new signals from ${companiesChecked} companies + BioSpace + LinkedIn.`)
     return { signalsFound, companiesChecked }
   } catch (err) {
     console.error('[targetCompanyJobs] Fatal error:', err.message)
