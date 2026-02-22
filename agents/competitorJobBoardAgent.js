@@ -194,8 +194,21 @@ export async function run() {
       return { signalsFound: 0, requestsUsed: 0, firmsChecked: 0, seedResult }
     }
 
-    const ROLE_KEYWORDS = 'clinical trial coordinator regulatory affairs CRA'
+    // Rotate through 8 short role keywords — one per firm, cycling by index.
+    // Short single-keyword queries avoid LinkedIn's multi-keyword matching failures
+    // that produce empty pages. Over 8 daily runs, every firm gets every keyword.
+    const ROLE_KEYWORD_ROTATION = [
+      'CRA',
+      'clinical research',
+      'regulatory affairs',
+      'biostatistician',
+      'clinical trial',
+      'medical affairs',
+      'quality assurance',
+      'data management',
+    ]
     let firmsChecked = 0
+    let firmIndex = 0
 
     // ── Step 4: LinkedIn search for each firm — no career page fetching ──────
     for (const firm of firmsToCheck) {
@@ -206,7 +219,10 @@ export async function run() {
       }
 
       firmsChecked++
-      const liJobs = await linkedin.searchJobs(ROLE_KEYWORDS, firm.name)
+      const singleKeyword = ROLE_KEYWORD_ROTATION[firmIndex % ROLE_KEYWORD_ROTATION.length]
+      firmIndex++
+      console.log(`[CompetitorJobs] Querying "${firm.name} ${singleKeyword}"`)
+      const liJobs = await linkedin.searchJobs(singleKeyword, firm.name)
 
       if (linkedin.botDetected) {
         console.log('[CompetitorJobs] Bot detected — stopping for today')
