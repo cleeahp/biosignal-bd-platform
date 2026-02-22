@@ -1,9 +1,11 @@
 import { supabase } from '../lib/supabase.js'
-import { run as runClinicalTrialMonitor } from './clinicalTrialMonitor.js'
-import { run as runFundingMaAgent } from './fundingMaAgent.js'
-import { run as runCompetitorJobBoardAgent } from './competitorJobBoardAgent.js'
-import { run as runStaleJobTracker } from './staleJobTracker.js'
+import { run as runClinicalTrialMonitor }  from './clinicalTrialMonitor.js'
+import { run as runFundingMaAgent }        from './fundingMaAgent.js'
 import { run as runTargetCompanyJobsAgent } from './targetCompanyJobsAgent.js'
+
+// competitorJobBoardAgent and staleJobTracker run via GitHub Actions nightly
+// (scripts/runJobAgents.js) where there is no timeout constraint.
+// The stubs below preserve the agentResults schema used by the run log.
 
 // ─── Priority score recalculation ─────────────────────────────────────────────
 
@@ -51,17 +53,20 @@ export async function runOrchestrator() {
   const runId = runLog?.id
 
   try {
-    // ── Step 1: Run all signal-generating agents in parallel ─────────────────
-    // Note: competitorJobBoardAgent and staleJobTracker may run for 45–90 min
-    // combined when LinkedIn is active (once-per-day cadence is acceptable).
+    // ── Step 1: Run signal-generating agents in parallel ─────────────────────
+    // Job agents (competitor + stale) run via GitHub Actions — stubs here.
     console.log('Orchestrator: starting agents in parallel...')
-    const [ctResult, fundingResult, competitorResult, staleResult, targetJobsResult] = await Promise.all([
+    const [ctResult, fundingResult, targetJobsResult] = await Promise.all([
       runClinicalTrialMonitor().catch((err) => ({ success: false, error: err.message, signalsFound: 0 })),
       runFundingMaAgent().catch((err) => ({ success: false, error: err.message, signalsFound: 0 })),
-      runCompetitorJobBoardAgent().catch((err) => ({ success: false, error: err.message, signalsFound: 0, requestsUsed: 0 })),
-      runStaleJobTracker().catch((err) => ({ success: false, error: err.message, signalsFound: 0, requestsUsed: 0 })),
       runTargetCompanyJobsAgent().catch((err) => ({ success: false, error: err.message, signalsFound: 0 })),
     ])
+
+    // Stubs for agents that run via GitHub Actions
+    const competitorResult = { signalsFound: 0, requestsUsed: 0, runVia: 'github-actions' }
+    const staleResult      = { signalsFound: 0, requestsUsed: 0, runVia: 'github-actions' }
+    console.log('[orchestrator] Competitor job agent runs via GitHub Actions nightly — skipping here')
+    console.log('[orchestrator] Stale job agent runs via GitHub Actions nightly — skipping here')
 
     agentResults.clinicalTrialMonitor = ctResult
     agentResults.fundingMaAgent       = fundingResult
@@ -70,21 +75,11 @@ export async function runOrchestrator() {
     agentResults.targetCompanyJobs    = targetJobsResult
 
     totalSignalsFound =
-      (ctResult.signalsFound       || 0) +
-      (fundingResult.signalsFound  || 0) +
-      (competitorResult.signalsFound || 0) +
-      (staleResult.signalsFound    || 0) +
+      (ctResult.signalsFound        || 0) +
+      (fundingResult.signalsFound   || 0) +
       (targetJobsResult.signalsFound || 0)
 
     console.log(`Orchestrator: agents complete. Total new signals: ${totalSignalsFound}`)
-    console.log(
-      `[CompetitorJobs] Complete — ${competitorResult.requestsUsed ?? 0} requests used, ` +
-      `${competitorResult.signalsFound ?? 0} signals saved`
-    )
-    console.log(
-      `[StaleJobs] Complete — ${staleResult.requestsUsed ?? 0} requests used, ` +
-      `${staleResult.signalsFound ?? 0} signals saved`
-    )
 
     // ── Step 2: Mark stale unactioned signals as carried_forward ─────────────
     const todayStart = new Date()
