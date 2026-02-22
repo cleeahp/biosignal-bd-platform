@@ -51,35 +51,40 @@ export async function runOrchestrator() {
   const runId = runLog?.id
 
   try {
-    // ── Step 1: Run signal-generating agents in parallel ────────────────────
+    // ── Step 1: Run all signal-generating agents in parallel ─────────────────
+    // Note: competitorJobBoardAgent and staleJobTracker may run for 45–90 min
+    // combined when LinkedIn is active (once-per-day cadence is acceptable).
     console.log('Orchestrator: starting agents in parallel...')
-    const [ctResult, fundingResult, competitorResult, staleResult] = await Promise.all([
+    const [ctResult, fundingResult, competitorResult, staleResult, targetJobsResult] = await Promise.all([
       runClinicalTrialMonitor().catch((err) => ({ success: false, error: err.message, signalsFound: 0 })),
       runFundingMaAgent().catch((err) => ({ success: false, error: err.message, signalsFound: 0 })),
-      runCompetitorJobBoardAgent().catch((err) => ({ success: false, error: err.message, signalsFound: 0 })),
-      runStaleJobTracker().catch((err) => ({ success: false, error: err.message, signalsFound: 0 })),
+      runCompetitorJobBoardAgent().catch((err) => ({ success: false, error: err.message, signalsFound: 0, requestsUsed: 0 })),
+      runStaleJobTracker().catch((err) => ({ success: false, error: err.message, signalsFound: 0, requestsUsed: 0 })),
+      runTargetCompanyJobsAgent().catch((err) => ({ success: false, error: err.message, signalsFound: 0 })),
     ])
 
     agentResults.clinicalTrialMonitor = ctResult
-    agentResults.fundingMaAgent = fundingResult
-    agentResults.competitorJobBoard = competitorResult
-    agentResults.staleJobTracker = staleResult
-
-    // ── Step 1b: Target company jobs runs after signal agents so it can see
-    //            the companies they just upserted / signalled ────────────────
-    const targetJobsResult = await runTargetCompanyJobsAgent().catch((err) => ({
-      success: false, error: err.message, signalsFound: 0,
-    }))
-    agentResults.targetCompanyJobs = targetJobsResult
+    agentResults.fundingMaAgent       = fundingResult
+    agentResults.competitorJobBoard   = competitorResult
+    agentResults.staleJobTracker      = staleResult
+    agentResults.targetCompanyJobs    = targetJobsResult
 
     totalSignalsFound =
-      (ctResult.signalsFound || 0) +
-      (fundingResult.signalsFound || 0) +
+      (ctResult.signalsFound       || 0) +
+      (fundingResult.signalsFound  || 0) +
       (competitorResult.signalsFound || 0) +
-      (staleResult.signalsFound || 0) +
+      (staleResult.signalsFound    || 0) +
       (targetJobsResult.signalsFound || 0)
 
     console.log(`Orchestrator: agents complete. Total new signals: ${totalSignalsFound}`)
+    console.log(
+      `[CompetitorJobs] Complete — ${competitorResult.requestsUsed ?? 0} requests used, ` +
+      `${competitorResult.signalsFound ?? 0} signals saved`
+    )
+    console.log(
+      `[StaleJobs] Complete — ${staleResult.requestsUsed ?? 0} requests used, ` +
+      `${staleResult.signalsFound ?? 0} signals saved`
+    )
 
     // ── Step 2: Mark stale unactioned signals as carried_forward ─────────────
     const todayStart = new Date()
