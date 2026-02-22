@@ -692,47 +692,347 @@ function classifyTransactionType(text) {
 
 /**
  * Search BioSpace for deal details about a company.
+ * Tries "{companyName} acquisition" and optionally "{companyName} {transactionType}".
  * Best-effort: returns null on any failure.
  *
  * @param {string} companyName
+ * @param {string} [transactionType]
  * @returns {Promise<{deal_value: string|null, deal_summary: string, article_url: string}|null>}
  */
-async function searchBioSpaceDeal(companyName) {
-  const searchUrl = `https://www.biospace.com/search?q=${encodeURIComponent(companyName + ' acquisition')}`;
+async function searchBioSpaceDeal(companyName, transactionType = 'acquisition') {
+  const queries = ['acquisition'];
+  if (transactionType && transactionType !== 'acquisition') queries.push(transactionType);
+
+  for (const q of queries) {
+    const searchUrl = `https://www.biospace.com/search?q=${encodeURIComponent(companyName + ' ' + q)}`;
+    try {
+      await sleep(SEC_RATE_LIMIT_MS);
+      const resp = await fetch(searchUrl, {
+        headers: { 'User-Agent': BIOSPACE_BOT_UA, Accept: 'text/html' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!resp.ok) continue;
+      const html = await resp.text();
+
+      const articles = parseBioSpaceArticles(html, 'https://www.biospace.com');
+      if (articles.length === 0) continue;
+
+      const firstArticle = articles.find((a) =>
+        a.title.toLowerCase().includes(companyName.toLowerCase().slice(0, 8))
+      ) || articles[0];
+
+      await sleep(SEC_RATE_LIMIT_MS);
+      const articleResp = await fetch(firstArticle.url, {
+        headers: { 'User-Agent': BIOSPACE_BOT_UA },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!articleResp.ok) return { deal_value: null, deal_summary: firstArticle.title, article_url: firstArticle.url };
+
+      const articleHtml = await articleResp.text();
+      const articleText = articleHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 3000);
+      const dealValue = extractAmount(articleText);
+      return { deal_value: dealValue, deal_summary: firstArticle.title, article_url: firstArticle.url };
+    } catch (err) {
+      console.log(`[fundingMaAgent] BioSpace search failed for "${companyName}" (query: ${q}): ${err.message}`);
+    }
+  }
+  return null;
+}
+
+/**
+ * Infer a company's web domain from its name for IR page searching.
+ * e.g. "Vertex Pharmaceuticals Inc." → "vertexpharmaceuticals.com"
+ *
+ * @param {string} companyName
+ * @returns {string} domain (e.g. "vertexpharmaceuticals.com")
+ */
+function inferCompanyDomain(companyName) {
+  const slug = companyName
+    .replace(/,?\s+(inc\.?|incorporated|corp\.?|corporation|llc|ltd\.?|limited|plc|pvt\.?)$/i, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+  return `${slug}.com`;
+}
+
+/**
+ * Search a company's investor relations page for press release content about a deal.
+ * Tries common IR URL patterns. Best-effort: returns null on any failure.
+ *
+ * @param {string} companyName
+ * @returns {Promise<{deal_value: string|null, counterparty: string, deal_summary: string, source_url: string}|null>}
+ */
+async function searchInvestorRelationsPage(companyName) {
+  const domain = inferCompanyDomain(companyName);
+  const candidates = [
+    `https://www.${domain}/investors`,
+    `https://www.${domain}/investor-relations`,
+    `https://ir.${domain}/`,
+    `https://investors.${domain}/`,
+  ];
+  const DEAL_RE = /acqui|merger|partner|agreement|transaction/i;
+
+  for (const irUrl of candidates) {
+    try {
+      await sleep(SEC_RATE_LIMIT_MS);
+      const resp = await fetch(irUrl, {
+        headers: { 'User-Agent': BIOSPACE_BOT_UA },
+        signal: AbortSignal.timeout(6000),
+        redirect: 'follow',
+      });
+      if (!resp.ok) continue;
+      const html = await resp.text();
+      if (html.length < 500) continue;
+
+      const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+      if (!DEAL_RE.test(text)) continue;
+
+      // Look for press release anchor text about deals
+      const linkRe = /<a[^>]+href="([^"]+)"[^>]*>([^<]{15,200})<\/a>/gi;
+      let m;
+      while ((m = linkRe.exec(html)) !== null) {
+        const linkText = m[2].replace(/&amp;/g, '&').trim();
+        if (!DEAL_RE.test(linkText)) continue;
+
+        const href = m[1];
+        const linkUrl = href.startsWith('http')
+          ? href
+          : `https://www.${domain}${href.startsWith('/') ? '' : '/'}${href}`;
+
+        const dealValue = extractAmount(linkText) || extractAmount(text.slice(0, 2000));
+        const cpM = linkText.match(
+          /(?:acqui(?:re|red)|merger with|partner(?:ed)? with|agreement with)\s+([A-Z][A-Za-z0-9\s]+?)(?:\s*,|\s+for\s|\.)/i
+        );
+        return {
+          deal_value: dealValue,
+          counterparty: cpM?.[1]?.trim() || '',
+          deal_summary: linkText.slice(0, 200),
+          source_url: linkUrl,
+        };
+      }
+
+      // Fallback: just grab a deal value from the page
+      const dealValue = extractAmount(text.slice(0, 3000));
+      if (dealValue) {
+        return { deal_value: dealValue, counterparty: '', deal_summary: '', source_url: irUrl };
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
+
+/**
+ * Search BioPharma Dive for deal coverage of a company.
+ * Looks for article cards with deal keywords published in last 180 days.
+ * Best-effort: returns null on any failure.
+ *
+ * @param {string} companyName
+ * @returns {Promise<{deal_value: string|null, counterparty: string, deal_summary: string, source_url: string}|null>}
+ */
+async function searchBioPharmaDiv(companyName) {
+  const url = `https://www.biopharmadive.com/search/?q=${encodeURIComponent(companyName)}`;
+  const DEAL_RE = /acqui|merger|partner|licens|collaborat/i;
+  const cutoff = daysAgo(LOOKBACK_DAYS);
+
   try {
     await sleep(SEC_RATE_LIMIT_MS);
-    const resp = await fetch(searchUrl, {
+    const resp = await fetch(url, {
       headers: { 'User-Agent': BIOSPACE_BOT_UA, Accept: 'text/html' },
       signal: AbortSignal.timeout(8000),
     });
     if (!resp.ok) return null;
     const html = await resp.text();
 
-    const articles = parseBioSpaceArticles(html, 'https://www.biospace.com');
-    if (articles.length === 0) return null;
+    // Parse article result cards
+    const cardRe = /<article[^>]*>([\s\S]*?)<\/article>/gi;
+    let m;
+    while ((m = cardRe.exec(html)) !== null) {
+      const card = m[1];
+      const titleM = card.match(/<h[23][^>]*>([^<]+)<\/h[23]>/) || card.match(/class="[^"]*title[^"]*"[^>]*>([^<]+)</);
+      const title = titleM?.[1]?.trim().replace(/&amp;/g, '&') || '';
+      if (!title || !DEAL_RE.test(title)) continue;
 
-    // Check if first article title mentions the company
-    const firstArticle = articles.find(a =>
-      a.title.toLowerCase().includes(companyName.toLowerCase().slice(0, 8))
-    ) || articles[0];
+      const hrefM = card.match(/href="([^"]+)"/);
+      const href = hrefM?.[1] || '';
+      const articleUrl = href.startsWith('http') ? href : `https://www.biopharmadive.com${href}`;
 
-    // Fetch the article for deal value
+      // Skip articles outside lookback window
+      const dateM = card.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2}, \d{4})/);
+      if (dateM) {
+        const articleDate = new Date(dateM[0]);
+        if (!isNaN(articleDate.getTime()) && articleDate < cutoff) continue;
+      }
+
+      const snippetM = card.match(/class="[^"]*(?:summary|description)[^"]*"[^>]*>([^<]{20,300})/);
+      const snippet = snippetM?.[1]?.trim() || title;
+      const dealValue = extractAmount(title) || extractAmount(snippet);
+      const cpM = title.match(/(?:acquires?|buys?|merges? with|partners? with)\s+([A-Z][A-Za-z0-9\s]+?)(?:\s*,|\s+for\s|\.)/i);
+
+      return {
+        deal_value: dealValue,
+        counterparty: cpM?.[1]?.trim() || '',
+        deal_summary: title,
+        source_url: articleUrl,
+      };
+    }
+  } catch (err) {
+    console.log(`[fundingMaAgent] BioPharma Dive search failed for "${companyName}": ${err.message}`);
+  }
+  return null;
+}
+
+/**
+ * Search FiercePharma for deal coverage of a company.
+ * Looks for article results with deal keywords published in last 180 days.
+ * Best-effort: returns null on any failure.
+ *
+ * @param {string} companyName
+ * @returns {Promise<{deal_value: string|null, counterparty: string, deal_summary: string, source_url: string}|null>}
+ */
+async function searchFiercePharma(companyName) {
+  const url = `https://www.fiercepharma.com/search?q=${encodeURIComponent(companyName)}`;
+  const DEAL_RE = /acqui|merger|partner|licens|collaborat|deal/i;
+  const cutoff = daysAgo(LOOKBACK_DAYS);
+
+  try {
     await sleep(SEC_RATE_LIMIT_MS);
-    const articleResp = await fetch(firstArticle.url, {
-      headers: { 'User-Agent': BIOSPACE_BOT_UA },
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': BIOSPACE_BOT_UA, Accept: 'text/html' },
       signal: AbortSignal.timeout(8000),
     });
-    if (!articleResp.ok) return { deal_value: null, deal_summary: firstArticle.title, article_url: firstArticle.url };
+    if (!resp.ok) return null;
+    const html = await resp.text();
 
-    const articleHtml = await articleResp.text();
-    const articleText = articleHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 3000);
-    const dealValue = extractAmount(articleText);
+    // FiercePharma renders results as node--teaser divs or plain <article> elements
+    const cardRe = /<article[^>]*>([\s\S]*?)<\/article>|class="[^"]*node--teaser[^"]*"([\s\S]*?)<\/div>\s*<\/div>/gi;
+    let m;
+    while ((m = cardRe.exec(html)) !== null) {
+      const card = m[1] || m[2] || '';
+      const titleM = card.match(/<h[23][^>]*>([^<]+)<\/h[23]>/) || card.match(/class="[^"]*title[^"]*"[^>]*>([^<]+)</);
+      const title = titleM?.[1]?.trim().replace(/&amp;/g, '&') || '';
+      if (!title || !DEAL_RE.test(title)) continue;
 
-    return { deal_value: dealValue, deal_summary: firstArticle.title, article_url: firstArticle.url };
+      const hrefM = card.match(/href="([^"]+)"/);
+      const href = hrefM?.[1] || '';
+      const articleUrl = href.startsWith('http') ? href : `https://www.fiercepharma.com${href}`;
+
+      const dateM = card.match(/(\d{4}-\d{2}-\d{2})|(\w+ \d{1,2}, \d{4})/);
+      if (dateM) {
+        const articleDate = new Date(dateM[0]);
+        if (!isNaN(articleDate.getTime()) && articleDate < cutoff) continue;
+      }
+
+      const snippetM = card.match(/class="[^"]*(?:summary|body|description)[^"]*"[^>]*>([^<]{20,300})/);
+      const snippet = snippetM?.[1]?.trim() || title;
+      const dealValue = extractAmount(title) || extractAmount(snippet);
+      const cpM = title.match(/(?:acquires?|buys?|merges? with|partners? with)\s+([A-Z][A-Za-z0-9\s]+?)(?:\s*,|\s+for\s|\.)/i);
+
+      return {
+        deal_value: dealValue,
+        counterparty: cpM?.[1]?.trim() || '',
+        deal_summary: title,
+        source_url: articleUrl,
+      };
+    }
   } catch (err) {
-    console.log(`[fundingMaAgent] BioSpace search failed for "${companyName}": ${err.message}`);
-    return null;
+    console.log(`[fundingMaAgent] FiercePharma search failed for "${companyName}": ${err.message}`);
   }
+  return null;
+}
+
+/**
+ * Orchestrate M&A signal enrichment from multiple sources in priority order:
+ * 1. Company IR page — highest quality (authoritative source)
+ * 2. BioSpace — already integrated; also tries {transactionType} query
+ * 3. BioPharma Dive — trade publication
+ * 4. FiercePharma — trade publication
+ *
+ * Stops once both deal_value and counterparty are found. Logs result.
+ *
+ * @param {string} entityName
+ * @param {string} transactionType
+ * @param {string|null} existingDealAmount - from EDGAR filing text (may be null)
+ * @param {string} existingAcquiredName - from EDGAR filing text (may be empty)
+ * @returns {Promise<{deal_value: string|null, counterparty: string, deal_summary: string|null, source_url: string|null, source: string|null}>}
+ */
+async function enrichMaSignal(entityName, transactionType, existingDealAmount, existingAcquiredName) {
+  const result = {
+    deal_value: existingDealAmount || null,
+    counterparty: existingAcquiredName || '',
+    deal_summary: null,
+    source_url: null,
+    source: existingAcquiredName || existingDealAmount ? 'edgar' : null,
+  };
+
+  const needsEnrichment = () => !result.deal_value || !result.counterparty;
+
+  // Source 1: Company IR page
+  if (needsEnrichment()) {
+    try {
+      const irData = await searchInvestorRelationsPage(entityName);
+      if (irData) {
+        if (irData.deal_value && !result.deal_value) result.deal_value = irData.deal_value;
+        if (irData.counterparty && !result.counterparty) result.counterparty = irData.counterparty;
+        if (irData.deal_summary && !result.deal_summary) result.deal_summary = irData.deal_summary;
+        if (irData.source_url && !result.source_url) result.source_url = irData.source_url;
+        if (!result.source || result.source === 'edgar') result.source = 'investor_relations';
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  // Source 2: BioSpace (with transaction type query)
+  if (needsEnrichment()) {
+    try {
+      const bsData = await searchBioSpaceDeal(entityName, transactionType);
+      if (bsData) {
+        if (bsData.deal_value && !result.deal_value) result.deal_value = bsData.deal_value;
+        if (bsData.deal_summary && !result.deal_summary) result.deal_summary = bsData.deal_summary;
+        if (bsData.article_url && !result.source_url) result.source_url = bsData.article_url;
+        if (!result.source || result.source === 'edgar') result.source = 'biospace';
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  // Source 3: BioPharma Dive
+  if (needsEnrichment()) {
+    try {
+      const bpdData = await searchBioPharmaDiv(entityName);
+      if (bpdData) {
+        if (bpdData.deal_value && !result.deal_value) result.deal_value = bpdData.deal_value;
+        if (bpdData.counterparty && !result.counterparty) result.counterparty = bpdData.counterparty;
+        if (bpdData.deal_summary && !result.deal_summary) result.deal_summary = bpdData.deal_summary;
+        if (bpdData.source_url && !result.source_url) result.source_url = bpdData.source_url;
+        if (!result.source || result.source === 'edgar') result.source = 'biopharmadive';
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  // Source 4: FiercePharma
+  if (needsEnrichment()) {
+    try {
+      const fpData = await searchFiercePharma(entityName);
+      if (fpData) {
+        if (fpData.deal_value && !result.deal_value) result.deal_value = fpData.deal_value;
+        if (fpData.counterparty && !result.counterparty) result.counterparty = fpData.counterparty;
+        if (fpData.deal_summary && !result.deal_summary) result.deal_summary = fpData.deal_summary;
+        if (fpData.source_url && !result.source_url) result.source_url = fpData.source_url;
+        if (!result.source || result.source === 'edgar') result.source = 'fiercepharma';
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  // Log result
+  if (result.deal_value || result.counterparty) {
+    console.log(
+      `[fundingMaAgent] M&A ENRICH [${entityName}]: type=${transactionType}, counterparty=${result.counterparty || 'unknown'}, value=${result.deal_value || 'unknown'}, source=${result.source || 'edgar'}`
+    );
+  } else {
+    console.log(`[fundingMaAgent] M&A ENRICH [${entityName}]: no additional details found`);
+  }
+
+  return result;
 }
 
 /**
@@ -791,31 +1091,26 @@ async function processMaFilings(sixMonthsAgo, today) {
 
       // Fetch filing document text to extract target company name and deal amount
       const filingBodyText = await fetchMaFilingText(hit);
-      const dealAmount = extractAmount(filingBodyText) || extractAmount(filingText);
-      const acquiredName = extractMaTarget(filingBodyText, entityName);
+      const edgarDealAmount = extractAmount(filingBodyText) || extractAmount(filingText);
+      const edgarAcquiredName = extractMaTarget(filingBodyText, entityName);
       const transactionType = classifyTransactionType(filingBodyText);
-      if (acquiredName) {
-        console.log(`[fundingMaAgent] M&A target found: ${entityName} → ${acquiredName} (${transactionType})`);
+      if (edgarAcquiredName) {
+        console.log(`[fundingMaAgent] M&A target found: ${entityName} → ${edgarAcquiredName} (${transactionType})`);
       }
 
-      // BioSpace enrichment — best-effort, gracefully skipped on failure
-      let bioSpaceDeal = null;
-      try {
-        bioSpaceDeal = await searchBioSpaceDeal(entityName);
-        if (bioSpaceDeal?.deal_summary) {
-          console.log(`[fundingMaAgent] BioSpace deal found for ${entityName}: ${bioSpaceDeal.deal_summary}`);
-        }
-      } catch { /* non-fatal */ }
+      // Multi-source enrichment: IR page → BioSpace → BioPharma Dive → FiercePharma
+      const enriched = await enrichMaSignal(entityName, transactionType, edgarDealAmount, edgarAcquiredName);
 
-      const finalDealAmount = dealAmount || bioSpaceDeal?.deal_value || null;
+      const finalDealAmount = enriched.deal_value || null;
+      const finalAcquiredName = enriched.counterparty || edgarAcquiredName;
 
       const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, MA_BASE_SCORE);
-      const dealSummary = bioSpaceDeal?.deal_summary
-        || `${entityName} announced an M&A transaction${acquiredName ? ` to acquire ${acquiredName}` : ''}${finalDealAmount ? ` valued at ${finalDealAmount}` : ''}`;
+      const dealSummary = enriched.deal_summary
+        || `${entityName} announced an M&A transaction${finalAcquiredName ? ` to acquire ${finalAcquiredName}` : ''}${finalDealAmount ? ` valued at ${finalDealAmount}` : ''}`;
       const detail = {
         company_name: entityName,
         acquirer_name: entityName,
-        acquired_name: acquiredName,
+        acquired_name: finalAcquiredName,
         transaction_type: transactionType,
         deal_value: finalDealAmount,
         adsh,
@@ -823,6 +1118,8 @@ async function processMaFilings(sixMonthsAgo, today) {
         funding_amount: finalDealAmount,
         funding_summary: dealSummary,
         deal_summary: dealSummary,
+        enrichment_source: enriched.source,
+        enrichment_url: enriched.source_url,
         date_announced: fileDate,
         filing_url: filingUrl,
         source_url: filingUrl,
