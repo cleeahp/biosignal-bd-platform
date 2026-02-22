@@ -30,6 +30,14 @@ const FUNDING_TYPE_CONFIG = {
   ma:                 { label: 'M&A',                color: 'bg-amber-600' },
 }
 
+// Badge config for ma_transaction signals keyed by transaction_type
+const MA_TRANSACTION_TYPE_CONFIG = {
+  ipo:          { label: 'IPO',         color: 'bg-emerald-600' },
+  acquisition:  { label: 'Acquisition', color: 'bg-orange-600' },
+  merger:       { label: 'Merger',      color: 'bg-amber-600' },
+  partnership:  { label: 'Partnership', color: 'bg-blue-600' },
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
@@ -391,19 +399,30 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
                 className={`${rowBg} hover:bg-gray-800 cursor-pointer transition-colors`}
               >
                 <td className="px-4 py-3 whitespace-nowrap">
-                  <SignalTypeBadge signalType={signal.signal_type} fundingType={d.funding_type} />
-                  {signal.signal_type === 'ma_transaction' && d.transaction_type && (
-                    <div className="text-xs text-orange-400 mt-1 capitalize">{d.transaction_type}</div>
+                  {signal.signal_type === 'ma_transaction' ? (() => {
+                    const ttCfg = MA_TRANSACTION_TYPE_CONFIG[d.transaction_type] || { label: 'M&A', color: 'bg-orange-600' }
+                    return (
+                      <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold text-white whitespace-nowrap ${ttCfg.color}`}>
+                        {ttCfg.label}
+                      </span>
+                    )
+                  })() : (
+                    <SignalTypeBadge signalType={signal.signal_type} fundingType={d.funding_type} />
                   )}
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-sm font-semibold text-white whitespace-nowrap">
-                      {signal.signal_type === 'ma_transaction'
-                        ? (d.acquired_name
-                            ? `${d.acquirer_name || signal.companies?.name} → ${d.acquired_name}`
-                            : `${d.acquirer_name || signal.companies?.name || '—'} (details TBD)`)
-                        : signal.companies?.name || d.company_name || '—'}
+                      {signal.signal_type === 'ma_transaction' ? (() => {
+                        const tt = d.transaction_type
+                        const acquirer = d.acquirer_name || signal.companies?.name || '—'
+                        const acquired = d.acquired_name
+                        if (tt === 'ipo') return acquirer
+                        if (tt === 'merger') return acquired ? `${acquirer} + ${acquired}` : acquirer
+                        if (tt === 'partnership') return acquired ? `${acquirer} ↔ ${acquired}` : acquirer
+                        // acquisition (default)
+                        return acquired ? `${acquirer} → ${acquired}` : `${acquirer} (details TBD)`
+                      })() : signal.companies?.name || d.company_name || '—'}
                     </span>
                     {d.pre_hiring_signal && (
                       <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-semibold bg-yellow-900 text-yellow-300">
