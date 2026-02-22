@@ -1,7 +1,6 @@
 import { supabase, upsertCompany } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
-import * as cheerio from 'cheerio'
 
 // ─── Competitor firms seed data ────────────────────────────────────────────────
 // 30 life sciences staffing firms. Upserted into competitor_firms when the
@@ -98,29 +97,8 @@ async function seedCompetitorFirms() {
   return { seeded, skipped, skippedFirms }
 }
 
-// ─── LinkedIn job description fetcher ─────────────────────────────────────────
-
-/**
- * Fetch the first 500 chars of readable text from a LinkedIn job page.
- * Uses delay type 'fetch'. Returns '' on any failure.
- *
- * @param {import('../lib/linkedinClient.js').LinkedInClient} client
- * @param {string} jobUrl
- * @returns {Promise<string>}
- */
-async function fetchLinkedInJobDescription(client, jobUrl) {
-  if (!jobUrl || !client?.isAvailable) return ''
-  try {
-    const resp = await client.get(jobUrl, 'fetch')
-    if (!resp?.ok) return ''
-    const html = await resp.text()
-    const $ = cheerio.load(html)
-    $('script, style, nav, footer, header').remove()
-    return $.text().replace(/\s+/g, ' ').trim().slice(0, 500)
-  } catch {
-    return ''
-  }
-}
+// Description fetching is handled by client.fetchJobDescription() which uses
+// the /jobs-guest/jobs/api/jobPosting/{jobId} guest API endpoint.
 
 // ─── Persist a single competitor activity signal ───────────────────────────────
 
@@ -240,10 +218,10 @@ export async function run() {
         if (!matchesRoleKeywords(job.title)) continue
         if (NON_US_JOB_LOC.test(job.location)) continue
 
-        // Fetch description page with 'fetch' delay for richer signal detail
+        // Fetch description via guest API (/jobs-guest/jobs/api/jobPosting/{id})
         let description = ''
         if (job.jobUrl && linkedin.isAvailable) {
-          description = await fetchLinkedInJobDescription(linkedin, job.jobUrl)
+          description = await linkedin.fetchJobDescription(job.jobUrl)
           if (linkedin.botDetected) {
             console.log('[CompetitorJobs] Bot detected during description fetch — stopping for today')
             break
