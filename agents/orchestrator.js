@@ -67,6 +67,7 @@ export async function runOrchestrator() {
     const staleResult      = { signalsFound: 0, requestsUsed: 0, runVia: 'github-actions' }
     console.log('[orchestrator] Competitor job agent runs via GitHub Actions nightly — skipping here')
     console.log('[orchestrator] Stale job agent runs via GitHub Actions nightly — skipping here')
+    console.log('[orchestrator] Target company jobs agent: non-LinkedIn sources removed, stale jobs via GitHub Actions')
 
     agentResults.clinicalTrialMonitor = ctResult
     agentResults.fundingMaAgent       = fundingResult

@@ -22,6 +22,9 @@
 
 import { supabase, normalizeCompanyName, upsertCompany } from '../lib/supabase.js';
 
+// LinkedIn li_at cookie for company posts enrichment (best-effort)
+const LINKEDIN_LI_AT = process.env.LINKEDIN_LI_AT;
+
 // ── External API base URLs ────────────────────────────────────────────────────
 
 const NIH_REPORTER_API = 'https://api.reporter.nih.gov/v2/projects/search';
@@ -943,9 +946,79 @@ async function searchFiercePharma(companyName) {
 }
 
 /**
+ * Try to fetch LinkedIn company posts page and extract deal type / counterparty.
+ * The company posts page is likely JS-rendered (returns a short HTML shell), so
+ * this is best-effort — returns null on any failure or JS-rendered response.
+ *
+ * Slug: companyName.toLowerCase() → strip non-alphanumeric → join with '-'
+ * URL:  https://www.linkedin.com/company/{slug}/posts/
+ *
+ * @param {string} companyName
+ * @returns {Promise<{transaction_type: string|null, enrichment_source: string, source_url: string}|null>}
+ */
+async function searchLinkedInCompanyPosts(companyName) {
+  if (!LINKEDIN_LI_AT) return null;
+
+  const slug = companyName
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .trim()
+    .replace(/\s+/g, '-');
+  if (!slug) return null;
+
+  const url = `https://www.linkedin.com/company/${slug}/posts/`;
+
+  const IPO_RE   = /\bipo\b|initial public offering|nasdaq|nyse|public offering/i;
+  const ACQ_RE   = /acqui(?:re|red|sition)/i;
+  const MERGE_RE = /\bmerge[rd]?\b|merger/i;
+  const PART_RE  = /partnership|collaboration|licens/i;
+  const DEAL_RE  = /acqui|merger|ipo|initial public offering|nasdaq|nyse|partnership|collaboration|license/i;
+
+  try {
+    // 15–30 s human-like delay before each LinkedIn request
+    await sleep(15000 + Math.floor(Math.random() * 15000));
+
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent':      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cookie':          `li_at=${LINKEDIN_LI_AT}`,
+      },
+      signal: AbortSignal.timeout(10000),
+      redirect: 'follow',
+    });
+
+    if (!resp.ok) return null;
+    const html = await resp.text();
+
+    // Short response = JS-rendered shell — no useful content
+    if (html.length < 1000) {
+      console.log(`[fundingMaAgent] LinkedIn posts for "${companyName}": ${html.length} chars — JS-rendered, skipping`);
+      return null;
+    }
+
+    if (!DEAL_RE.test(html)) return null;
+
+    let transaction_type = null;
+    if (IPO_RE.test(html))   transaction_type = 'ipo';
+    else if (ACQ_RE.test(html))   transaction_type = 'acquisition';
+    else if (MERGE_RE.test(html)) transaction_type = 'merger';
+    else if (PART_RE.test(html))  transaction_type = 'partnership';
+
+    console.log(`[fundingMaAgent] LinkedIn posts enrichment for "${companyName}": type=${transaction_type}`);
+    return { transaction_type, enrichment_source: 'linkedin_company_posts', source_url: url };
+  } catch (err) {
+    console.log(`[fundingMaAgent] LinkedIn posts failed for "${companyName}": ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Orchestrate M&A signal enrichment from multiple sources in priority order:
+ * 0. LinkedIn company posts (pre-fetched; passed as liResult)
  * 1. Company IR page — highest quality (authoritative source)
- * 2. BioSpace — already integrated; also tries {transactionType} query
+ * 2. BioSpace — also tries {transactionType} query
  * 3. BioPharma Dive — trade publication
  * 4. FiercePharma — trade publication
  *
@@ -955,18 +1028,29 @@ async function searchFiercePharma(companyName) {
  * @param {string} transactionType
  * @param {string|null} existingDealAmount - from EDGAR filing text (may be null)
  * @param {string} existingAcquiredName - from EDGAR filing text (may be empty)
- * @returns {Promise<{deal_value: string|null, counterparty: string, deal_summary: string|null, source_url: string|null, source: string|null}>}
+ * @param {{transaction_type: string|null, enrichment_source: string, source_url: string}|null} liResult - pre-fetched LinkedIn result
+ * @returns {Promise<{deal_value: string|null, counterparty: string, deal_summary: string|null, source_url: string|null, source: string|null, transaction_type: string}>}
  */
-async function enrichMaSignal(entityName, transactionType, existingDealAmount, existingAcquiredName) {
+async function enrichMaSignal(entityName, transactionType, existingDealAmount, existingAcquiredName, liResult = null) {
   const result = {
-    deal_value: existingDealAmount || null,
-    counterparty: existingAcquiredName || '',
-    deal_summary: null,
-    source_url: null,
-    source: existingAcquiredName || existingDealAmount ? 'edgar' : null,
+    deal_value:       existingDealAmount || null,
+    counterparty:     existingAcquiredName || '',
+    deal_summary:     null,
+    source_url:       null,
+    source:           existingAcquiredName || existingDealAmount ? 'edgar' : null,
+    transaction_type: transactionType,
   };
 
   const needsEnrichment = () => !result.deal_value || !result.counterparty;
+
+  // Source 0: LinkedIn company posts (pre-fetched, best-effort)
+  if (liResult) {
+    if (liResult.transaction_type && !result.transaction_type) {
+      result.transaction_type = liResult.transaction_type;
+    }
+    if (liResult.source_url && !result.source_url) result.source_url = liResult.source_url;
+    if (!result.source) result.source = liResult.enrichment_source;
+  }
 
   // Source 1: Company IR page
   if (needsEnrichment()) {
@@ -1045,6 +1129,8 @@ async function enrichMaSignal(entityName, transactionType, existingDealAmount, e
 async function processMaFilings(sixMonthsAgo, today) {
   let signalsInserted = 0;
   const MA_BASE_SCORE = 27;
+  let liEnrichRequests = 0;
+  const MAX_LI_ENRICH = 5;
 
   const queries = [
     '"acquisition" "merger"',
@@ -1098,41 +1184,51 @@ async function processMaFilings(sixMonthsAgo, today) {
         console.log(`[fundingMaAgent] M&A target found: ${entityName} → ${edgarAcquiredName} (${transactionType})`);
       }
 
-      // Multi-source enrichment: IR page → BioSpace → BioPharma Dive → FiercePharma
-      const enriched = await enrichMaSignal(entityName, transactionType, edgarDealAmount, edgarAcquiredName);
+      // LinkedIn company posts enrichment (max 5 requests per run, best-effort)
+      let liResult = null;
+      if (liEnrichRequests < MAX_LI_ENRICH) {
+        liResult = await searchLinkedInCompanyPosts(entityName);
+        liEnrichRequests++;
+      }
 
-      const finalDealAmount = enriched.deal_value || null;
-      const finalAcquiredName = enriched.counterparty || edgarAcquiredName;
+      // Multi-source enrichment: LinkedIn posts → IR page → BioSpace → BioPharma Dive → FiercePharma
+      const enriched = await enrichMaSignal(entityName, transactionType, edgarDealAmount, edgarAcquiredName, liResult);
+
+      const finalDealAmount    = enriched.deal_value || null;
+      const finalAcquiredName  = enriched.counterparty || edgarAcquiredName;
+      const finalTransactionType = enriched.transaction_type || transactionType;
 
       const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, MA_BASE_SCORE);
+
       const dealSummary = enriched.deal_summary
         || `${entityName} announced an M&A transaction${finalAcquiredName ? ` to acquire ${finalAcquiredName}` : ''}${finalDealAmount ? ` valued at ${finalDealAmount}` : ''}`;
+
       const detail = {
-        company_name: entityName,
-        acquirer_name: entityName,
-        acquired_name: finalAcquiredName,
-        transaction_type: transactionType,
-        deal_value: finalDealAmount,
+        company_name:      entityName,
+        acquirer_name:     entityName,
+        acquired_name:     finalAcquiredName,
+        transaction_type:  finalTransactionType,
+        deal_value:        finalDealAmount,
         adsh,
-        funding_type: 'ma',
-        funding_amount: finalDealAmount,
-        funding_summary: dealSummary,
-        deal_summary: dealSummary,
+        funding_type:      'ma',
+        funding_amount:    finalDealAmount,
+        funding_summary:   dealSummary,
+        deal_summary:      dealSummary,
         enrichment_source: enriched.source,
-        enrichment_url: enriched.source_url,
-        date_announced: fileDate,
-        filing_url: filingUrl,
-        source_url: filingUrl,
+        enrichment_url:    enriched.source_url,
+        date_announced:    fileDate,
+        filing_url:        filingUrl,
+        source_url:        filingUrl,
         ...preHiringDetail,
       };
 
       const company = await upsertCompany(supabase, { name: entityName });
       if (company) {
         const inserted = await insertSignal({
-          company_id: company.id,
-          signal_type: 'ma_transaction',
+          company_id:    company.id,
+          signal_type:   'ma_transaction',
           priority_score: adjustedScore,
-          signal_summary: `${entityName} M&A transaction${dealAmount ? ` (${dealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+          signal_summary: `${entityName} M&A transaction${finalDealAmount ? ` (${finalDealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
           signal_detail: detail,
           source_url: filingUrl,
           created_at: new Date().toISOString(),
