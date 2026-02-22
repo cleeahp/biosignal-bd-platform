@@ -1,13 +1,13 @@
 /**
  * GET /api/test-linkedin
  *
- * Test-only endpoint: attempts a LinkedIn login and reports success/failure.
- * NEVER returns or logs credentials — only reports whether env vars are present
- * and whether a session cookie (li_at) was obtained.
+ * Test-only endpoint: checks whether the LINKEDIN_LI_AT cookie is present
+ * and valid by making a single authenticated request to /feed/.
+ * NEVER returns or logs the cookie value — only reports presence and validity.
  *
  * Response shape:
- *   { success: boolean, method: string|null, error: string|null,
- *     credentials_present: { email: boolean, password: boolean } }
+ *   { success: boolean, cookie_present: boolean, cookie_valid: boolean,
+ *     error: string|null }
  */
 
 import { LinkedInClient } from '../../lib/linkedinClient.js';
@@ -17,53 +17,50 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed — use GET' });
   }
 
-  const hasEmail    = !!process.env.LINKEDIN_EMAIL;
-  const hasPassword = !!process.env.LINKEDIN_PASSWORD;
+  const cookiePresent = !!process.env.LINKEDIN_LI_AT;
 
-  const credentialsPresent = { email: hasEmail, password: hasPassword };
-
-  if (!hasEmail || !hasPassword) {
-    const missing = [
-      !hasEmail    && 'LINKEDIN_EMAIL',
-      !hasPassword && 'LINKEDIN_PASSWORD',
-    ].filter(Boolean).join(', ');
-
+  if (!cookiePresent) {
     return res.status(200).json({
-      success:             false,
-      method:              null,
-      error:               `Credentials not configured: ${missing} missing. ` +
-                           'Add them in Vercel dashboard → Settings → Environment Variables.',
-      credentials_present: credentialsPresent,
+      success:        false,
+      cookie_present: false,
+      cookie_valid:   false,
+      error:          'LINKEDIN_LI_AT not configured. ' +
+                      'Add it in Vercel dashboard → Settings → Environment Variables. ' +
+                      'See LINKEDIN_SETUP.md for instructions on extracting your li_at cookie.',
     });
   }
 
   try {
-    const client = new LinkedInClient();
-    const ok     = await client.login();
+    const client = new LinkedInClient(process.env.LINKEDIN_LI_AT);
+    const resp   = await client.get('https://www.linkedin.com/feed/');
 
-    if (ok) {
+    if (!resp) {
       return res.status(200).json({
-        success:             true,
-        method:              client.lastLoginMethod,
-        error:               null,
-        credentials_present: credentialsPresent,
+        success:        false,
+        cookie_present: true,
+        cookie_valid:   false,
+        error:          'Request to linkedin.com/feed/ failed — see Vercel function logs.',
       });
     }
 
+    const finalUrl   = resp.url || '';
+    const cookieValid = resp.ok && !/authwall|login/i.test(finalUrl);
+
     return res.status(200).json({
-      success:             false,
-      method:              null,
-      error:               'Login failed — li_at session cookie not received. ' +
-                           'Check Vercel function logs for detailed diagnostics. ' +
-                           'LinkedIn may require manual verification of the account.',
-      credentials_present: credentialsPresent,
+      success:        cookieValid,
+      cookie_present: true,
+      cookie_valid:   cookieValid,
+      error:          cookieValid
+        ? null
+        : `Cookie expired or invalid — redirected to: ${finalUrl}. ` +
+          'Extract a fresh li_at cookie from Chrome DevTools and update the Vercel env var.',
     });
   } catch (err) {
     return res.status(200).json({
-      success:             false,
-      method:              null,
-      error:               err.message,
-      credentials_present: credentialsPresent,
+      success:        false,
+      cookie_present: true,
+      cookie_valid:   false,
+      error:          err.message,
     });
   }
 }
