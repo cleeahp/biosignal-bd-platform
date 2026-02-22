@@ -2,18 +2,21 @@
   "name": "biosignal-bd-platform",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "run-job-agents": "node scripts/runJobAgents.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
-    "next": "^14.0.0",
-    "react": "^18.0.0",
-    "react-dom": "^18.0.0",
     "cheerio": "^1.0.0-rc.12",
-    "node-cron": "^3.0.3"
+    "dotenv": "^16.4.5",
+    "next": "^14.0.0",
+    "node-cron": "^3.0.3",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
