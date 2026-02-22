@@ -1,5 +1,6 @@
 import { supabase, upsertCompany } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
+import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
 import * as cheerio from 'cheerio'
 
 const BOT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -8,6 +9,40 @@ const BOT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KH
 // skipped — we only staff US positions. Blank/Remote locations are kept.
 const NON_US_LOCATION_PATTERNS =
   /\b(Canada|Ontario|Quebec|British Columbia|Alberta|UK|United Kingdom|England|Scotland|Wales|Germany|France|Netherlands|Switzerland|Sweden|Australia|Japan|China|India|Korea|Singapore|Ireland|Denmark|Belgium|Italy|Spain|Brazil|Israel|Norway|Finland|Taiwan|New Zealand|South Africa|Mexico|Argentina)\b/i
+
+// ─── LinkedIn Source B configuration ──────────────────────────────────────────
+
+// 10 life sciences search queries — shuffled on every run
+const LINKEDIN_STALE_QUERIES = [
+  'clinical trial coordinator',
+  'clinical research associate CRA pharmaceutical',
+  'regulatory affairs specialist biotech',
+  'medical affairs manager biopharmaceutical',
+  'pharmacovigilance drug safety specialist',
+  'biostatistician clinical trials',
+  'clinical data manager life sciences',
+  'quality assurance pharmaceutical GMP',
+  'clinical project manager CRO',
+  'medical science liaison MSL',
+]
+
+// Exclude staffing/CRO competitor firms from stale job signals
+// (those belong to competitor_job_posting, not stale_job_posting)
+const COMPETITOR_FIRM_NAMES = new Set([
+  'Actalent', 'Kelly Life Sciences', 'Alku', 'Black Diamond Networks',
+  'Real Life Sciences', 'Oxford Global Resources', 'The Planet Group',
+  'ICON plc', 'Advanced Clinical', 'Randstad Life Sciences',
+  'Joule Staffing', 'Beacon Hill Staffing Group', 'ASGN Incorporated',
+  'Net2Source', 'USTech Solutions', 'Yoh Services', 'Soliant Health',
+  'Medix Staffing', 'Epic Staffing Group', 'Solomon Page',
+  'Spectra Force', 'Mindlance', 'Green Key Resources',
+  'Phaidon International', 'Peoplelink Group', 'Pacer Staffing',
+  'ZP Group', 'Meet Staffing', 'Ampcus', 'ClinLab Staffing',
+])
+
+// Academic/hospital organisations — not relevant to BD pipeline
+const ACADEMIC_PATTERNS =
+  /university|college|hospital|medical center|health system|health centre|institute|foundation|children's|memorial|research center|\bnih\b|\bcdc\b|\bnci\b|\bmgh\b/i
 
 // ─── Shared signal helpers ─────────────────────────────────────────────────────
 
@@ -397,7 +432,7 @@ export async function run() {
   const runId = runEntry?.id
 
   let signalsFound = 0
-  const sourceCounts = { biospace_biotech: 0, biospace_pharma: 0, careerSites: 0 }
+  const sourceCounts = { biospace_biotech: 0, biospace_pharma: 0, careerSites: 0, linkedin: 0 }
 
   try {
     const allJobs = []
@@ -423,10 +458,69 @@ export async function run() {
       allJobs.push(job)
     }
 
-    // Deduplicate by (company_name, source_url)
+    // ── Source 4: LinkedIn stale job search (budget: 40 requests) ─────────────
+    // Searches 10 life sciences queries shuffled on every run.
+    // Filters for days_posted >= 30, excludes competitor firms and academic orgs.
+    // Caps at 20 LinkedIn signals per run.
+    const linkedin = createLinkedInClient(40)
+    let linkedinRequestsUsed = 0
+
+    if (linkedin) {
+      const queries = shuffleArray(LINKEDIN_STALE_QUERIES)
+      const liDedup = new Set()      // dedup by job_url within this source
+      let liSignals = 0
+      const MAX_LI_SIGNALS = 20
+
+      for (const query of queries) {
+        if (liSignals >= MAX_LI_SIGNALS) break
+        if (linkedin.requestsUsed >= 40) {
+          console.log(`[StaleJobs] Budget exhausted (${linkedin.requestsUsed} requests used)`)
+          break
+        }
+
+        // Use 90-day window so we capture genuinely stale postings (30+ days old)
+        const results = await linkedin.searchJobs(query, null, 'r7776000')
+
+        if (linkedin.botDetected) {
+          console.log('[StaleJobs] Bot detected — stopping for today')
+          break
+        }
+
+        for (const job of results) {
+          if (liSignals >= MAX_LI_SIGNALS) break
+          if (!job.jobUrl || liDedup.has(job.jobUrl)) continue
+          if (job.daysPosted < 30) continue
+          if (!matchesRoleKeywords(job.title)) continue
+          if (COMPETITOR_FIRM_NAMES.has(job.company)) continue
+          if (ACADEMIC_PATTERNS.test(job.company)) continue
+          if (NON_US_LOCATION_PATTERNS.test(job.location)) continue
+
+          liDedup.add(job.jobUrl)
+          allJobs.push({
+            job_title:    job.title,
+            company_name: job.company || 'Unknown',
+            job_location: job.location || '',
+            date_posted:  null,
+            days_posted:  job.daysPosted,
+            source_url:   job.jobUrl,
+            job_board:    'linkedin',
+            _source:      'linkedin',
+          })
+          liSignals++
+        }
+      }
+
+      linkedinRequestsUsed = linkedin.requestsUsed
+      console.log(
+        `[StaleJobs] LinkedIn complete — ${linkedinRequestsUsed} requests used, ` +
+        `${liSignals} candidate jobs found`
+      )
+    }
+
+    // Deduplicate by source_url across all sources
     const dedupMap = new Map()
     for (const job of allJobs) {
-      const key = `${job.company_name.toLowerCase()}|${job.source_url}`
+      const key = job.source_url
       if (!dedupMap.has(key)) dedupMap.set(key, job)
     }
 
@@ -443,6 +537,7 @@ export async function run() {
         signalsFound++
         if (job._source === 'biospace_biotech') sourceCounts.biospace_biotech++
         else if (job._source === 'biospace_pharma') sourceCounts.biospace_pharma++
+        else if (job._source === 'linkedin') sourceCounts.linkedin++
         else sourceCounts.careerSites++
       }
     }
@@ -458,10 +553,13 @@ export async function run() {
         run_detail: {
           jobs_found_total: jobsFound,
           jobs_deduped: uniqueJobs.length,
+          linkedin_requests_used: linkedinRequestsUsed,
+          linkedin_bot_detected: linkedin?.botDetected ?? false,
           source_counts: {
             biospace_biotech_raw: allJobs.filter((j) => j._source === 'biospace_biotech').length,
-            biospace_pharma_raw: allJobs.filter((j) => j._source === 'biospace_pharma').length,
-            career_sites_raw: allJobs.filter((j) => j._source === 'careerSites').length,
+            biospace_pharma_raw:  allJobs.filter((j) => j._source === 'biospace_pharma').length,
+            career_sites_raw:     allJobs.filter((j) => j._source === 'careerSites').length,
+            linkedin_raw:         allJobs.filter((j) => j._source === 'linkedin').length,
           },
           signals_by_source: sourceCounts,
         },
@@ -469,10 +567,10 @@ export async function run() {
       .eq('id', runId)
 
     console.log(
-      `Stale Job Tracker complete — signals: ${signalsFound}, jobs found: ${jobsFound}`
+      `[StaleJobs] Complete — ${linkedinRequestsUsed} requests used, ${signalsFound} signals saved`
     )
 
-    return { signalsFound, jobsFound, sourceCounts }
+    return { signalsFound, requestsUsed: linkedinRequestsUsed, jobsFound, sourceCounts }
   } catch (err) {
     await supabase
       .from('agent_runs')

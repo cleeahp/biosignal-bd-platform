@@ -1,6 +1,6 @@
 import { supabase, upsertCompany } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
-import { createLinkedInClient } from '../lib/linkedinClient.js'
+import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
 import * as cheerio from 'cheerio'
 
 // ─── Competitor firms seed data ────────────────────────────────────────────────
@@ -554,6 +554,30 @@ async function persistCompetitorSignal(firmName, jobUrl, jobTitle, jobLocation, 
   return true
 }
 
+// ─── LinkedIn job description fetcher ─────────────────────────────────────────
+
+/**
+ * Fetch the first 500 chars of readable text from a LinkedIn job page.
+ * Uses delay type 'fetch'. Returns '' on any failure.
+ *
+ * @param {import('../lib/linkedinClient.js').LinkedInClient} client
+ * @param {string} jobUrl
+ * @returns {Promise<string>}
+ */
+async function fetchLinkedInJobDescription(client, jobUrl) {
+  if (!jobUrl || !client?.isAvailable) return ''
+  try {
+    const resp = await client.get(jobUrl, 'fetch')
+    if (!resp?.ok) return ''
+    const html = await resp.text()
+    const $ = cheerio.load(html)
+    $('script, style, nav, footer, header').remove()
+    return $.text().replace(/\s+/g, ' ').trim().slice(0, 500)
+  } catch {
+    return ''
+  }
+}
+
 // ─── Main export ───────────────────────────────────────────────────────────────
 
 export async function run() {
@@ -575,7 +599,7 @@ export async function run() {
     const seedResult = await seedCompetitorFirms()
     console.log(`Competitor seed: ${seedResult.seeded} inserted, ${seedResult.skipped} skipped`)
 
-    // ── Step 2: Load active firms from DB ───────────────────────────────────
+    // ── Step 2: Load active firms from DB and shuffle order ─────────────────
     const { data: allFirms, error: firmsErr } = await supabase
       .from('competitor_firms')
       .select('name, careers_url')
@@ -584,79 +608,96 @@ export async function run() {
 
     if (firmsErr) throw new Error(`Failed to load competitor firms: ${firmsErr.message}`)
 
-    const firmsToCheck = allFirms || []
-    console.log(`Competitor Job Board: processing ${firmsToCheck.length} active firms`)
+    // Shuffle so we never search in the same order twice
+    const firmsToCheck = shuffleArray(allFirms || [])
+    console.log(`Competitor Job Board: processing ${firmsToCheck.length} active firms (shuffled)`)
 
     let firmsChecked = 0
 
-    // ── Step 3: Initialise LinkedIn client (Source A) ────────────────────────
-    // Max 10 LinkedIn requests per run (one per firm). Returns null when
-    // LINKEDIN_EMAIL / LINKEDIN_PASSWORD are not set — fails gracefully.
-    let linkedin = null;
-    try {
-      linkedin = await createLinkedInClient()
-      if (linkedin) {
-        console.log('[competitorJobBoard] LinkedIn client ready — will supplement career-page results')
-      }
-    } catch (err) {
-      console.log(`[competitorJobBoard] LinkedIn init error: ${err.message} — continuing without LinkedIn`)
+    // ── Step 3: Initialise LinkedIn client — budget: 60 requests ────────────
+    const linkedin = createLinkedInClient(60)
+    if (linkedin) {
+      console.log('[competitorJobBoard] LinkedIn client ready — budget 60 requests')
+    } else {
+      console.log('[competitorJobBoard] LinkedIn unavailable — career-page sources only')
     }
 
-    // ── Step 4: For each firm, fetch jobs and emit signals ───────────────────
+    const ROLE_KEYWORDS = 'clinical trial coordinator regulatory affairs CRA'
+
+    // ── Step 4: For each firm, fetch career-page jobs + LinkedIn jobs ────────
     for (const firm of firmsToCheck) {
       firmsChecked++
-      const jobs = await fetchCareerPageJobs(firm.careers_url, firm.name)
 
-      if (jobs.length > 0) {
-        // Emit one signal per matching job (capped at 5 per firm per run)
-        for (const job of jobs.slice(0, 5)) {
+      // Career-page jobs (ATS / JSON-LD / HTML scrape)
+      const jobs = await fetchCareerPageJobs(firm.careers_url, firm.name)
+      for (const job of jobs.slice(0, 5)) {
+        const inserted = await persistCompetitorSignal(
+          firm.name,
+          job.applyUrl || firm.careers_url,
+          job.title,
+          job.location || '',
+          job.description || '',
+          job.ats_source || '',
+        )
+        if (inserted) signalsFound++
+      }
+      console.log(`${firm.name}: ${jobs.length} career-page jobs`)
+
+      // ── LinkedIn Source A ─────────────────────────────────────────────────
+      if (linkedin?.isAvailable) {
+        // Check budget before each firm
+        if (linkedin.requestsUsed >= 60) {
+          console.log(`[CompetitorJobs] Budget exhausted (${linkedin.requestsUsed} requests used)`)
+          break
+        }
+
+        const liJobs = await linkedin.searchJobs(ROLE_KEYWORDS, firm.name)
+
+        if (linkedin.botDetected) {
+          console.log('[CompetitorJobs] Bot detected — stopping for today')
+          break
+        }
+
+        let liInserted = 0
+        for (const job of liJobs.slice(0, 3)) {
+          if (!matchesRoleKeywords(job.title)) continue
+          if (NON_US_JOB_LOC.test(job.location)) continue
+
+          // Fetch job description page with 'fetch' delay
+          let description = ''
+          if (job.jobUrl && linkedin.isAvailable) {
+            description = await fetchLinkedInJobDescription(linkedin, job.jobUrl)
+            if (linkedin.botDetected) {
+              console.log('[CompetitorJobs] Bot detected during description fetch — stopping for today')
+              break
+            }
+          }
+
           const inserted = await persistCompetitorSignal(
             firm.name,
-            job.applyUrl || firm.careers_url,
+            job.jobUrl || firm.careers_url,
             job.title,
             job.location || '',
-            job.description || '',
-            job.ats_source || '',
+            description,
+            'linkedin',
           )
-          if (inserted) signalsFound++
+          if (inserted) { signalsFound++; liInserted++ }
         }
+
+        if (liInserted > 0) {
+          console.log(`${firm.name}: +${liInserted} LinkedIn jobs`)
+        }
+
+        if (linkedin.botDetected) break
       }
 
-      // ── LinkedIn Source A: supplement with LinkedIn job search ─────────────
-      // Cap at first 10 firms to stay within the 10-request-per-run limit.
-      if (linkedin?.isAvailable && firmsChecked <= 10) {
-        try {
-          const ROLE_KEYWORDS = 'clinical trial coordinator regulatory affairs CRA'
-          const liJobs = await linkedin.searchJobs(ROLE_KEYWORDS, firm.name)
-          let liInserted = 0
-          for (const job of liJobs.slice(0, 5)) {
-            if (!matchesRoleKeywords(job.title)) continue
-            if (NON_US_JOB_LOC.test(job.location)) continue
-            const inserted = await persistCompetitorSignal(
-              firm.name,
-              job.jobUrl || firm.careers_url,
-              job.title,
-              job.location || '',
-              '',
-              'linkedin',
-            )
-            if (inserted) { signalsFound++; liInserted++ }
-          }
-          if (liInserted > 0) {
-            console.log(`${firm.name}: +${liInserted} LinkedIn jobs`)
-          }
-        } catch (err) {
-          console.log(`[competitorJobBoard] LinkedIn error for ${firm.name}: ${err.message}`)
-        }
-      }
-
-      console.log(`${firm.name}: ${jobs.length} matching jobs (career page)`)
-
-      // 400ms delay between firms — balanced against Vercel 300s timeout
+      // Small pause between firms for career-page fetches
       if (firmsChecked < firmsToCheck.length) {
         await new Promise((r) => setTimeout(r, 400))
       }
     }
+
+    const requestsUsed = linkedin?.requestsUsed ?? 0
 
     await supabase
       .from('agent_runs')
@@ -667,6 +708,8 @@ export async function run() {
         run_detail: {
           firms_checked: firmsChecked,
           total_active_firms: allFirms?.length ?? 0,
+          linkedin_requests_used: requestsUsed,
+          linkedin_bot_detected: linkedin?.botDetected ?? false,
           seed_result: {
             seeded: seedResult.seeded,
             skipped: seedResult.skipped,
@@ -676,10 +719,13 @@ export async function run() {
       })
       .eq('id', runId)
 
-    console.log(`Competitor Job Board Agent complete — signals: ${signalsFound}, firms checked: ${firmsChecked}`)
+    console.log(
+      `[CompetitorJobs] Complete — ${requestsUsed} requests used, ${signalsFound} signals saved`
+    )
 
     return {
       signalsFound,
+      requestsUsed,
       firmsChecked,
       seedResult: {
         seeded: seedResult.seeded,
