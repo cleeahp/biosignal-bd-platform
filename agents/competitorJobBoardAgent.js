@@ -44,6 +44,226 @@ const COMPETITOR_FIRMS_SEED = [
 const NON_US_JOB_LOC =
   /\b(Canada|UK|United Kingdom|Germany|France|Netherlands|Switzerland|Sweden|Australia|Japan|China|India|Korea|Singapore|Ireland|Denmark|Belgium|Italy|Spain|Brazil|Israel|Norway|Finland|Taiwan)\b/i
 
+// ─── Client-inference helpers ──────────────────────────────────────────────────
+
+// Staffing/recruiting firm patterns — these must be filtered OUT of inference results
+const STAFFING_PATTERNS =
+  /\b(staffing|recruiting|recruitment|search|talent|workforce|placement|resourcing|executive search|professional services)\b/i
+
+// Academic / non-industry orgs
+const ACADEMIC_PATTERNS =
+  /university|college|hospital|medical cent(?:er|re)|health system|institute|foundation|children's|memorial|research cent(?:er|re)|\bnih\b|\bcdc\b/i
+
+// Life sciences company indicator (used to score candidates)
+const LIFE_SCIENCES_CO =
+  /pharma|biotech|therapeutics|biosciences|biologics|genomics|oncology|biopharma|biopharmaceutical|medtech|diagnostics/i
+
+// Regexp that matches title segments (dash-separated) that contain location / phase / modifier noise
+const TITLE_NOISE_RE =
+  /\b(?:remote|us.based|home.based|telecommute|nationwide|multiple locations|phase\s+[IVX]+|fsp|full.service|hybrid|onsite|on.site|contract|travel|global|americas)\b|\b[A-Z][a-z]{3,},\s*[A-Z]{2}\b/i
+
+/**
+ * Strip location, phase, and modifier noise from a staffing job title so it can
+ * be used as a LinkedIn cross-reference search query.
+ *
+ * Removes: dash-separated location/phase segments, parenthetical text, trailing
+ * roman numerals, and the competitor firm name. Appends "pharmaceutical" for context.
+ *
+ * @param {string} title
+ * @param {string} competitorName
+ * @returns {string}
+ */
+function cleanJobTitle(title, competitorName) {
+  if (!title) return 'clinical research pharmaceutical'
+
+  // Split on em-dash / en-dash / hyphen separators, keep substantive segments
+  const segments = title.split(/\s*[-–—]\s*/).filter(seg => {
+    const s = seg.trim()
+    if (!s) return false
+    if (TITLE_NOISE_RE.test(s)) return false           // location, phase, FSP, etc.
+    if (/^[IVX]{1,4}$/.test(s)) return false           // pure roman numeral segment
+    return true
+  })
+
+  let cleaned = segments.join(' ')
+
+  // Remove parenthetical text: (Remote), (Contract), (FSP), etc.
+  cleaned = cleaned.replace(/\([^)]+\)/g, '')
+
+  // Remove trailing roman numerals: "CRA II" → "CRA"
+  cleaned = cleaned.replace(/\s+(?:I{1,3}|IV|VI{0,3})\s*$/, '')
+
+  // Remove the competitor firm's first significant word (prevents it showing up in results)
+  if (competitorName) {
+    const firstSigWord = competitorName.split(/\s+/).find(w => w.length > 4)
+    if (firstSigWord) {
+      cleaned = cleaned.replace(
+        new RegExp(`\\b${firstSigWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'), '',
+      )
+    }
+  }
+
+  // Normalize
+  cleaned = cleaned.replace(/[,;]+/g, ' ').replace(/\s+/g, ' ').trim()
+
+  // Append pharma context for LinkedIn's relevance ranking
+  if (!/pharma|biotech|therapeutics|clinical/i.test(cleaned)) cleaned += ' pharmaceutical'
+
+  return cleaned.trim() || 'clinical research pharmaceutical'
+}
+
+/**
+ * Score a LinkedIn search result as a candidate end client for our competitor signal.
+ *
+ * @param {object} p
+ * @param {string} p.candidateCompany   - Company name from LinkedIn result
+ * @param {string} p.candidateTitle     - Job title from LinkedIn result
+ * @param {string} p.candidateLocation  - Location from LinkedIn result
+ * @param {string} p.originalTitle      - The staffing job title
+ * @param {string} p.originalLocation   - The staffing job location
+ * @param {Set<string>} p.knownCompanyNames - Lowercased company names from BioSignal DB
+ * @returns {number}
+ */
+function scoreCandidate({ candidateCompany, candidateTitle, candidateLocation, originalTitle, originalLocation, knownCompanyNames }) {
+  let score = 0
+
+  // +1 for life-sciences company name
+  if (LIFE_SCIENCES_CO.test(candidateCompany)) score += 1
+
+  // +3 for job-title keyword overlap (at least 2 shared tokens ≥ 5 chars)
+  const origTokens = new Set(
+    originalTitle.toLowerCase().split(/\W+/).filter(t => t.length >= 5),
+  )
+  const overlap = (candidateTitle || '').toLowerCase().split(/\W+/)
+    .filter(t => t.length >= 5 && origTokens.has(t)).length
+  if (overlap >= 2) score += 3
+  else if (overlap >= 1) score += 1
+
+  // +3 for location overlap (any token ≥ 4 chars in common)
+  if (originalLocation && candidateLocation) {
+    const origTokens2 = originalLocation.toLowerCase().split(/\W+/).filter(t => t.length >= 4)
+    const candLoc = candidateLocation.toLowerCase()
+    if (origTokens2.some(t => candLoc.includes(t))) score += 3
+  }
+
+  // +2 for known company already in BioSignal DB
+  const normCand = candidateCompany.toLowerCase().replace(/[,.]/g, '').replace(/\s+/g, ' ').trim()
+  const isKnown = knownCompanyNames.has(normCand) ||
+    [...knownCompanyNames].some(n => n.length >= 8 && normCand.startsWith(n.slice(0, 8)))
+  if (isKnown) score += 2
+
+  return score
+}
+
+/**
+ * Try to infer the end client from the job description text alone (no extra requests).
+ * Looks for phrases like "on behalf of [Company]", "our client", "end client:".
+ * Falls back to checking if any known BioSignal company appears in the description.
+ *
+ * @param {string}       description
+ * @param {string}       competitorName
+ * @param {Set<string>}  knownCompanyNames  Lowercased names from companies table
+ * @returns {{ inferred_client, client_confidence, client_inference_method }|null}
+ */
+function inferClientFromDescription(description, competitorName, knownCompanyNames) {
+  if (!description) return null
+  const filerPrefix = (competitorName || '').toLowerCase().slice(0, 8)
+
+  const highConfidencePatterns = [
+    /\bon\s+behalf\s+of\s+([A-Z][A-Za-z0-9\s&,.\-]+?)(?:\s*[.,\(]|$)/,
+    /end\s+client\s*:?\s+([A-Z][A-Za-z0-9\s&,.\-]+?)(?:\s*[.,\(]|$)/i,
+    /client\s*:\s+([A-Z][A-Za-z0-9\s&,.\-]+?)(?:\s*[.,\(]|$)/i,
+    /our\s+client[,\s]+([A-Z][A-Za-z0-9\s&,.\-]+?)(?:\s*[,.\(]|is\b|has\b)/,
+    /placing\s+a\s+\w+\s+with\s+([A-Z][A-Za-z0-9\s&,.\-]+?)(?:\s*[.,\(]|$)/i,
+    /opportunity\s+with\s+([A-Z][A-Za-z0-9\s&,.\-]+?)(?:\s*[.,\(]|$)/i,
+  ]
+  for (const pat of highConfidencePatterns) {
+    const m = description.match(pat)
+    if (m?.[1]) {
+      const name = m[1].trim().replace(/\s+/g, ' ').slice(0, 80)
+      if (name.length >= 3 && !name.toLowerCase().startsWith(filerPrefix) && LIFE_SCIENCES_CO.test(name)) {
+        return { inferred_client: name, client_confidence: 'High', client_inference_method: 'description_explicit' }
+      }
+    }
+  }
+
+  // Fallback: known company name anywhere in description
+  const descLower = description.toLowerCase()
+  for (const compName of knownCompanyNames) {
+    if (compName.length >= 6 && descLower.includes(compName)) {
+      const idx = descLower.indexOf(compName)
+      const rawName = description.slice(idx, idx + compName.length)
+      return { inferred_client: rawName, client_confidence: 'Low', client_inference_method: 'description_company_match' }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Infer the end client via a LinkedIn cross-reference search.
+ * Searches for similar open roles at NON-staffing companies; the company posting
+ * the most-matching role is likely the end client.
+ *
+ * @param {object}       linkedin          LinkedInClient instance
+ * @param {string}       jobTitle          Original job title
+ * @param {string}       location          Job location
+ * @param {string}       competitorName    Staffing firm name
+ * @param {Set<string>}  knownCompanyNames Lowercased names from BioSignal DB
+ * @param {Set<string>}  staffingNames     Lowercased staffing firm names to exclude
+ * @returns {Promise<{ inferred_client, client_confidence, client_inference_method }|null>}
+ */
+async function inferClientViaLinkedIn(linkedin, jobTitle, location, competitorName, knownCompanyNames, staffingNames) {
+  if (!linkedin?.isAvailable) return null
+
+  const searchQuery = cleanJobTitle(jobTitle, competitorName)
+  console.log(`[ClientInference] LinkedIn query: "${searchQuery}"`)
+
+  let results
+  try {
+    // No time-range filter and sort by Relevance to get best title matches
+    results = await linkedin.searchJobs(searchQuery, null, '')
+  } catch (err) {
+    console.log(`[ClientInference] Search threw: ${err.message}`)
+    return null
+  }
+  if (linkedin.botDetected || !results?.length) return null
+
+  const competitorPrefix = (competitorName || '').toLowerCase().slice(0, 8)
+  const scored = []
+
+  for (const r of results) {
+    const company = (r.company || '').trim()
+    if (!company) continue
+    const compLower = company.toLowerCase()
+
+    // Must not be a staffing firm
+    if ([...staffingNames].some(n => n.length >= 6 && (compLower.includes(n.slice(0, 8)) || n.startsWith(compLower.slice(0, 8))))) continue
+    if (STAFFING_PATTERNS.test(company)) continue
+    // Must not be academic
+    if (ACADEMIC_PATTERNS.test(company)) continue
+    // Must not be the competitor itself
+    if (compLower.startsWith(competitorPrefix)) continue
+
+    const score = scoreCandidate({
+      candidateCompany:  company,
+      candidateTitle:    r.title || '',
+      candidateLocation: r.location || '',
+      originalTitle:     jobTitle,
+      originalLocation:  location,
+      knownCompanyNames,
+    })
+    if (score > 0) scored.push({ company, score })
+  }
+
+  if (!scored.length) return null
+  scored.sort((a, b) => b.score - a.score)
+  const best = scored[0]
+  const confidence = best.score >= 6 ? 'High' : best.score >= 3 ? 'Medium' : 'Low'
+  console.log(`[ClientInference] Best match: "${best.company}" score=${best.score} confidence=${confidence}`)
+  return { inferred_client: best.company, client_confidence: confidence, client_inference_method: 'linkedin_cross_reference' }
+}
+
 // ─── Shared signal helpers ─────────────────────────────────────────────────────
 
 async function signalExists(companyId, signalType, sourceUrl) {
@@ -102,7 +322,7 @@ async function seedCompetitorFirms() {
 
 // ─── Persist a single competitor activity signal ───────────────────────────────
 
-async function persistCompetitorSignal(firmName, jobUrl, jobTitle, jobLocation, jobDescription = '') {
+async function persistCompetitorSignal(firmName, jobUrl, jobTitle, jobLocation, jobDescription = '', clientData = {}) {
   if (jobLocation && NON_US_JOB_LOC.test(jobLocation)) {
     console.log(`[competitorJobBoard] FILTERED (non-US): "${jobLocation}" — ${jobTitle}`)
     return false
@@ -125,13 +345,16 @@ async function persistCompetitorSignal(firmName, jobUrl, jobTitle, jobLocation, 
     signal_type:     'competitor_job_posting',
     signal_summary:  `${firmName}: "${jobTitle}"`,
     signal_detail: {
-      job_title:       jobTitle,
-      job_location:    jobLocation,
-      posting_date:    today,
-      competitor_firm: firmName,
-      job_url:         jobUrl || '',
-      job_description: jobDescription,
-      ats_source:      'linkedin',
+      job_title:               jobTitle,
+      job_location:            jobLocation,
+      posting_date:            today,
+      competitor_firm:         firmName,
+      job_url:                 jobUrl || '',
+      job_description:         jobDescription,
+      ats_source:              'linkedin',
+      inferred_client:         clientData.inferred_client         || null,
+      client_confidence:       clientData.client_confidence       || null,
+      client_inference_method: clientData.client_inference_method || null,
     },
     source_url:         sourceUrl,
     source_name:        'LinkedIn',
@@ -183,8 +406,30 @@ export async function run() {
     const firmsToCheck = shuffleArray(allFirms || [])
     console.log(`[CompetitorJobs] Processing ${firmsToCheck.length} active firms (shuffled) — LinkedIn only`)
 
-    // ── Step 3: Initialise LinkedIn client — budget: 60 requests ────────────
-    const linkedin = createLinkedInClient(60)
+    // Build a Set of staffing firm names for client-inference filtering
+    const staffingNames = new Set(COMPETITOR_FIRMS_SEED.map(f => f.name.toLowerCase()))
+    if (allFirms) allFirms.forEach(f => staffingNames.add(f.name.toLowerCase()))
+
+    // Load known company names from BioSignal DB for scoring/description matching
+    // (best-effort — if it fails, inference continues without known-company bonus)
+    const knownCompanyNames = new Set()
+    try {
+      const { data: companies } = await supabase.from('companies').select('name').limit(2000)
+      for (const c of companies || []) {
+        if (c.name) knownCompanyNames.add(c.name.toLowerCase().replace(/[,.]/g, '').replace(/\s+/g, ' ').trim())
+      }
+      console.log(`[CompetitorJobs] Loaded ${knownCompanyNames.size} known companies for client inference`)
+    } catch (err) {
+      console.log(`[CompetitorJobs] Could not load known companies: ${err.message}`)
+    }
+
+    // ── Step 3: Initialise LinkedIn client — budget: 100 requests ───────────
+    // Budget breakdown (approx per run):
+    //   ~30 searchJobs calls (one per firm)
+    //   ~30 fetchJobDescription calls (1 per qualifying job)
+    //   ~20 inferClientViaLinkedIn cross-reference searches
+    //   Total: ~80 — fits in budget of 100
+    const linkedin = createLinkedInClient(100)
     if (!linkedin) {
       console.log('[CompetitorJobs] LinkedIn unavailable — nothing to do')
       await supabase.from('agent_runs').update({
@@ -209,11 +454,12 @@ export async function run() {
     ]
     let firmsChecked = 0
     let firmIndex = 0
+    let totalClientInferences = 0  // cap LinkedIn client-inference at 20 per run
 
     // ── Step 4: LinkedIn search for each firm — no career page fetching ──────
     for (const firm of firmsToCheck) {
       if (!linkedin.isAvailable) break
-      if (linkedin.requestsUsed >= 60) {
+      if (linkedin.requestsUsed >= 100) {
         console.log(`[CompetitorJobs] Budget exhausted (${linkedin.requestsUsed} requests used)`)
         break
       }
@@ -244,8 +490,26 @@ export async function run() {
           }
         }
 
+        // ── Client inference ──────────────────────────────────────────────────
+        // Step 1: Try LinkedIn cross-reference (only for first 20 signals, budget permitting)
+        let clientData = null
+        if (totalClientInferences < 20 && linkedin.isAvailable && linkedin.requestsUsed < 85) {
+          clientData = await inferClientViaLinkedIn(
+            linkedin, job.title, job.location || '', firm.name, knownCompanyNames, staffingNames,
+          )
+          if (clientData) totalClientInferences++
+          if (linkedin.botDetected) break
+        }
+        // Step 2: Fallback — parse description text (no extra request)
+        if (!clientData) {
+          clientData = inferClientFromDescription(description, firm.name, knownCompanyNames)
+        }
+        if (clientData) {
+          console.log(`[CompetitorJobs] Client inferred: "${clientData.inferred_client}" (${clientData.client_confidence}, ${clientData.client_inference_method})`)
+        }
+
         const inserted = await persistCompetitorSignal(
-          firm.name, job.jobUrl || '', job.title, job.location || '', description,
+          firm.name, job.jobUrl || '', job.title, job.location || '', description, clientData || {},
         )
         if (inserted) { signalsFound++; liInserted++ }
       }
