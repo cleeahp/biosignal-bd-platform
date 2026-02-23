@@ -77,15 +77,21 @@ const LINKEDIN_STALE_QUERIES = [
 
 // Exclude staffing/CRO competitor firms — those belong to competitor_job_posting
 const COMPETITOR_FIRM_NAMES = new Set([
-  'Actalent', 'Kelly Life Sciences', 'Alku', 'Black Diamond Networks',
+  'Actalent', 'Kelly', 'Alku', 'Black Diamond Networks',
   'Real Life Sciences', 'Oxford Global Resources', 'The Planet Group',
-  'ICON plc', 'Advanced Clinical', 'Randstad Life Sciences',
-  'Joule Staffing', 'Beacon Hill Staffing Group', 'ASGN Incorporated',
+  'Advanced Clinical', 'Randstad', 'Joule Staffing',
+  'Beacon Hill Staffing Group', 'ASGN Incorporated',
   'Net2Source', 'USTech Solutions', 'Yoh Services', 'Soliant Health',
-  'Medix Staffing', 'Epic Staffing Group', 'Solomon Page',
+  'Medix', 'Epic Staffing Group', 'Solomon Page',
   'Spectra Force', 'Mindlance', 'Green Key Resources',
   'Phaidon International', 'Peoplelink Group', 'Pacer Staffing',
   'ZP Group', 'Meet Staffing', 'Ampcus', 'ClinLab Staffing',
+  'Adecco', 'Manpower', 'Hays', 'Insight Global',
+  'Planet Pharma', 'Proclinical', 'Real Staffing',
+  'GForce Life Sciences', 'EPM Scientific', 'ClinLab Solutions Group',
+  'Sci.bio', 'Gemini Staffing Consultants', 'Orbis Clinical',
+  'Scientific Search', 'TriNet Pharma', 'The Fountain Group',
+  'Hueman RPO',
 ])
 
 // Academic/hospital organisations — not relevant to BD pipeline
