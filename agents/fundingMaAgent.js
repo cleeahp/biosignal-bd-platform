@@ -702,13 +702,22 @@ function classifyTransactionType(text) {
   if (/surviving corporation/.test(lower)) scores.merger += 2;
 
   // ── PRODUCT ACQUISITION (acquiring specific drug/compound rights, not a whole company) ─
+  // hasCompoundName: uppercase letter codes like LYL273, GCC19CART, VLX-1005, MK-8591
   const hasCompoundName = /\b[A-Z]{2,6}[-]?\d{2,}[A-Z]{0,5}\b/.test(text);
+  // Core "acquiring rights to" patterns — checked BEFORE partnership to avoid
+  // licensing language (e.g. "exclusive license") winning over compound acquisition
   if (/acquir\w*\s+\w*\s*rights?\s+to\b/i.test(text) && hasCompoundName) scores.product_acquisition += 6;
+  if (/acquir\w+\s+(?:global|exclusive|worldwide|all)\s+rights?\b/i.test(text)) scores.product_acquisition += 6;
   if (/global\s+rights?\s+to\b/i.test(text) && hasCompoundName) scores.product_acquisition += 5;
+  if (/exclusive\s+rights?\s+to\b/i.test(text) && hasCompoundName) scores.product_acquisition += 5;
+  if (/acquired?\s+rights?\s+to\b/i.test(text) && hasCompoundName) scores.product_acquisition += 5;
   if (/asset\s+purchase\s+agreement/.test(lower) && hasCompoundName) scores.product_acquisition += 5;
   if (/sold\s+all\s+or\s+substantially\s+all\s+of\s+its\s+right\s+title/.test(lower)) scores.product_acquisition += 5;
+  if (/right[,]?\s+title\s+and\s+interest/i.test(text) && hasCompoundName) scores.product_acquisition += 5;
   if (/exclusive.{0,80}rights?.{0,80}from\s+[A-Z]/i.test(text) && hasCompoundName) scores.product_acquisition += 4;
+  if (hasCompoundName && /\bacquir\w+\b/i.test(text) && /\bright\b/i.test(text)) scores.product_acquisition += 4;
   if (/\bseller\b/.test(lower) && hasCompoundName) scores.product_acquisition += 3;
+  if (hasCompoundName && /\bacquir\w+\b/i.test(text)) scores.product_acquisition += 2;
 
   // ── COMPANY ACQUISITION ──────────────────────────────────────────────────────
   if (/asset\s+purchase\s+agreement/.test(lower) && !hasCompoundName) scores.acquisition += 4;
@@ -796,12 +805,16 @@ function extractProductSeller(text, filerName) {
   const patterns = [
     // "[Company] ("Seller")" or "[Company] (the "Seller")"
     /([A-Z][A-Za-z0-9\s,\.&\-]+?)\s*\(["']?(?:the\s+)?["']?Seller["']?\)/,
+    // "acquiring [asset] from [Company] ([abbreviation])" — explicit "from" near "acquiring"
+    /acquir\w+\s+(?:global\s+|exclusive\s+|worldwide\s+)?rights?\s+to\s+\S+\s+from\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/i,
     // "acquiring ... rights to [COMPOUND] ... from [Company]"
-    /acquiring.{0,300}rights?\s+to.{0,200}from\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/i,
+    /acquir\w+.{0,300}rights?\s+to.{0,200}from\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/i,
     // "rights to [COMPOUND] from [Company]"
     /rights?\s+to\s+\S+.{0,150}from\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/i,
     // "purchased from [Company]" / "acquired from [Company]"
     /(?:purchased?|acquired?)\s+from\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/i,
+    // "licensed from [Company]" / "in-licensed from [Company]"
+    /(?:in-?licens\w+|licens\w+)\s+from\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/i,
   ];
 
   for (const pat of patterns) {
@@ -844,6 +857,52 @@ function extractDrugAsset(text) {
     if (m?.[1]) return m[1];
   }
   return null;
+}
+
+/**
+ * Broad counterparty extractor: last-resort search for a deal partner when
+ * type-specific extractors return nothing. Searches the first 2000 chars of
+ * the filing for common patterns like:
+ *   - '(the "Seller")' / '(the "Purchaser")' near a company name
+ *   - 'with [Company Name]' in opening paragraphs
+ *   - 'between [Company A] and [Company B]' patterns
+ *
+ * @param {string} text       - Plain text from 8-K filing
+ * @param {string} filerName  - Filing company (exclude from results)
+ * @returns {string}  Counterparty name or ''
+ */
+function extractCounterparty(text, filerName) {
+  if (!text) return '';
+  const filerPrefix = filerName.toLowerCase().slice(0, 10);
+  const snippet = text.slice(0, 2000);
+
+  const patterns = [
+    // '(the "Seller")' or '(the "Purchaser")' with preceding company name
+    /([A-Z][A-Za-z0-9\s,\.&\-]+?)\s*\(["']?(?:the\s+)?["']?(?:Seller|Purchaser|Buyer|Licensor|Counterparty)["']?\)/,
+    // 'entered into ... with [Company]' (partnership/deal announcement)
+    /entered\s+into\s+[^.]{0,120}with\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/,
+    // 'agreement with [Company]' in opening
+    /agreement\s+with\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/,
+    // 'between [Company A] and [Company B]' — take the one that isn't the filer
+    /between\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)\s+and\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/,
+    // '"Company Name" appearing in quotes after "with"
+    /with\s+"([A-Z][A-Za-z0-9\s,\.&\-]+?)"/,
+  ];
+
+  for (const pat of patterns) {
+    const m = snippet.match(pat);
+    if (m) {
+      // For "between A and B", pick the one that doesn't start with filerPrefix
+      const candidates = m.slice(1).filter(Boolean);
+      for (const cand of candidates) {
+        const name = cand.trim().replace(/\s+/g, ' ').slice(0, 80);
+        if (name.length >= 3 && !name.toLowerCase().startsWith(filerPrefix)) {
+          return name;
+        }
+      }
+    }
+  }
+  return '';
 }
 
 /**
@@ -910,6 +969,11 @@ function extractDealDetails(text, filerName) {
     // ipo
     acquirer_name = filerName;
     acquired_name = '';
+  }
+
+  // FIX 3C: If counterparty is still empty for non-IPO types, try broader search
+  if (transaction_type !== 'ipo' && !acquired_name) {
+    acquired_name = extractCounterparty(text, filerName);
   }
 
   // Construct a 1-2 sentence deal summary
