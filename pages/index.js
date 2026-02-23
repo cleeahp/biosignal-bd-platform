@@ -32,10 +32,11 @@ const FUNDING_TYPE_CONFIG = {
 
 // Badge config for ma_transaction signals keyed by transaction_type
 const MA_TRANSACTION_TYPE_CONFIG = {
-  ipo:          { label: 'IPO',         color: 'bg-emerald-600' },
-  acquisition:  { label: 'Acquisition', color: 'bg-orange-600' },
-  merger:       { label: 'Merger',      color: 'bg-amber-600' },
-  partnership:  { label: 'Partnership', color: 'bg-blue-600' },
+  ipo:                 { label: 'IPO',                 color: 'bg-emerald-600' },
+  acquisition:         { label: 'Acquisition',         color: 'bg-orange-600' },
+  product_acquisition: { label: 'Product Acquisition', color: 'bg-violet-600' },
+  merger:              { label: 'Merger',              color: 'bg-amber-600' },
+  partnership:         { label: 'Partnership',         color: 'bg-blue-600' },
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -418,9 +419,10 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
                         const acquirer = d.acquirer_name || signal.companies?.name || '—'
                         const acquired = d.acquired_name
                         if (tt === 'ipo') return acquirer
-                        if (tt === 'merger') return acquired ? `${acquirer} + ${acquired}` : acquirer
+                        // merger: acquirer_name=Parent, acquired_name=target (filer)
+                        if (tt === 'merger') return acquired ? `${acquirer} → ${acquired}` : acquirer
                         if (tt === 'partnership') return acquired ? `${acquirer} ↔ ${acquired}` : acquirer
-                        // acquisition (default)
+                        // acquisition + product_acquisition: acquirer → target/seller
                         return acquired ? `${acquirer} → ${acquired}` : `${acquirer} (details TBD)`
                       })() : signal.companies?.name || d.company_name || '—'}
                     </span>

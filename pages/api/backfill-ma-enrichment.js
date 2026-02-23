@@ -43,7 +43,7 @@ function extractAmount(text) {
   return null
 }
 
-function extractMaTarget(text, acquirerName) {
+function extractMaTarget(text, filerName) {
   if (!text) return ''
   const patterns = [
     /definitive\s+agreement\s+to\s+acqui(?:re|red)\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*,|\s+for\s|\s+in\s+a|\s*\(|\.)/,
@@ -55,12 +55,12 @@ function extractMaTarget(text, acquirerName) {
     /merger\s+with\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/i,
     /combination\s+with\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*,|\s+for\s|\s*\(|\.|$)/i,
   ]
-  const acquirerPrefix = acquirerName.toLowerCase().slice(0, 10)
+  const filerPrefix = filerName.toLowerCase().slice(0, 10)
   for (const pat of patterns) {
     const m = text.match(pat)
     if (m) {
       const name = m[1].trim().replace(/\s+/g, ' ').replace(/\s*(Inc\.|Corp\.|LLC|Ltd\.).*$/, '$1').trim()
-      if (name.length >= 3 && name.length <= 80 && !name.toLowerCase().startsWith(acquirerPrefix)) {
+      if (name.length >= 3 && name.length <= 80 && !name.toLowerCase().startsWith(filerPrefix)) {
         return name
       }
     }
@@ -68,74 +68,161 @@ function extractMaTarget(text, acquirerName) {
   return ''
 }
 
+function extractMergerParent(text, filerName) {
+  if (!text) return ''
+  const filerPrefix = filerName.toLowerCase().slice(0, 10)
+  const patterns = [
+    /([A-Z][A-Za-z0-9\s,\.&\-]+?)\s*\(["']?(?:the\s+)?["']?Parent["']?\)/,
+    /by\s+and\s+among\s+the\s+Company,?\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,\s*and\s+[A-Z][a-z]|\s+and\s+[A-Z][a-z]|\.)/,
+    /([A-Z][A-Za-z0-9\s,\.&\-]+?),?\s+(?:and\s+)?[A-Z][a-z]+\s+Sub.{0,50}merger\s+of\s+Merger\s+Sub/i,
+    /Agreement\s+and\s+Plan\s+of\s+Merger.{0,300}(?:\bwith\b|by\s+and\s+among.{0,100}and)\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/,
+  ]
+  for (const pat of patterns) {
+    const m = text.match(pat)
+    if (m?.[1]) {
+      const name = m[1].trim().replace(/\s+/g, ' ').slice(0, 80)
+      if (name.length >= 3 && !name.toLowerCase().startsWith(filerPrefix)) return name
+    }
+  }
+  return ''
+}
+
+function extractProductSeller(text, filerName) {
+  if (!text) return ''
+  const filerPrefix = filerName.toLowerCase().slice(0, 10)
+  const patterns = [
+    /([A-Z][A-Za-z0-9\s,\.&\-]+?)\s*\(["']?(?:the\s+)?["']?Seller["']?\)/,
+    /acquiring.{0,300}rights?\s+to.{0,200}from\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/i,
+    /rights?\s+to\s+\S+.{0,150}from\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/i,
+    /(?:purchased?|acquired?)\s+from\s+([A-Z][A-Za-z0-9\s,\.&\-]+?)(?:\s*\(|\s*,|\.)/i,
+  ]
+  for (const pat of patterns) {
+    const m = text.match(pat)
+    if (m?.[1]) {
+      const name = m[1].trim().replace(/\s+/g, ' ').slice(0, 80)
+      if (name.length >= 3 && !name.toLowerCase().startsWith(filerPrefix)) return name
+    }
+  }
+  return ''
+}
+
+function extractDrugAsset(text) {
+  if (!text) return null
+  const contextPatterns = [
+    /acquiring.{0,200}rights?\s+to\s+([A-Z]{2,6}[-]?\d{2,}[A-Z]{0,5})\b/,
+    /rights?\s+to\s+([A-Z]{2,6}[-]?\d{2,}[A-Z]{0,5})\b/,
+    /\(formerly\s+([A-Z]{2,6}[-]?\d{2,}[A-Z]{0,5})\)/,
+    /(?:product\s+candidate|compound|molecule|drug|asset|program|therapy)\s+(?:known\s+as\s+)?([A-Z]{2,6}[-]?\d{2,}[A-Z]{0,5})\b/,
+    /([A-Z]{2,6}[-]?\d{2,}[A-Z]{0,5}).{0,60}from\s+[A-Z][a-z]/,
+  ]
+  for (const pat of contextPatterns) {
+    const m = text.match(pat)
+    if (m?.[1]) return m[1]
+  }
+  return null
+}
+
 function classifyTransactionType(text) {
   if (!text) return 'acquisition'
   const lower = text.toLowerCase()
-  const scores = { ipo: 0, acquisition: 0, merger: 0, partnership: 0 }
+  const scores = { merger: 0, product_acquisition: 0, acquisition: 0, ipo: 0, partnership: 0 }
 
-  if (/public offering/.test(lower)) scores.ipo += 3
-  if (/underwriting agreement/.test(lower)) scores.ipo += 3
-  if (/initial public offering/.test(lower)) scores.ipo += 4
-  if (/\bipo\b/.test(lower)) scores.ipo += 2
-  if (/shares of common stock/.test(lower) && /offering price/.test(lower)) scores.ipo += 3
-  if (/pre-funded warrants/.test(lower) && /offering/.test(lower)) scores.ipo += 3
-  if (/registered direct offering/.test(lower)) scores.ipo += 3
-  if (/follow-on offering|secondary offering/.test(lower)) scores.ipo += 2
-  if (/priced its.*offering|filed.*s-1/.test(lower)) scores.ipo += 2
-
-  if (/asset purchase agreement/.test(lower)) scores.acquisition += 4
-  if (/\bacquired\b|\bacquisition\b/.test(lower)) scores.acquisition += 2
-  if (/purchase agreement/.test(lower) && /\b(assets|company|stock)\b/.test(lower)) scores.acquisition += 3
-  if (/\btender offer\b/.test(lower)) scores.acquisition += 3
-  if (/all or substantially all/.test(lower)) scores.acquisition += 2
-  if (/definitive agreement/.test(lower) && /\bacquire\b/.test(lower)) scores.acquisition += 4
-
-  if (/agreement and plan of merger/.test(lower)) scores.merger += 5
-  if (/merger agreement/.test(lower) && /\bmerger\b/.test(lower)) scores.merger += 3
-  if (/combined company/.test(lower)) scores.merger += 2
+  if (/agreement and plan of merger/.test(lower)) scores.merger += 6
+  if (/merger of merger sub with and into/.test(lower)) scores.merger += 5
+  if (/\(["']?(?:the\s+)?["']?parent["']?\)/.test(lower)) scores.merger += 4
+  if (/merger agreement/.test(lower)) scores.merger += 3
   if (/merger consideration/.test(lower)) scores.merger += 3
   if (/merger of equals/.test(lower)) scores.merger += 4
+  if (/combined company/.test(lower)) scores.merger += 2
   if (/surviving corporation/.test(lower)) scores.merger += 2
 
-  if (/license agreement/.test(lower)) scores.partnership += 4
-  if (/collaboration agreement/.test(lower)) scores.partnership += 4
-  if (/exclusive license/.test(lower)) scores.partnership += 4
-  if (/\bco-develop/.test(lower)) scores.partnership += 3
-  if (/\broyalt/.test(lower)) scores.partnership += 2
-  if (/licensing agreement|co-promotion|research collaboration/.test(lower)) scores.partnership += 3
-  if (/strategic partnership/.test(lower)) scores.partnership += 2
+  const hasCompoundName = /\b[A-Z]{2,6}[-]?\d{2,}[A-Z]{0,5}\b/.test(text)
+  if (/acquir\w*\s+\w*\s*rights?\s+to\b/i.test(text) && hasCompoundName) scores.product_acquisition += 6
+  if (/global\s+rights?\s+to\b/i.test(text) && hasCompoundName) scores.product_acquisition += 5
+  if (/asset\s+purchase\s+agreement/.test(lower) && hasCompoundName) scores.product_acquisition += 5
+  if (/sold\s+all\s+or\s+substantially\s+all\s+of\s+its\s+right\s+title/.test(lower)) scores.product_acquisition += 5
+  if (/exclusive.{0,80}rights?.{0,80}from\s+[A-Z]/i.test(text) && hasCompoundName) scores.product_acquisition += 4
+  if (/\bseller\b/.test(lower) && hasCompoundName) scores.product_acquisition += 3
 
-  const maxScore = Math.max(scores.ipo, scores.acquisition, scores.merger, scores.partnership)
+  if (/asset\s+purchase\s+agreement/.test(lower) && !hasCompoundName) scores.acquisition += 4
+  if (/\btender\s+offer\b/.test(lower)) scores.acquisition += 4
+  if (/purchase\s+all\s+outstanding\s+shares/.test(lower)) scores.acquisition += 4
+  if (/stock\s+purchase\s+agreement/.test(lower)) scores.acquisition += 4
+  if (/definitive\s+agreement/.test(lower) && /\bacquire\b/.test(lower)) scores.acquisition += 4
+  if (/purchase\s+agreement/.test(lower) && /\b(company|stock)\b/.test(lower)) scores.acquisition += 3
+  if (/all\s+or\s+substantially\s+all/.test(lower)) scores.acquisition += 2
+  if (/\bacquired\b|\bacquisition\b/.test(lower)) scores.acquisition += 2
+
+  if (/initial\s+public\s+offering/.test(lower)) scores.ipo += 5
+  if (/underwriting\s+agreement/.test(lower)) scores.ipo += 4
+  if (/public\s+offering/.test(lower)) scores.ipo += 3
+  if (/shares\s+of\s+common\s+stock/.test(lower) && /offering\s+price/.test(lower)) scores.ipo += 3
+  if (/pre-funded\s+warrants/.test(lower) && /offering/.test(lower)) scores.ipo += 3
+  if (/registered\s+direct\s+offering/.test(lower)) scores.ipo += 3
+  if (/follow-on\s+offering|secondary\s+offering/.test(lower)) scores.ipo += 2
+  if (/\bipo\b/.test(lower)) scores.ipo += 2
+
+  if (/collaboration\s+agreement/.test(lower)) scores.partnership += 4
+  if (/license\s+agreement/.test(lower)) scores.partnership += 4
+  if (/exclusive\s+license/.test(lower)) scores.partnership += 4
+  if (/licensing\s+agreement|co-promotion|research\s+collaboration/.test(lower)) scores.partnership += 3
+  if (/\bco-develop/.test(lower)) scores.partnership += 3
+  if (/strategic\s+partnership/.test(lower)) scores.partnership += 2
+  if (/\broyalt/.test(lower)) scores.partnership += 2
+
+  const maxScore = Math.max(...Object.values(scores))
   if (maxScore === 0) return 'acquisition'
   return Object.entries(scores).find(([, s]) => s === maxScore)?.[0] || 'acquisition'
 }
 
 function extractDealDetails(text, filerName) {
   const transaction_type = classifyTransactionType(text)
-  const acquired_name    = extractMaTarget(text, filerName)
   const deal_value       = extractAmount(text)
 
-  let acquired_asset = null
-  const assetPatterns = [
-    /(?:compound\s+known\s+as|drug\s+known\s+as|product\s+candidate|lead\s+candidate|molecule|therapy|asset)\s+([A-Z]{2,4}-\d{3,}[A-Z]?)\b/,
-    /(?:acqui(?:re|red|sition)|license|collaboration).{0,60}\b([A-Z]{2,4}-\d{3,}[A-Z]?)\b/,
-    /(?:compound\s+known\s+as|drug\s+known\s+as|product\s+candidate|asset)\s+([A-Z]{2,4}\d{3,}[A-Z]?)\b/,
-  ]
-  for (const pat of assetPatterns) {
-    const m = text?.match(pat)
-    if (m?.[1]) { acquired_asset = m[1]; break }
+  let acquirer_name, acquired_name, acquired_asset = null
+
+  if (transaction_type === 'merger') {
+    const parent = extractMergerParent(text, filerName)
+    if (parent) {
+      acquirer_name = parent
+      acquired_name = filerName
+    } else {
+      acquirer_name = filerName
+      acquired_name = extractMaTarget(text, filerName)
+    }
+    acquired_asset = extractDrugAsset(text)
+  } else if (transaction_type === 'product_acquisition') {
+    acquirer_name = filerName
+    acquired_name = extractProductSeller(text, filerName)
+    acquired_asset = extractDrugAsset(text)
+  } else if (transaction_type === 'acquisition') {
+    acquirer_name = filerName
+    acquired_name = extractMaTarget(text, filerName)
+    acquired_asset = extractDrugAsset(text)
+  } else if (transaction_type === 'partnership') {
+    acquirer_name = filerName
+    acquired_name = extractMaTarget(text, filerName) || extractProductSeller(text, filerName)
+    acquired_asset = extractDrugAsset(text)
+  } else {
+    acquirer_name = filerName
+    acquired_name = ''
   }
 
-  const counterparty = acquired_name
   let deal_summary
   if (transaction_type === 'ipo') {
     deal_summary = `${filerName} announced a public offering${deal_value ? ` valued at ${deal_value}` : ''}.`
   } else if (transaction_type === 'merger') {
-    deal_summary = `${filerName} announced a merger${counterparty ? ` with ${counterparty}` : ''}${deal_value ? ` valued at ${deal_value}` : ''}.`
+    if (acquirer_name !== filerName && acquired_name === filerName) {
+      deal_summary = `${acquirer_name} is acquiring ${filerName}${deal_value ? ` for ${deal_value}` : ''}.`
+    } else {
+      deal_summary = `${filerName} announced a merger${acquired_name ? ` with ${acquired_name}` : ''}${deal_value ? ` valued at ${deal_value}` : ''}.`
+    }
+  } else if (transaction_type === 'product_acquisition') {
+    deal_summary = `${filerName} is acquiring ${acquired_asset || 'product rights'}${acquired_name ? ` from ${acquired_name}` : ''}${deal_value ? ` for ${deal_value}` : ''}.`
   } else if (transaction_type === 'partnership') {
-    deal_summary = `${filerName} announced a licensing/collaboration agreement${counterparty ? ` with ${counterparty}` : ''}${deal_value ? ` valued at ${deal_value}` : ''}.`
+    deal_summary = `${filerName} announced a licensing/collaboration agreement${acquired_name ? ` with ${acquired_name}` : ''}${deal_value ? ` valued at ${deal_value}` : ''}.`
   } else {
-    deal_summary = `${filerName} announced an acquisition${counterparty ? ` of ${counterparty}` : ''}${acquired_asset ? ` (${acquired_asset})` : ''}${deal_value ? ` valued at ${deal_value}` : ''}.`
+    deal_summary = `${filerName} is acquiring ${acquired_name || 'a company'}${deal_value ? ` for ${deal_value}` : ''}.`
   }
 
   let filing_text_snippet = null
@@ -148,13 +235,13 @@ function extractDealDetails(text, filerName) {
 
   return {
     transaction_type,
-    acquirer_name:       filerName,
+    acquirer_name,
     acquired_name,
     acquired_asset,
     deal_value,
     deal_summary,
     filing_text_snippet,
-    enrichment_source:   'sec_8k_filing',
+    enrichment_source: 'sec_8k_filing',
   }
 }
 
@@ -254,10 +341,11 @@ export default async function handler(req, res) {
         const text    = await fetchFilingText(filingUrl, adsh)
         const details = extractDealDetails(text, filerName)
 
-        // Merge enriched fields into existing signal_detail (preserve existing values)
+        // Merge enriched fields; always overwrite classification fields from 8-K parse
         const updatedDetail = {
           ...d,
-          transaction_type:    details.transaction_type    || d.transaction_type,
+          transaction_type:    details.transaction_type,
+          acquirer_name:       details.acquirer_name       || d.acquirer_name || filerName,
           acquired_name:       details.acquired_name       || d.acquired_name || '',
           acquired_asset:      details.acquired_asset      || d.acquired_asset || null,
           deal_value:          details.deal_value          || d.deal_value     || null,

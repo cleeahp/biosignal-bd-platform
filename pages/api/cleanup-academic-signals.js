@@ -38,6 +38,7 @@ export default async function handler(req, res) {
       non_linkedin_competitor:   0,
       garbage_job_titles:        0,
       duplicate_job_urls:        0,
+      career_page_garbage:       0,
     }
 
     // ── A: Academic / government signals (existing logic) ─────────────────────
@@ -127,7 +128,9 @@ export default async function handler(req, res) {
       }
     }
 
-    // ── E: competitor_job_posting signals NOT from LinkedIn ───────────────────
+    // ── E: competitor_job_posting signals NOT from LinkedIn (including null ats_source) ───
+    // LinkedIn signals always set ats_source = 'linkedin'. Any signal without this
+    // came from old career-page scraping and should be removed.
     const { data: competitorSignals, error: compErr } = await supabase
       .from('signals')
       .select('id, signal_detail')
@@ -137,11 +140,12 @@ export default async function handler(req, res) {
       for (const signal of competitorSignals || []) {
         const d = signal.signal_detail || {}
         const atsSource = (d.ats_source || '').toLowerCase()
-        if (atsSource && atsSource !== 'linkedin') {
+        // Delete if ats_source is NULL (old career-page source) or explicitly non-LinkedIn
+        if (!d.ats_source || atsSource !== 'linkedin') {
           if (!toDelete.includes(signal.id)) {
             toDelete.push(signal.id)
             breakdown.non_linkedin_competitor++
-            console.log(`[cleanup] Non-LinkedIn competitor job: ats_source="${d.ats_source}"`)
+            console.log(`[cleanup] Non-LinkedIn competitor job: ats_source="${d.ats_source ?? 'null'}"`)
           }
         }
       }
@@ -193,6 +197,28 @@ export default async function handler(req, res) {
       }
       if (breakdown.duplicate_job_urls > 0) {
         console.log(`[cleanup] Removing ${breakdown.duplicate_job_urls} duplicate-URL job signals`)
+      }
+    }
+
+    // ── H: "Active life sciences hiring" career-page garbage (any signal type) ──
+    // These signals have job_title set to the scraped page header text instead
+    // of a real job title — a bug in the old career-page scraper.
+    const { data: careerPageGarbage, error: cpgErr } = await supabase
+      .from('signals')
+      .select('id, signal_detail')
+      .ilike('signal_detail->>job_title', '%active life sciences hiring%')
+
+    if (!cpgErr) {
+      for (const signal of careerPageGarbage || []) {
+        if (!toDelete.includes(signal.id)) {
+          toDelete.push(signal.id)
+          breakdown.career_page_garbage++
+          const title = (signal.signal_detail?.job_title || '').slice(0, 60)
+          console.log(`[cleanup] Career-page garbage title: "${title}"`)
+        }
+      }
+      if ((careerPageGarbage || []).length > 0) {
+        console.log(`[cleanup] Removing ${careerPageGarbage.length} "Active life sciences hiring" signals`)
       }
     }
 
