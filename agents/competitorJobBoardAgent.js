@@ -4,40 +4,40 @@ import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
 
 // ─── Competitor firms seed data ────────────────────────────────────────────────
 // 30 life sciences staffing firms. Upserted into competitor_firms when the
-// table has fewer than 30 rows. careers_url is kept for reference only —
-// we no longer scrape career pages directly; LinkedIn is the sole source.
+// table has fewer than 30 rows. LinkedIn is the sole job source — no career
+// pages are scraped.
 
 const COMPETITOR_FIRMS_SEED = [
-  { name: 'Actalent',                  careers_url: 'https://www.actalentservices.com/careers' },
-  { name: 'Kelly Life Sciences',        careers_url: 'https://kellyservices.com/us/jobs' },
-  { name: 'Alku',                       careers_url: 'https://boards.greenhouse.io/alku' },
-  { name: 'Black Diamond Networks',     careers_url: 'https://blackdiamondnetworks.com/jobs/' },
-  { name: 'Real Life Sciences',         careers_url: 'https://reallifesciences.com/careers/' },
-  { name: 'Oxford Global Resources',    careers_url: 'https://www.ogr.com/careers' },
-  { name: 'The Planet Group',           careers_url: 'https://www.theplanetgroup.com/jobs' },
-  { name: 'ICON plc',                   careers_url: 'https://careers.iconplc.com/jobs' },
-  { name: 'Advanced Clinical',          careers_url: 'https://www.advancedclinical.com/careers/' },
-  { name: 'Randstad Life Sciences',     careers_url: 'https://www.randstadlifesciences.com/jobs' },
-  { name: 'Joule Staffing',             careers_url: 'https://www.joulesolutions.com/find-a-job' },
-  { name: 'Beacon Hill Staffing Group', careers_url: 'https://www.beaconhillstaffing.com/jobs' },
-  { name: 'ASGN Incorporated',          careers_url: 'https://www.asgn.com' },
-  { name: 'Net2Source',                 careers_url: 'https://www.net2source.com/jobs/' },
-  { name: 'USTech Solutions',           careers_url: 'https://ustechsolutions.com/jobs/' },
-  { name: 'Yoh Services',               careers_url: 'https://www.yoh.com' },
-  { name: 'Soliant Health',             careers_url: 'https://www.soliant.com/jobs/' },
-  { name: 'Medix Staffing',             careers_url: 'https://www.medixteam.com/job-search/' },
-  { name: 'Epic Staffing Group',        careers_url: 'https://www.epicstaffinggroup.com' },
-  { name: 'Solomon Page',               careers_url: 'https://www.solomonpage.com/find-a-job/' },
-  { name: 'Spectra Force',              careers_url: 'https://www.spectraforce.com/careers' },
-  { name: 'Mindlance',                  careers_url: 'https://www.mindlance.com/careers/' },
-  { name: 'Green Key Resources',        careers_url: 'https://www.greenkeyresources.com/find-a-job' },
-  { name: 'Phaidon International',      careers_url: 'https://phaidoninternational.com/jobs' },
-  { name: 'Peoplelink Group',           careers_url: 'https://peoplelinkgroup.com/job-seekers/' },
-  { name: 'Pacer Staffing',             careers_url: 'https://www.pacerstaffing.com/job-seekers/' },
-  { name: 'ZP Group',                   careers_url: 'https://zp.group/job-seekers/' },
-  { name: 'Meet Staffing',              careers_url: 'https://meetstaffing.com/jobs/' },
-  { name: 'Ampcus',                     careers_url: 'https://ampcus.com/jobs/' },
-  { name: 'ClinLab Staffing',           careers_url: 'https://clinlabstaffing.com/job-seekers/' },
+  { name: 'Actalent' },
+  { name: 'Kelly Life Sciences' },
+  { name: 'Alku' },
+  { name: 'Black Diamond Networks' },
+  { name: 'Real Life Sciences' },
+  { name: 'Oxford Global Resources' },
+  { name: 'The Planet Group' },
+  { name: 'ICON plc' },
+  { name: 'Advanced Clinical' },
+  { name: 'Randstad Life Sciences' },
+  { name: 'Joule Staffing' },
+  { name: 'Beacon Hill Staffing Group' },
+  { name: 'ASGN Incorporated' },
+  { name: 'Net2Source' },
+  { name: 'USTech Solutions' },
+  { name: 'Yoh Services' },
+  { name: 'Soliant Health' },
+  { name: 'Medix Staffing' },
+  { name: 'Epic Staffing Group' },
+  { name: 'Solomon Page' },
+  { name: 'Spectra Force' },
+  { name: 'Mindlance' },
+  { name: 'Green Key Resources' },
+  { name: 'Phaidon International' },
+  { name: 'Peoplelink Group' },
+  { name: 'Pacer Staffing' },
+  { name: 'ZP Group' },
+  { name: 'Meet Staffing' },
+  { name: 'Ampcus' },
+  { name: 'ClinLab Staffing' },
 ]
 
 // Non-US job location filter — skip non-US postings
@@ -84,7 +84,7 @@ async function seedCompetitorFirms() {
     } else {
       const { error } = await supabase
         .from('competitor_firms')
-        .insert({ name: firm.name, careers_url: firm.careers_url, is_active: true })
+        .insert({ name: firm.name, is_active: true })
       if (error) {
         skippedFirms.push({ name: firm.name, reason: error.message })
         skipped++
@@ -174,7 +174,7 @@ export async function run() {
     // ── Step 2: Load active firms from DB and shuffle order ─────────────────
     const { data: allFirms, error: firmsErr } = await supabase
       .from('competitor_firms')
-      .select('name, careers_url')
+      .select('name')
       .eq('is_active', true)
       .order('name')
 
