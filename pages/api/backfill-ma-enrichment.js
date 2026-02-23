@@ -12,7 +12,6 @@
 
 import { supabase } from '../../lib/supabase.js'
 
-const SEC_UA      = 'BioSignal-BD-Platform contact@biosignal.io'
 const DELAY_MS    = 2000
 const MAX_PER_RUN = 10
 
@@ -247,52 +246,111 @@ function extractDealDetails(text, filerName) {
 
 // ── SEC EDGAR filing text fetcher ─────────────────────────────────────────────
 
+const SEC_HEADERS = {
+  'User-Agent':      'BioSignal/1.0 (contact@biosignal.com)',
+  'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Encoding': 'gzip, deflate',
+  'Host':            'www.sec.gov',
+}
+
 /**
  * Fetch plain text from an 8-K filing stored in SEC EDGAR.
- * Derives CIK and accession number from the stored filing_url.
- * filing_url format: https://www.sec.gov/Archives/edgar/data/{cik}/{adshNoDash}/
+ * Two-step approach:
+ *   1. Fetch the filing index JSON → find primary 8-K document → fetch it
+ *   2. Fallback: fetch the combined submission .txt directly (adsh.txt)
  *
- * @param {string} filingUrl
- * @param {string} adsh - accession number with dashes (from signal_detail.adsh)
- * @returns {Promise<string>} Up to 4 KB of plain text, or '' on failure
+ * Logs every URL, status code, and the first 200 chars of any failed response
+ * so failures are visible in Vercel function logs.
+ *
+ * @param {string} filingUrl  - stored filing_url, e.g. https://www.sec.gov/Archives/edgar/data/{cik}/{adshNoDash}/
+ * @param {string} adsh       - accession number WITH dashes, e.g. 0001193125-25-250696
+ * @returns {Promise<string>} Up to 5 KB of plain text, or '' on any failure
  */
 async function fetchFilingText(filingUrl, adsh) {
-  // Extract CIK from filing URL
   const urlMatch = (filingUrl || '').match(/edgar\/data\/(\d+)\//)
-  if (!urlMatch) return ''
-  const cik = urlMatch[1]
-
-  const adshForUrl = adsh || ''
-  if (!adshForUrl) return ''
-
-  const adshNoDash = adshForUrl.replace(/-/g, '')
-  const indexUrl   = `https://www.sec.gov/Archives/edgar/data/${cik}/${adshNoDash}/${adshForUrl}-index.json`
-
-  try {
-    await sleep(DELAY_MS)
-    const indexResp = await fetch(indexUrl, {
-      headers: { 'User-Agent': SEC_UA, Accept: 'application/json' },
-      signal: AbortSignal.timeout(8000),
-    })
-    if (!indexResp.ok) return ''
-
-    const index = await indexResp.json()
-    const primaryDoc = (index.documents || []).find((d) => d.type === '8-K') || (index.documents || [])[0]
-    if (!primaryDoc?.document) return ''
-
-    await sleep(DELAY_MS)
-    const docUrl  = `https://www.sec.gov/Archives/edgar/data/${cik}/${adshNoDash}/${primaryDoc.document}`
-    const docResp = await fetch(docUrl, {
-      headers: { 'User-Agent': SEC_UA },
-      signal: AbortSignal.timeout(10000),
-    })
-    if (!docResp.ok) return ''
-
-    const raw = await docResp.text()
-    return raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 4000)
-  } catch {
+  if (!urlMatch) {
+    console.log(`[backfill-ma] fetchFilingText: cannot extract CIK from filing_url="${filingUrl}"`)
     return ''
   }
+  const cik = urlMatch[1]
+
+  if (!adsh) {
+    console.log('[backfill-ma] fetchFilingText: adsh is empty')
+    return ''
+  }
+
+  const adshNoDash = adsh.replace(/-/g, '')
+
+  // ── Attempt 1: index JSON → primary document ───────────────────────────────
+  const indexUrl = `https://www.sec.gov/Archives/edgar/data/${cik}/${adshNoDash}/${adsh}-index.json`
+  try {
+    await sleep(DELAY_MS)
+    console.log(`[backfill-ma] Fetching index: ${indexUrl}`)
+    const indexResp = await fetch(indexUrl, {
+      headers: { ...SEC_HEADERS, Accept: 'application/json' },
+      signal: AbortSignal.timeout(8000),
+    })
+    console.log(`[backfill-ma] Index response: status=${indexResp.status} ${indexResp.statusText}`)
+
+    if (indexResp.ok) {
+      const index = await indexResp.json()
+      const primaryDoc = (index.documents || []).find((d) => d.type === '8-K') || (index.documents || [])[0]
+
+      if (primaryDoc?.document) {
+        const docUrl = `https://www.sec.gov/Archives/edgar/data/${cik}/${adshNoDash}/${primaryDoc.document}`
+        await sleep(DELAY_MS)
+        console.log(`[backfill-ma] Fetching primary doc: ${docUrl}`)
+        const docResp = await fetch(docUrl, {
+          headers: SEC_HEADERS,
+          signal: AbortSignal.timeout(12000),
+        })
+        console.log(`[backfill-ma] Primary doc response: status=${docResp.status} ${docResp.statusText}`)
+
+        if (docResp.ok) {
+          const raw = await docResp.text()
+          const plain = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+          console.log(`[backfill-ma] Primary doc text: ${plain.length} chars; preview: ${plain.slice(0, 120)}`)
+          return plain.slice(0, 5000)
+        }
+        const errBody = await docResp.text()
+        console.log(`[backfill-ma] Primary doc error body: ${errBody.slice(0, 200)}`)
+      } else {
+        console.log(`[backfill-ma] Index has no primary 8-K document. documents=${JSON.stringify((index.documents || []).map(d => d.type))}`)
+      }
+    } else {
+      const errBody = await indexResp.text()
+      console.log(`[backfill-ma] Index error body: ${errBody.slice(0, 200)}`)
+    }
+  } catch (err) {
+    console.log(`[backfill-ma] Index fetch threw: ${err.message}`)
+  }
+
+  // ── Attempt 2: direct .txt submission file (always exists for any filing) ──
+  // SEC stores the full submission at {adsh}.txt in the same folder
+  const txtUrl = `https://www.sec.gov/Archives/edgar/data/${cik}/${adshNoDash}/${adsh}.txt`
+  try {
+    await sleep(DELAY_MS)
+    console.log(`[backfill-ma] Fallback: fetching .txt directly: ${txtUrl}`)
+    const txtResp = await fetch(txtUrl, {
+      headers: SEC_HEADERS,
+      signal: AbortSignal.timeout(15000),
+    })
+    console.log(`[backfill-ma] .txt response: status=${txtResp.status} ${txtResp.statusText}`)
+
+    if (txtResp.ok) {
+      const raw = await txtResp.text()
+      const plain = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+      console.log(`[backfill-ma] .txt text: ${plain.length} chars; preview: ${plain.slice(0, 120)}`)
+      return plain.slice(0, 5000)
+    }
+    const errBody = await txtResp.text()
+    console.log(`[backfill-ma] .txt error body: ${errBody.slice(0, 200)}`)
+  } catch (err) {
+    console.log(`[backfill-ma] .txt fetch threw: ${err.message}`)
+  }
+
+  console.log(`[backfill-ma] All fetch attempts failed for cik=${cik} adsh=${adsh}`)
+  return ''
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -303,6 +361,20 @@ export default async function handler(req, res) {
   }
 
   try {
+    // ── Step 0: Connectivity test — confirm SEC EDGAR is reachable ─────────────
+    const secTestUrl = 'https://efts.sec.gov/LATEST/search-index?q=%228-K%22&dateRange=custom&startdt=2025-01-01&enddt=2025-01-02&forms=8-K'
+    let secReachable = false
+    try {
+      const testResp = await fetch(secTestUrl, {
+        headers: SEC_HEADERS,
+        signal: AbortSignal.timeout(6000),
+      })
+      secReachable = testResp.ok
+      console.log(`[backfill-ma] SEC connectivity test: status=${testResp.status} reachable=${secReachable}`)
+    } catch (err) {
+      console.log(`[backfill-ma] SEC connectivity test threw: ${err.message}`)
+    }
+
     // ── Step 1: Fetch ALL ma_transaction signals that have an adsh (50 max)
     // We filter JS-side because PostgREST `.neq()` on JSONB paths excludes NULL
     // rows — `NULL != 'sec_8k_filing'` evaluates to NULL in SQL, not TRUE.
@@ -343,11 +415,12 @@ export default async function handler(req, res) {
 
     if (signals.length === 0) {
       return res.status(200).json({
-        enriched:    0,
-        total:       0,
-        total_in_db: totalInDb,
-        errors:      0,
-        message:     `No signals require 8-K enrichment (${totalInDb} MA signals checked)`,
+        enriched:      0,
+        total:         0,
+        total_in_db:   totalInDb,
+        errors:        0,
+        sec_reachable: secReachable,
+        message:       `No signals require 8-K enrichment (${totalInDb} MA signals checked)`,
       })
     }
 
@@ -420,11 +493,13 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       enriched,
-      total:       signals.length,
-      total_in_db: totalInDb,
-      skipped:     skipped.length,
+      total:         signals.length,
+      total_in_db:   totalInDb,
+      skipped:       skipped.length,
+      skipped_detail: skipped,
       errors,
-      message:     `Enriched ${enriched}/${signals.length} signals from SEC 8-K filings (${errors} errors, ${skipped.length} skipped)`,
+      sec_reachable: secReachable,
+      message:       `Enriched ${enriched}/${signals.length} signals from SEC 8-K filings (${errors} errors, ${skipped.length} skipped)`,
     })
   } catch (err) {
     console.error('[backfill-ma] Handler error:', err.message)
