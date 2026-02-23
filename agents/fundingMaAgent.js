@@ -678,19 +678,130 @@ function extractMaTarget(text, acquirerName) {
 }
 
 /**
- * Classify M&A transaction type from 8-K filing text.
- * Returns 'acquisition', 'merger', 'partnership', or 'ipo'.
+ * Classify M&A transaction type from 8-K filing text using keyword scoring.
+ * Counts keyword hits per category and returns the highest-scoring category.
+ * Returns 'acquisition', 'merger', 'ipo', or 'partnership'.
  *
  * @param {string} text
- * @returns {'acquisition'|'merger'|'partnership'|'ipo'}
+ * @returns {'acquisition'|'merger'|'ipo'|'partnership'}
  */
 function classifyTransactionType(text) {
   if (!text) return 'acquisition';
   const lower = text.toLowerCase();
-  if (/merger of equals|merging with|joint venture|equally owned/.test(lower)) return 'merger';
-  if (/licensing agreement|collaboration agreement|co-development|co-promotion|strategic partnership|research collaboration/.test(lower)) return 'partnership';
-  if (/initial public offering|priced its.*offering|filed.*s-1/.test(lower)) return 'ipo';
-  return 'acquisition'; // default for 8-K filings containing acquisition/merger keywords
+
+  const scores = { ipo: 0, acquisition: 0, merger: 0, partnership: 0 };
+
+  // IPO / public offering patterns
+  if (/public offering/.test(lower)) scores.ipo += 3;
+  if (/underwriting agreement/.test(lower)) scores.ipo += 3;
+  if (/initial public offering/.test(lower)) scores.ipo += 4;
+  if (/\bipo\b/.test(lower)) scores.ipo += 2;
+  if (/shares of common stock/.test(lower) && /offering price/.test(lower)) scores.ipo += 3;
+  if (/pre-funded warrants/.test(lower) && /offering/.test(lower)) scores.ipo += 3;
+  if (/registered direct offering/.test(lower)) scores.ipo += 3;
+  if (/follow-on offering|secondary offering/.test(lower)) scores.ipo += 2;
+  if (/priced its.*offering|filed.*s-1/.test(lower)) scores.ipo += 2;
+
+  // Acquisition patterns
+  if (/asset purchase agreement/.test(lower)) scores.acquisition += 4;
+  if (/\bacquired\b|\bacquisition\b/.test(lower)) scores.acquisition += 2;
+  if (/purchase agreement/.test(lower) && /\b(assets|company|stock)\b/.test(lower)) scores.acquisition += 3;
+  if (/\btender offer\b/.test(lower)) scores.acquisition += 3;
+  if (/all or substantially all/.test(lower)) scores.acquisition += 2;
+  if (/definitive agreement/.test(lower) && /\bacquire\b/.test(lower)) scores.acquisition += 4;
+
+  // Merger patterns
+  if (/agreement and plan of merger/.test(lower)) scores.merger += 5;
+  if (/merger agreement/.test(lower) && /\bmerger\b/.test(lower)) scores.merger += 3;
+  if (/combined company/.test(lower)) scores.merger += 2;
+  if (/merger consideration/.test(lower)) scores.merger += 3;
+  if (/merger of equals/.test(lower)) scores.merger += 4;
+  if (/surviving corporation/.test(lower)) scores.merger += 2;
+
+  // Partnership / Licensing patterns
+  if (/license agreement/.test(lower)) scores.partnership += 4;
+  if (/collaboration agreement/.test(lower)) scores.partnership += 4;
+  if (/exclusive license/.test(lower)) scores.partnership += 4;
+  if (/\bco-develop/.test(lower)) scores.partnership += 3;
+  if (/\broyalt/.test(lower)) scores.partnership += 2;
+  if (/licensing agreement|co-promotion|research collaboration/.test(lower)) scores.partnership += 3;
+  if (/strategic partnership/.test(lower)) scores.partnership += 2;
+
+  const maxScore = Math.max(scores.ipo, scores.acquisition, scores.merger, scores.partnership);
+  if (maxScore === 0) return 'acquisition';
+  return Object.entries(scores).find(([, s]) => s === maxScore)?.[0] || 'acquisition';
+}
+
+/**
+ * Extract structured deal details from 8-K filing plain text.
+ * Combines transaction classification, counterparty extraction,
+ * drug/compound asset identification, deal value, and a constructed summary.
+ *
+ * @param {string} text       - Plain-text excerpt from an 8-K filing (up to 4 KB)
+ * @param {string} filerName  - Name of the company that filed the 8-K (acquirer)
+ * @returns {{
+ *   transaction_type: string,
+ *   acquirer_name: string,
+ *   acquired_name: string,
+ *   acquired_asset: string|null,
+ *   deal_value: string|null,
+ *   deal_summary: string,
+ *   filing_text_snippet: string|null,
+ *   enrichment_source: 'sec_8k_filing'
+ * }}
+ */
+function extractDealDetails(text, filerName) {
+  const transaction_type = classifyTransactionType(text);
+  const acquired_name    = extractMaTarget(text, filerName);
+  const deal_value       = extractAmount(text);
+
+  // Extract drug/compound asset names (e.g. VLX-1005, MK-8591, GNS123A, AB123)
+  let acquired_asset = null;
+  const assetPatterns = [
+    // "compound known as VLX-1005" / "product candidate MK-8591"
+    /(?:compound\s+known\s+as|drug\s+known\s+as|product\s+candidate|lead\s+candidate|molecule|therapy|asset)\s+([A-Z]{2,4}-\d{3,}[A-Z]?)\b/,
+    // Plain code names adjacent to deal keywords: "acquire VLX-1005"
+    /(?:acqui(?:re|red|sition)|license|collaboration).{0,60}\b([A-Z]{2,4}-\d{3,}[A-Z]?)\b/,
+    // CamelCase-numeric names like GNS123, AB4567B
+    /(?:compound\s+known\s+as|drug\s+known\s+as|product\s+candidate|asset)\s+([A-Z]{2,4}\d{3,}[A-Z]?)\b/,
+  ];
+  for (const pat of assetPatterns) {
+    const m = text?.match(pat);
+    if (m?.[1]) { acquired_asset = m[1]; break; }
+  }
+
+  // Construct a 1-2 sentence deal summary based on transaction type
+  const counterparty = acquired_name;
+  let deal_summary;
+  if (transaction_type === 'ipo') {
+    deal_summary = `${filerName} announced a public offering${deal_value ? ` valued at ${deal_value}` : ''}.`;
+  } else if (transaction_type === 'merger') {
+    deal_summary = `${filerName} announced a merger${counterparty ? ` with ${counterparty}` : ''}${deal_value ? ` valued at ${deal_value}` : ''}.`;
+  } else if (transaction_type === 'partnership') {
+    deal_summary = `${filerName} announced a licensing/collaboration agreement${counterparty ? ` with ${counterparty}` : ''}${deal_value ? ` valued at ${deal_value}` : ''}.`;
+  } else {
+    deal_summary = `${filerName} announced an acquisition${counterparty ? ` of ${counterparty}` : ''}${acquired_asset ? ` (${acquired_asset})` : ''}${deal_value ? ` valued at ${deal_value}` : ''}.`;
+  }
+
+  // Extract the first 500 chars of the most deal-relevant paragraph
+  let filing_text_snippet = null;
+  if (text) {
+    const DEAL_PARA_RE = /acqui|merger|licen|collaborat|offering|agreement/i;
+    const paragraphs = text.split(/\s{2,}/).filter((p) => p.trim().length > 50);
+    const relevantPara = paragraphs.find((p) => DEAL_PARA_RE.test(p)) || paragraphs[0] || '';
+    filing_text_snippet = relevantPara.trim().slice(0, 500) || null;
+  }
+
+  return {
+    transaction_type,
+    acquirer_name:       filerName,
+    acquired_name,
+    acquired_asset,
+    deal_value,
+    deal_summary,
+    filing_text_snippet,
+    enrichment_source:   'sec_8k_filing',
+  };
 }
 
 /**
@@ -1175,11 +1286,14 @@ async function processMaFilings(sixMonthsAgo, today) {
         continue;
       }
 
-      // Fetch filing document text to extract target company name and deal amount
-      const filingBodyText = await fetchMaFilingText(hit);
-      const edgarDealAmount = extractAmount(filingBodyText) || extractAmount(filingText);
-      const edgarAcquiredName = extractMaTarget(filingBodyText, entityName);
-      const transactionType = classifyTransactionType(filingBodyText);
+      // Fetch filing document text and extract all deal details
+      const filingBodyText  = await fetchMaFilingText(hit);
+      const edgarDetails    = extractDealDetails(filingBodyText, entityName);
+      const edgarDealAmount = edgarDetails.deal_value || extractAmount(filingText);
+      const edgarAcquiredName  = edgarDetails.acquired_name;
+      const edgarAcquiredAsset = edgarDetails.acquired_asset;
+      const edgarSnippet       = edgarDetails.filing_text_snippet;
+      const transactionType    = edgarDetails.transaction_type;
       if (edgarAcquiredName) {
         console.log(`[fundingMaAgent] M&A target found: ${entityName} → ${edgarAcquiredName} (${transactionType})`);
       }
@@ -1201,24 +1315,27 @@ async function processMaFilings(sixMonthsAgo, today) {
       const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, MA_BASE_SCORE);
 
       const dealSummary = enriched.deal_summary
+        || edgarDetails.deal_summary
         || `${entityName} announced an M&A transaction${finalAcquiredName ? ` to acquire ${finalAcquiredName}` : ''}${finalDealAmount ? ` valued at ${finalDealAmount}` : ''}`;
 
       const detail = {
-        company_name:      entityName,
-        acquirer_name:     entityName,
-        acquired_name:     finalAcquiredName,
-        transaction_type:  finalTransactionType,
-        deal_value:        finalDealAmount,
+        company_name:         entityName,
+        acquirer_name:        entityName,
+        acquired_name:        finalAcquiredName,
+        acquired_asset:       edgarAcquiredAsset || null,
+        transaction_type:     finalTransactionType,
+        deal_value:           finalDealAmount,
         adsh,
-        funding_type:      'ma',
-        funding_amount:    finalDealAmount,
-        funding_summary:   dealSummary,
-        deal_summary:      dealSummary,
-        enrichment_source: enriched.source,
-        enrichment_url:    enriched.source_url,
-        date_announced:    fileDate,
-        filing_url:        filingUrl,
-        source_url:        filingUrl,
+        funding_type:         'ma',
+        funding_amount:       finalDealAmount,
+        funding_summary:      dealSummary,
+        deal_summary:         dealSummary,
+        filing_text_snippet:  edgarSnippet || null,
+        enrichment_source:    enriched.source || 'sec_8k_filing',
+        enrichment_url:       enriched.source_url,
+        date_announced:       fileDate,
+        filing_url:           filingUrl,
+        source_url:           filingUrl,
         ...preHiringDetail,
       };
 
