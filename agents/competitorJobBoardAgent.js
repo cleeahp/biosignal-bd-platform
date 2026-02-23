@@ -3,41 +3,41 @@ import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
 
 // ─── Competitor firms seed data ────────────────────────────────────────────────
-// 30 life sciences staffing firms. Upserted into competitor_firms when the
-// table has fewer than 30 rows. LinkedIn is the sole job source — no career
-// pages are scraped.
+// Life sciences STAFFING firms only — excludes CROs and clinical research associations.
+// Upserted into competitor_firms when the table has fewer than 30 rows.
+// LinkedIn is the sole job source — no career pages are scraped.
 
 const COMPETITOR_FIRMS_SEED = [
+  { name: 'Randstad' },
+  { name: 'Adecco' },
+  { name: 'Kelly Services' },
+  { name: 'Manpower' },
+  { name: 'Hays' },
   { name: 'Actalent' },
-  { name: 'Kelly Life Sciences' },
-  { name: 'Alku' },
-  { name: 'Black Diamond Networks' },
-  { name: 'Real Life Sciences' },
+  { name: 'Insight Global' },
+  { name: 'Planet Pharma' },
+  { name: 'Proclinical' },
+  { name: 'Real Staffing' },
+  { name: 'GForce Life Sciences' },
+  { name: 'Medix' },
+  { name: 'EPM Scientific' },
+  { name: 'ClinLab Solutions Group' },
+  { name: 'Sci.bio' },
+  { name: 'Gemini Staffing Consultants' },
+  { name: 'Orbis Clinical' },
+  { name: 'Scientific Search' },
+  { name: 'TriNet Pharma' },
+  { name: 'The Fountain Group' },
+  { name: 'Hueman RPO' },
+  { name: 'Net2Source' },
   { name: 'Oxford Global Resources' },
-  { name: 'The Planet Group' },
-  { name: 'ICON plc' },
-  { name: 'Advanced Clinical' },
-  { name: 'Randstad Life Sciences' },
-  { name: 'Joule Staffing' },
   { name: 'Beacon Hill Staffing Group' },
   { name: 'ASGN Incorporated' },
-  { name: 'Net2Source' },
-  { name: 'USTech Solutions' },
   { name: 'Yoh Services' },
-  { name: 'Soliant Health' },
-  { name: 'Medix Staffing' },
-  { name: 'Epic Staffing Group' },
+  { name: 'Joule Staffing' },
   { name: 'Solomon Page' },
-  { name: 'Spectra Force' },
-  { name: 'Mindlance' },
   { name: 'Green Key Resources' },
   { name: 'Phaidon International' },
-  { name: 'Peoplelink Group' },
-  { name: 'Pacer Staffing' },
-  { name: 'ZP Group' },
-  { name: 'Meet Staffing' },
-  { name: 'Ampcus' },
-  { name: 'ClinLab Staffing' },
 ]
 
 // Non-US job location filter — skip non-US postings
@@ -45,6 +45,10 @@ const NON_US_JOB_LOC =
   /\b(Canada|UK|United Kingdom|Germany|France|Netherlands|Switzerland|Sweden|Australia|Japan|China|India|Korea|Singapore|Ireland|Denmark|Belgium|Italy|Spain|Brazil|Israel|Norway|Finland|Taiwan)\b/i
 
 // ─── Client-inference helpers ──────────────────────────────────────────────────
+
+// CRO (Contract/Clinical Research Organization) patterns — these are NOT staffing firms
+const CRO_PATTERNS =
+  /\b(ICON|IQVIA|Syneos|PPD|Parexel|Covance|Medpace|PRA Health|Charles River|WuXi|Labcorp Drug Development|Fortrea|ClinChoice|PSI CRO|NAMSA|SGS|Altasciences|Accelerated Enrollment|Alliance for Clinical|ECOG|SWOG|Clinical Research Assoc|Clinical Research Org|Contract Research)\b/i
 
 // Staffing/recruiting firm patterns — these must be filtered OUT of inference results
 const STAFFING_PATTERNS =
@@ -240,6 +244,8 @@ async function inferClientViaLinkedIn(linkedin, jobTitle, location, competitorNa
     // Must not be a staffing firm
     if ([...staffingNames].some(n => n.length >= 6 && (compLower.includes(n.slice(0, 8)) || n.startsWith(compLower.slice(0, 8))))) continue
     if (STAFFING_PATTERNS.test(company)) continue
+    // Must not be a CRO
+    if (CRO_PATTERNS.test(company)) continue
     // Must not be academic
     if (ACADEMIC_PATTERNS.test(company)) continue
     // Must not be the competitor itself
@@ -477,6 +483,31 @@ export async function run() {
 
       let liInserted = 0
       for (const job of liJobs.slice(0, 3)) {
+        // Validate the job is actually from the staffing firm we searched for
+        if (job.company) {
+          const jobCompanyLower = job.company.toLowerCase()
+          const firmNameLower = firm.name.toLowerCase()
+          
+          // Skip if the company doesn't match the firm name
+          const firmFirstWord = firmNameLower.split(/\s+/)[0]
+          if (!jobCompanyLower.includes(firmFirstWord) && !firmNameLower.includes(jobCompanyLower.split(/\s+/)[0])) {
+            console.log(`[CompetitorJobs] FILTERED (company mismatch): Expected "${firm.name}", got "${job.company}" for job: ${job.title}`)
+            continue
+          }
+          
+          // Skip if company is a CRO (not a staffing firm)
+          if (CRO_PATTERNS.test(job.company)) {
+            console.log(`[CompetitorJobs] FILTERED (CRO): "${job.company}" — ${job.title}`)
+            continue
+          }
+          
+          // Skip if company is academic
+          if (ACADEMIC_PATTERNS.test(job.company)) {
+            console.log(`[CompetitorJobs] FILTERED (academic): "${job.company}" — ${job.title}`)
+            continue
+          }
+        }
+        
         if (!matchesRoleKeywords(job.title)) continue
         if (NON_US_JOB_LOC.test(job.location)) continue
 
