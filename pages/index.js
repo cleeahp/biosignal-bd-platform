@@ -433,6 +433,11 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
                   {signal.companies?.industry && (
                     <div className="text-xs text-gray-500 mt-0.5">{signal.companies.industry}</div>
                   )}
+                  {signal.signal_type === 'ma_transaction' && d.acquired_asset && (
+                    <div className="text-xs text-gray-400 mt-0.5">
+                      Asset: <span className="font-mono text-blue-300">{d.acquired_asset}</span>
+                    </div>
+                  )}
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-green-400">
                   {signal.signal_type === 'ma_transaction' ? 'N/A' : (d.funding_amount || 'Undisclosed')}
