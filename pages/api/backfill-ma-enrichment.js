@@ -303,49 +303,91 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Fetch up to MAX_PER_RUN signals that lack 8-K enrichment
-    const { data: signals, error } = await supabase
+    // ── Step 1: Fetch ALL ma_transaction signals that have an adsh (50 max)
+    // We filter JS-side because PostgREST `.neq()` on JSONB paths excludes NULL
+    // rows — `NULL != 'sec_8k_filing'` evaluates to NULL in SQL, not TRUE.
+    // Fetching a wider set and filtering in JS avoids that pitfall entirely.
+    const { data: allMa, error: fetchErr } = await supabase
       .from('signals')
       .select('id, signal_detail')
       .eq('signal_type', 'ma_transaction')
-      .not('signal_detail->>filing_url', 'is', null)  // must have a filing URL
-      .neq('signal_detail->>enrichment_source', 'sec_8k_filing')
-      .limit(MAX_PER_RUN)
+      .not('signal_detail->>adsh', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(50)
 
-    if (error) throw error
+    if (fetchErr) throw fetchErr
 
-    if (!signals || signals.length === 0) {
+    const totalInDb = (allMa || []).length
+
+    // ── Step 2: JS-side filter for signals that still need 8-K enrichment
+    // A signal needs enrichment if:
+    //   - enrichment_source is not already 'sec_8k_filing', OR
+    //   - acquired_name is missing (shows "(details TBD)" in the UI) for
+    //     non-IPO signals
+    const needsEnrichment = (allMa || []).filter((s) => {
+      const d = s.signal_detail || {}
+      // Already fully enriched from 8-K text with a counterparty → skip
+      if (d.enrichment_source === 'sec_8k_filing' && d.acquired_name) return false
+      // IPOs legitimately have no counterparty — only re-process if not yet 8-K enriched
+      if (d.transaction_type === 'ipo' && d.enrichment_source === 'sec_8k_filing') return false
+      return true
+    })
+
+    console.log(`[backfill-ma] DB has ${totalInDb} MA signals with adsh. ${needsEnrichment.length} need enrichment.`)
+    for (const s of needsEnrichment.slice(0, 5)) {
+      const d = s.signal_detail || {}
+      console.log(`  signal ${s.id}: company="${d.company_name}" enrichment_source="${d.enrichment_source}" acquired_name="${d.acquired_name}"`)
+    }
+
+    const signals = needsEnrichment.slice(0, MAX_PER_RUN)
+
+    if (signals.length === 0) {
       return res.status(200).json({
-        enriched: 0,
-        total:    0,
-        errors:   0,
-        message:  'No signals require 8-K enrichment',
+        enriched:    0,
+        total:       0,
+        total_in_db: totalInDb,
+        errors:      0,
+        message:     `No signals require 8-K enrichment (${totalInDb} MA signals checked)`,
       })
     }
 
     let enriched = 0
     let errors   = 0
+    const skipped = []
 
     for (const signal of signals) {
-      const d          = signal.signal_detail || {}
-      const filingUrl  = d.filing_url || d.source_url || ''
-      const adsh       = d.adsh || ''
-      const filerName  = d.acquirer_name || d.company_name || ''
+      const d = signal.signal_detail || {}
+
+      // filerName = company that filed the 8-K (always company_name, NOT acquirer_name
+      // because for merger signals acquirer_name is now the Parent, not the filer)
+      const filerName  = d.company_name || d.acquirer_name || ''
+      const filingUrl  = d.filing_url   || d.source_url    || ''
+      const adsh       = d.adsh         || ''
 
       if (!filingUrl || !adsh || !filerName) {
-        console.log(`[backfill-ma] Skipping signal ${signal.id}: missing filing_url/adsh/filerName`)
+        const reason = !filerName ? 'no company_name' : !adsh ? 'no adsh' : 'no filing_url'
+        console.log(`[backfill-ma] Skipping signal ${signal.id}: ${reason}`)
+        skipped.push({ id: signal.id, reason })
         continue
       }
 
       try {
+        console.log(`[backfill-ma] Processing signal ${signal.id} [${filerName}] adsh=${adsh}`)
         const text    = await fetchFilingText(filingUrl, adsh)
+
+        if (!text) {
+          console.log(`[backfill-ma] No filing text fetched for signal ${signal.id} — skipping`)
+          skipped.push({ id: signal.id, reason: 'empty filing text' })
+          continue
+        }
+
         const details = extractDealDetails(text, filerName)
 
-        // Merge enriched fields; always overwrite classification fields from 8-K parse
         const updatedDetail = {
           ...d,
           transaction_type:    details.transaction_type,
-          acquirer_name:       details.acquirer_name       || d.acquirer_name || filerName,
+          // acquirer_name: use 8-K derived value; fall back to existing company_name (the filer)
+          acquirer_name:       details.acquirer_name       || d.company_name || filerName,
           acquired_name:       details.acquired_name       || d.acquired_name || '',
           acquired_asset:      details.acquired_asset      || d.acquired_asset || null,
           deal_value:          details.deal_value          || d.deal_value     || null,
@@ -363,7 +405,11 @@ export default async function handler(req, res) {
           console.error(`[backfill-ma] Update failed for signal ${signal.id}:`, updateErr.message)
           errors++
         } else {
-          console.log(`[backfill-ma] Enriched signal ${signal.id} [${filerName}]: type=${details.transaction_type}, asset=${details.acquired_asset || 'none'}`)
+          console.log(
+            `[backfill-ma] Enriched ${signal.id} [${filerName}]: ` +
+            `type=${details.transaction_type} acquirer="${details.acquirer_name}" ` +
+            `acquired="${details.acquired_name}" asset=${details.acquired_asset || 'none'}`
+          )
           enriched++
         }
       } catch (err) {
@@ -374,9 +420,11 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       enriched,
-      total:   signals.length,
+      total:       signals.length,
+      total_in_db: totalInDb,
+      skipped:     skipped.length,
       errors,
-      message: `Enriched ${enriched}/${signals.length} signals from SEC 8-K filings (${errors} errors)`,
+      message:     `Enriched ${enriched}/${signals.length} signals from SEC 8-K filings (${errors} errors, ${skipped.length} skipped)`,
     })
   } catch (err) {
     console.error('[backfill-ma] Handler error:', err.message)
