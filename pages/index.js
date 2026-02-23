@@ -372,9 +372,67 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
 
 // ─── Tab: Funding & M&A ───────────────────────────────────────────────────────
 
+// Map (signal_type, signal_detail) → a filter key string
+function getFundingFilterKey(signal) {
+  const d = parseDetail(signal.signal_detail)
+  if (signal.signal_type === 'ma_transaction') return d.transaction_type || 'ma'
+  if (signal.signal_type === 'funding_renewal')  return 'renewal'
+  return 'other'
+}
+
+// Filter pill definitions. Only pills with count > 0 are shown.
+const FUNDING_FILTER_PILLS = [
+  { key: 'all',                label: 'All',             activeClass: 'bg-gray-200 text-gray-900',   inactiveClass: 'bg-gray-800 text-gray-300 hover:bg-gray-700' },
+  { key: 'merger',             label: 'Merger',          activeClass: 'bg-amber-600 text-white',      inactiveClass: 'bg-amber-900/40 text-amber-300 hover:bg-amber-900/70' },
+  { key: 'acquisition',        label: 'Acquisition',     activeClass: 'bg-orange-600 text-white',     inactiveClass: 'bg-orange-900/40 text-orange-300 hover:bg-orange-900/70' },
+  { key: 'ipo',                label: 'IPO',             activeClass: 'bg-emerald-600 text-white',    inactiveClass: 'bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/70' },
+  { key: 'product_acquisition',label: 'Product Acq',    activeClass: 'bg-violet-600 text-white',     inactiveClass: 'bg-violet-900/40 text-violet-300 hover:bg-violet-900/70' },
+  { key: 'partnership',        label: 'Partnership',     activeClass: 'bg-blue-600 text-white',       inactiveClass: 'bg-blue-900/40 text-blue-300 hover:bg-blue-900/70' },
+  { key: 'renewal',            label: 'Renewal',         activeClass: 'bg-lime-600 text-white',       inactiveClass: 'bg-lime-900/40 text-lime-300 hover:bg-lime-900/70' },
+  { key: 'ma',                 label: 'M&A',             activeClass: 'bg-gray-500 text-white',       inactiveClass: 'bg-gray-800 text-gray-400 hover:bg-gray-700' },
+]
+
 function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim }) {
+  const [selectedType, setSelectedType] = useState('all')
+
+  // Count signals per filter key
+  const typeCounts = { all: signals.length }
+  for (const s of signals) {
+    const k = getFundingFilterKey(s)
+    typeCounts[k] = (typeCounts[k] || 0) + 1
+  }
+
+  // Only show pills that have at least 1 signal (or the "All" pill)
+  const visiblePills = FUNDING_FILTER_PILLS.filter(p => p.key === 'all' || (typeCounts[p.key] || 0) > 0)
+
+  // Filter the signal list based on selected type
+  const filteredSignals = selectedType === 'all'
+    ? signals
+    : signals.filter(s => getFundingFilterKey(s) === selectedType)
+
   if (signals.length === 0) return <EmptyState message="No active funding or M&A signals." />
   return (
+    <div className="flex flex-col gap-4">
+      {/* ── Type filter pills ── */}
+      <div className="flex flex-wrap gap-1.5">
+        {visiblePills.map(pill => {
+          const isActive = selectedType === pill.key
+          const count = pill.key === 'all' ? signals.length : (typeCounts[pill.key] || 0)
+          return (
+            <button
+              key={pill.key}
+              onClick={() => setSelectedType(pill.key)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold transition-colors ${isActive ? pill.activeClass : pill.inactiveClass}`}
+            >
+              {pill.label}
+              <span className={`inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full text-xs font-bold ${isActive ? 'bg-black/20' : 'bg-black/30'}`}>
+                {count}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
     <TableWrapper>
       <thead>
         <tr>
@@ -388,7 +446,7 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
         </tr>
       </thead>
       <tbody className="divide-y divide-gray-800">
-        {signals.map((signal, i) => {
+        {filteredSignals.map((signal, i) => {
           const isExpanded = expandedRows.has(signal.id)
           const d = parseDetail(signal.signal_detail)
           const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
@@ -418,12 +476,15 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
                         const tt = d.transaction_type
                         const acquirer = d.acquirer_name || signal.companies?.name || '—'
                         const acquired = d.acquired_name
-                        if (tt === 'ipo') return acquirer
+                        const companyName = signal.companies?.name || d.company_name || acquirer
+                        if (tt === 'ipo') return companyName
                         // merger: acquirer_name=Parent, acquired_name=target (filer)
                         if (tt === 'merger') return acquired ? `${acquirer} → ${acquired}` : acquirer
-                        if (tt === 'partnership') return acquired ? `${acquirer} ↔ ${acquired}` : acquirer
-                        // acquisition + product_acquisition: acquirer → target/seller
-                        return acquired ? `${acquirer} → ${acquired}` : `${acquirer} (details TBD)`
+                        // product_acquisition: filer → seller (use company_name as the acquirer)
+                        if (tt === 'product_acquisition') return acquired ? `${companyName} → ${acquired}` : companyName
+                        if (tt === 'partnership') return acquired ? `${companyName} ↔ ${acquired}` : companyName
+                        // acquisition: acquirer → acquired target (no fallback text)
+                        return acquired ? `${acquirer} → ${acquired}` : acquirer
                       })() : signal.companies?.name || d.company_name || '—'}
                     </span>
                     {d.pre_hiring_signal && (
@@ -471,6 +532,7 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
         })}
       </tbody>
     </TableWrapper>
+    </div>
   )
 }
 
@@ -487,9 +549,31 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
   return (
     <div className="flex flex-col gap-10">
 
+      {/* ── Section Navigation ── */}
+      <div className="flex gap-1 border-b border-gray-800 pb-0 -mb-6">
+        <button
+          onClick={() => document.getElementById('competitor-postings')?.scrollIntoView({ behavior: 'smooth' })}
+          className="flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-800 rounded-t transition-colors"
+        >
+          Competitor Postings
+          <span className="px-1.5 py-0.5 rounded-full bg-red-900 text-red-300 text-xs font-bold">
+            {competitorSignals.length}
+          </span>
+        </button>
+        <button
+          onClick={() => document.getElementById('stale-roles')?.scrollIntoView({ behavior: 'smooth' })}
+          className="flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-800 rounded-t transition-colors"
+        >
+          Stale Roles
+          <span className="px-1.5 py-0.5 rounded-full bg-amber-900 text-amber-300 text-xs font-bold">
+            {staleSignals.length}
+          </span>
+        </button>
+      </div>
+
       {/* ── Section 1: Competitor Postings ── */}
       <div>
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 mb-3" id="competitor-postings">
           <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Competitor Postings</h2>
           <span className="px-2 py-0.5 rounded-full bg-red-900 text-red-300 text-xs font-bold">
             {competitorSignals.length}
@@ -562,7 +646,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
 
       {/* ── Section 2: Stale Roles at Target Companies ── */}
       <div>
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 mb-3" id="stale-roles">
           <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Stale Roles at Target Companies</h2>
           <span className="px-2 py-0.5 rounded-full bg-amber-900 text-amber-300 text-xs font-bold">
             {staleSignals.length}
@@ -577,6 +661,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
               <tr>
                 <Th>Role Title</Th>
                 <Th>Company</Th>
+                <Th>Hiring Manager</Th>
                 <Th>Location</Th>
                 <Th>Days Open</Th>
                 <Th>View</Th>
@@ -605,6 +690,12 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                       <td className="px-4 py-3 text-sm font-semibold text-gray-100 whitespace-nowrap">
                         {signal.companies?.name || d.company_name || '—'}
                       </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        {d.hiring_manager && d.hiring_manager !== 'Unknown'
+                          ? <span className="text-sm text-gray-100">{d.hiring_manager}</span>
+                          : <span className="text-xs text-gray-600 italic">Unknown</span>
+                        }
+                      </td>
                       <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">{d.job_location || '—'}</td>
                       <td className="px-4 py-3">
                         {daysOpen > 0 ? (
@@ -631,7 +722,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                     </tr>
                     {isExpanded && (
                       <tr key={`${signal.id}-exp`}>
-                        <td colSpan={6} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                        <td colSpan={7} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
                           <ExpandedDetailCard signal={signal} />
                         </td>
                       </tr>

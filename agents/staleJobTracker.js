@@ -137,14 +137,15 @@ async function persistJobSignal(job) {
     signal_type:     'stale_job_posting',
     signal_summary:  `"${job.job_title}" at ${job.company_name} posted for ${job.days_posted}+ days`,
     signal_detail: {
-      company_name: job.company_name,
-      job_title:    job.job_title,
-      job_location: job.job_location,
-      date_posted:  job.date_posted || today,
-      days_posted:  job.days_posted,
-      source_url:   job.source_url,
-      job_board:    'linkedin',
-      source:       'LinkedIn',
+      company_name:    job.company_name,
+      job_title:       job.job_title,
+      job_location:    job.job_location,
+      date_posted:     job.date_posted || today,
+      days_posted:     job.days_posted,
+      source_url:      job.source_url,
+      job_board:       'linkedin',
+      source:          'LinkedIn',
+      hiring_manager:  job.hiring_manager || 'Unknown',
     },
     source_url:         job.source_url,
     source_name:        'LinkedIn',
@@ -226,13 +227,22 @@ export async function run() {
         if (NON_US_LOCATION_PATTERNS.test(job.location)) continue
 
         dedup.add(job.jobUrl)
+
+        // Attempt to fetch hiring manager from job posting page (best-effort,
+        // only if we have remaining request budget)
+        let hiringManager = 'Unknown'
+        if (linkedin.requestsUsed < 58) {
+          hiringManager = await linkedin.fetchHiringManager(job.jobUrl)
+        }
+
         const inserted = await persistJobSignal({
-          job_title:    job.title,
-          company_name: job.company || 'Unknown',
-          job_location: job.location || '',
-          date_posted:  null,
-          days_posted:  job.daysPosted,
-          source_url:   job.jobUrl,
+          job_title:       job.title,
+          company_name:    job.company || 'Unknown',
+          job_location:    job.location || '',
+          date_posted:     null,
+          days_posted:     job.daysPosted,
+          source_url:      job.jobUrl,
+          hiring_manager:  hiringManager,
         })
         if (inserted) { signalsFound++; liSignals++ }
         queryCount++
