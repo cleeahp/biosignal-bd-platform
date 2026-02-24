@@ -5,7 +5,7 @@ import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js'
 
 // CRO company patterns — skip jobs from CROs (they belong to competitor_job_posting)
 const CRO_PATTERNS =
-  /\b(syneos|fortrea|labcorp|iqvia|propharma|premier\s+research|worldwide\s+clinical|halloran|medpace|ppd\b|parexel|covance|charles\s+river|wuxi|pra\s+health|pharmaceutical\s+product\s+development|icon\s+plc|icon\s+strategic|asgn)\b/i
+  /\b(syneos|fortrea|labcorp|iqvia|propharma|premier\s+research|worldwide\s+clinical|halloran|medpace|ppd\b|parexel|covance|charles\s+river|wuxi|pra\s+health|pharmaceutical\s+product\s+development|icon\s+plc|icon\s+strategic|asgn|katalyst|evolution\s+research|seran\s+bioscience|milestone\s+one|pharmaron|globyz|pharmavise|dcn\s+dx|vml\s+health|clinchoice|novaquest|ergomed|theorem\s+clinical|celerion|alimentiv|signant\s+health|clinical\s+ink|science\s+37|velocity\s+clinical|elligo\s+health|cmic|linical|criterium|navitas|calyx|firma\s+clinical|tfs\s+health|rho|psi\s+cro|veristat|makrocare|bioforum|deltamed|prometrika|salamandra|phastar|lotus\s+group)\b/i
 
 // Non-US country names in job location strings. Jobs located outside the US are
 // skipped — we only staff US positions. Blank/Remote locations are kept.
@@ -102,6 +102,18 @@ const COMPETITOR_FIRM_NAMES = new Set([
 // Academic/hospital organisations — not relevant to BD pipeline
 const ACADEMIC_PATTERNS =
   /university|college|hospital|medical center|health system|health centre|institute|foundation|children's|memorial|research center|\bnih\b|\bcdc\b|\bnci\b|\bmgh\b/i
+
+// IT consulting, outsourcing, and service firms — not pharma/biotech BD targets
+const CONSULTING_PATTERNS =
+  /\b(capgemini|accenture|deloitte|mckinsey|bcg|bain|kpmg|pwc|ernst\s+(&|and)\s+young|\bey\b|cognizant|infosys|wipro|\btcs\b|tata\s+consultancy|hcl\s+tech|tech\s+mahindra|millenniumsoft|\bmms\b|m3\s+usa|m3\s+global|\bnosh\b|ntt\s+data|cgi\s+group|\batos\b|dxc\s+technology|\bmaximus\b|\bunisys\b)\b/i
+
+// Clinical trial sites, medical practices, and specialty clinics — not staffing targets
+const CLINICAL_SITE_PATTERNS =
+  /suncoast\s+skin|dermatology|dental|veterinary|optometry|chiropractic|podiatry|urgent\s+care|family\s+medicine|primary\s+care|pediatric(?!.*pharma)|orthopedic|cosmetic\s+surgery|weight\s+loss\s+clinic|med\s+spa|wellness\s+center|reference\s+laboratory|sonic\s+reference|labcorp(?!.*drug)|quest\s+diagnostics/i
+
+// Positive indicator — company must look like a pharma/biotech/medtech firm
+const PHARMA_BIOTECH_INDICATOR =
+  /pharma|biotech|therapeutics|biosciences|biologics|genomics|oncology|biopharma|medtech|diagnostics|medical\s+device|life\s+sciences/i
 
 // Strip legal suffixes to get a short company name for targeted queries
 function shortCompanyName(name) {
@@ -262,6 +274,25 @@ export async function run() {
           console.log(`[StaleJobs] FILTERED (CRO): ${job.company}`)
           continue
         }
+        if (job.company && CONSULTING_PATTERNS.test(job.company)) {
+          console.log(`[StaleJobs] FILTERED (consulting): ${job.company} — ${job.title}`)
+          continue
+        }
+        if (job.company && CLINICAL_SITE_PATTERNS.test(job.company)) {
+          console.log(`[StaleJobs] FILTERED (clinical site): ${job.company} — ${job.title}`)
+          continue
+        }
+        if (job.company && /[^\x00-\x7F]/.test(job.company)) {
+          console.log(`[StaleJobs] FILTERED (non-English): ${job.company}`)
+          continue
+        }
+        if (job.company &&
+            !matchPastClient(job.company, pastClientsMap) &&
+            !PHARMA_BIOTECH_INDICATOR.test(job.company) &&
+            !matchesRoleKeywords(job.title)) {
+          console.log(`[StaleJobs] FILTERED (non-pharma company): ${job.company} — ${job.title}`)
+          continue
+        }
 
         dedup.add(job.jobUrl)
 
@@ -317,6 +348,25 @@ export async function run() {
         if (NON_US_LOCATION_PATTERNS.test(job.location)) continue
         if (job.company && CRO_PATTERNS.test(job.company)) {
           console.log(`[StaleJobs] FILTERED (CRO): ${job.company}`)
+          continue
+        }
+        if (job.company && CONSULTING_PATTERNS.test(job.company)) {
+          console.log(`[StaleJobs] FILTERED (consulting): ${job.company} — ${job.title}`)
+          continue
+        }
+        if (job.company && CLINICAL_SITE_PATTERNS.test(job.company)) {
+          console.log(`[StaleJobs] FILTERED (clinical site): ${job.company} — ${job.title}`)
+          continue
+        }
+        if (job.company && /[^\x00-\x7F]/.test(job.company)) {
+          console.log(`[StaleJobs] FILTERED (non-English): ${job.company}`)
+          continue
+        }
+        if (job.company &&
+            !matchPastClient(job.company, pastClientsMap) &&
+            !PHARMA_BIOTECH_INDICATOR.test(job.company) &&
+            !matchesRoleKeywords(job.title)) {
+          console.log(`[StaleJobs] FILTERED (non-pharma company): ${job.company} — ${job.title}`)
           continue
         }
 
