@@ -543,8 +543,13 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
 
   function copyMatchPrompt(e, signal) {
     e.stopPropagation()
-    const desc = parseDetail(signal.signal_detail).job_description || ''
-    const prompt = `This is a job description. Infer who you believe is the specific company hiring this role. ${desc}`
+    const d = parseDetail(signal.signal_detail)
+    let desc = d.job_description || ''
+    const firmName = d.competitor_firm || ''
+    if (firmName) {
+      desc = desc.replace(new RegExp(firmName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '').replace(/\s+/g, ' ').trim()
+    }
+    const prompt = `This is a job description from a staffing firm. Infer who you believe is the specific end-client company hiring for this role. Ignore the staffing firm name. ${desc}`
     navigator.clipboard.writeText(prompt).then(() => {
       setCopiedId(signal.id)
       setTimeout(() => setCopiedId(null), 1500)
