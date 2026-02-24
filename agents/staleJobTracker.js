@@ -103,6 +103,13 @@ const COMPETITOR_FIRM_NAMES = new Set([
 const ACADEMIC_PATTERNS =
   /university|college|hospital|medical center|health system|health centre|institute|foundation|children's|memorial|research center|\bnih\b|\bcdc\b|\bnci\b|\bmgh\b/i
 
+// Strip legal suffixes to get a short company name for targeted queries
+function shortCompanyName(name) {
+  return name
+    .replace(/,?\s+(Inc\.?|Corp\.?|LLC\.?|LP\.?|L\.P\.?|Ltd\.?|B\.V\.?|GmbH|Co\.)?\s*$/i, '')
+    .trim()
+}
+
 // ─── Shared signal helpers ─────────────────────────────────────────────────────
 
 async function signalExists(companyId, signalType, sourceUrl) {
@@ -197,11 +204,16 @@ export async function run() {
   const pastClientsMap = await loadPastClients()
   console.log(`[StaleJobs] Loaded ${pastClientsMap.size} past clients for scoring.`)
 
+  // Build one targeted query per past client: "{short name}" pharmaceutical
+  const targetedQueries = [...pastClientsMap.values()].map((client) =>
+    `"${shortCompanyName(client.name)}" pharmaceutical`
+  )
+
   let signalsFound = 0
 
   try {
-    // ── Initialise LinkedIn client — budget: 60 requests ────────────────────
-    const linkedin = createLinkedInClient(60)
+    // ── Initialise LinkedIn client — budget: 80 requests ────────────────────
+    const linkedin = createLinkedInClient(80)
 
     if (!linkedin) {
       console.log('[StaleJobs] LinkedIn unavailable — nothing to do')
@@ -212,16 +224,75 @@ export async function run() {
       return { signalsFound: 0, requestsUsed: 0 }
     }
 
-    // Shuffle queries on every run so coverage rotates across daily runs
-    const queries = shuffleArray(LINKEDIN_STALE_QUERIES)
-    const dedup       = new Set()    // dedup by job URL within this run
-    let liSignals     = 0
+    const dedup            = new Set()   // dedup by job URL within this run
+    let liSignals          = 0
     const MAX_LI_SIGNALS    = 100
     const MAX_JOBS_PER_QUERY = 5
 
+    // ── Targeted past client queries (run first) ─────────────────────────────
+    console.log(`[StaleJobs] Running ${targetedQueries.length} targeted past client queries first...`)
+    let pastClientSignals = 0
+    let pastClientQueriesDone = 0
+
+    for (const query of targetedQueries) {
+      if (liSignals >= MAX_LI_SIGNALS) break
+      if (linkedin.requestsUsed >= 80) {
+        console.log(`[StaleJobs] Budget exhausted (${linkedin.requestsUsed} requests used)`)
+        break
+      }
+
+      const results = await linkedin.searchJobs(query, null, 'r7776000')
+
+      if (linkedin.botDetected) {
+        console.log('[StaleJobs] Bot detected — stopping for today')
+        break
+      }
+
+      let queryCount = 0
+      for (const job of results) {
+        if (liSignals >= MAX_LI_SIGNALS) break
+        if (queryCount >= MAX_JOBS_PER_QUERY) break
+        if (!job.jobUrl || dedup.has(job.jobUrl)) continue
+        if (job.daysPosted < 30) continue
+        // matchesRoleKeywords intentionally skipped — all roles relevant for known past clients
+        if (COMPETITOR_FIRM_NAMES.has(job.company)) continue
+        if (ACADEMIC_PATTERNS.test(job.company)) continue
+        if (NON_US_LOCATION_PATTERNS.test(job.location)) continue
+        if (job.company && CRO_PATTERNS.test(job.company)) {
+          console.log(`[StaleJobs] FILTERED (CRO): ${job.company}`)
+          continue
+        }
+
+        dedup.add(job.jobUrl)
+
+        let hiringManager = 'Unknown'
+        if (linkedin.requestsUsed < 78) {
+          hiringManager = await linkedin.fetchHiringManager(job.jobUrl)
+        }
+
+        const inserted = await persistJobSignal({
+          job_title:      job.title,
+          company_name:   job.company || 'Unknown',
+          job_location:   job.location || '',
+          date_posted:    null,
+          days_posted:    job.daysPosted,
+          source_url:     job.jobUrl,
+          hiring_manager: hiringManager,
+        }, pastClientsMap)
+        if (inserted) { signalsFound++; liSignals++; pastClientSignals++ }
+        queryCount++
+      }
+      pastClientQueriesDone++
+    }
+
+    console.log(`[StaleJobs] Past client queries complete: ${pastClientSignals} signals from ${pastClientQueriesDone} queries`)
+
+    // ── Generic role queries (shuffled, run after targeted) ──────────────────
+    const queries = shuffleArray(LINKEDIN_STALE_QUERIES)
+
     for (const query of queries) {
       if (liSignals >= MAX_LI_SIGNALS) break
-      if (linkedin.requestsUsed >= 60) {
+      if (linkedin.requestsUsed >= 80) {
         console.log(`[StaleJobs] Budget exhausted (${linkedin.requestsUsed} requests used)`)
         break
       }
@@ -254,7 +325,7 @@ export async function run() {
         // Attempt to fetch hiring manager from job posting page (best-effort,
         // only if we have remaining request budget)
         let hiringManager = 'Unknown'
-        if (linkedin.requestsUsed < 58) {
+        if (linkedin.requestsUsed < 78) {
           hiringManager = await linkedin.fetchHiringManager(job.jobUrl)
         }
 
