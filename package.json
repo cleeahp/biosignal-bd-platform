@@ -10,6 +10,7 @@
     "run-job-agents": "node scripts/runJobAgents.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
     "@supabase/supabase-js": "^2.39.0",
     "cheerio": "^1.0.0-rc.12",
     "dotenv": "^16.4.5",

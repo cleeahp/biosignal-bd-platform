@@ -604,6 +604,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                 <Th>Role Title</Th>
                 <Th>Competitor</Th>
                 <Th>Location</Th>
+                <Th>Likely Client</Th>
                 <Th>Date Posted</Th>
                 <Th>View</Th>
                 <Th>Prompt</Th>
@@ -627,6 +628,11 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                         {d.competitor_firm || signal.companies?.name || '—'}
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">{d.job_location || '—'}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        {d.inferred_client
+                          ? <span className="text-sm text-gray-200">{d.inferred_client}</span>
+                          : <span className="text-xs text-gray-600">—</span>}
+                      </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
                         {formatDate(d.posting_date || signal.first_detected_at)}
                       </td>
@@ -660,7 +666,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                     </tr>
                     {isExpanded && (
                       <tr key={`${signal.id}-exp`}>
-                        <td colSpan={7} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                        <td colSpan={8} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
                           <ExpandedDetailCard signal={signal} />
                         </td>
                       </tr>

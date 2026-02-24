@@ -28,6 +28,7 @@ jobs:
           SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           LINKEDIN_LI_AT:            ${{ secrets.LINKEDIN_LI_AT }}
+          ANTHROPIC_API_KEY:         ${{ secrets.ANTHROPIC_API_KEY }}
           NODE_ENV:                  production
         run: node scripts/runJobAgents.js
 

@@ -1,6 +1,7 @@
 import { supabase, upsertCompany } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
+import { batchInferClients } from '../lib/llmClientInference.js'
 
 // ─── Competitor firms seed data ────────────────────────────────────────────────
 // 45 life sciences staffing firms. Upserted into competitor_firms when the
@@ -360,7 +361,7 @@ async function persistCompetitorSignal(firmName, jobUrl, jobTitle, jobLocation, 
 
   const today = new Date().toISOString().split('T')[0]
 
-  const { error } = await supabase.from('signals').insert({
+  const { data: insertedRow, error } = await supabase.from('signals').insert({
     company_id:      firmCompany.id,
     signal_type:     'competitor_job_posting',
     signal_summary:  `${firmName}: "${jobTitle}"`,
@@ -384,13 +385,13 @@ async function persistCompetitorSignal(firmName, jobUrl, jobTitle, jobLocation, 
     score_breakdown:    { signal_strength: 15 },
     days_in_queue:      0,
     is_carried_forward: false,
-  })
+  }).select('id').single()
 
   if (error) {
     console.warn(`Signal insert failed for ${firmName}: ${error.message}`)
-    return false
+    return null
   }
-  return true
+  return insertedRow?.id ?? null
 }
 
 // ─── Main export ───────────────────────────────────────────────────────────────
@@ -475,6 +476,7 @@ export async function run() {
     let firmsChecked = 0
     let firmIndex = 0
     let totalClientInferences = 0  // cap LinkedIn client-inference at 20 per run
+    const insertedSignals = []     // collect for LLM post-processing
 
     // ── Step 4: LinkedIn search for each firm — no career page fetching ──────
     for (const firm of firmsToCheck) {
@@ -535,10 +537,20 @@ export async function run() {
           console.log(`[CompetitorJobs] Client inferred: "${clientData.inferred_client}" (${clientData.client_confidence}, ${clientData.client_inference_method})`)
         }
 
-        const inserted = await persistCompetitorSignal(
+        const insertedId = await persistCompetitorSignal(
           firm.name, job.jobUrl || '', job.title, job.location || '', description, clientData || {},
         )
-        if (inserted) { signalsFound++; liInserted++ }
+        if (insertedId) {
+          signalsFound++
+          liInserted++
+          insertedSignals.push({
+            id: insertedId,
+            job_title: job.title,
+            job_description: description,
+            competitor_firm: firm.name,
+            job_location: job.location || '',
+          })
+        }
       }
 
       console.log(`${firm.name}: ${liInserted} LinkedIn signals saved`)
@@ -546,6 +558,41 @@ export async function run() {
     }
 
     const requestsUsed = linkedin.requestsUsed
+
+    // ── Step 5: LLM batch client inference (post-processing, best-effort) ───
+    if (insertedSignals.length > 0) {
+      try {
+        const inferenceMap = await batchInferClients(insertedSignals)
+        if (inferenceMap.size > 0) {
+          const insertedIds = insertedSignals.map(s => s.id)
+          const { data: rows } = await supabase
+            .from('signals')
+            .select('id, signal_detail')
+            .in('id', insertedIds)
+          let enriched = 0
+          for (const row of rows || []) {
+            const preds = inferenceMap.get(row.id)
+            if (!preds?.length) continue
+            await supabase
+              .from('signals')
+              .update({
+                signal_detail: {
+                  ...row.signal_detail,
+                  llm_inferred_clients: preds,
+                  inferred_client:      preds[0].company,
+                  client_confidence:    preds[0].confidence,
+                  client_inference_method: 'llm_batch',
+                },
+              })
+              .eq('id', row.id)
+            enriched++
+          }
+          console.log(`[CompetitorJobs] LLM inference: ${enriched} signals enriched`)
+        }
+      } catch (err) {
+        console.warn(`[CompetitorJobs] LLM inference failed: ${err.message}`)
+      }
+    }
 
     await supabase.from('agent_runs').update({
       status:       'completed',
