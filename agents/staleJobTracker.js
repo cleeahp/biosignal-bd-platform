@@ -2,6 +2,7 @@ import { supabase, upsertCompany } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
 import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js'
+import { loadExcludedCompanies, isExcludedCompany } from '../lib/companyExclusion.js'
 
 // CRO company patterns — skip jobs from CROs (they belong to competitor_job_posting)
 const CRO_PATTERNS =
@@ -216,6 +217,9 @@ export async function run() {
   const pastClientsMap = await loadPastClients()
   console.log(`[StaleJobs] Loaded ${pastClientsMap.size} past clients for scoring.`)
 
+  const excludedCompanies = await loadExcludedCompanies()
+  console.log(`[StaleJobs] Loaded ${excludedCompanies.size} excluded companies.`)
+
   // Build one targeted query per past client: "{short name}" pharmaceutical
   const targetedQueries = [...pastClientsMap.values()].map((client) =>
     `"${shortCompanyName(client.name)}" pharmaceutical`
@@ -295,6 +299,11 @@ export async function run() {
         }
 
         dedup.add(job.jobUrl)
+
+        if (isExcludedCompany(job.company || '', excludedCompanies)) {
+          console.log(`[StaleJobs] EXCLUDED (large company): ${job.company}`)
+          continue
+        }
 
         let hiringManager = 'Unknown'
         if (linkedin.requestsUsed < 78) {

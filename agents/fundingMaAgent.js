@@ -22,6 +22,7 @@
 
 import { supabase, normalizeCompanyName, upsertCompany } from '../lib/supabase.js';
 import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js';
+import { loadExcludedCompanies, isExcludedCompany } from '../lib/companyExclusion.js';
 
 // LinkedIn li_at cookie for company posts enrichment (best-effort)
 const LINKEDIN_LI_AT = process.env.LINKEDIN_LI_AT;
@@ -416,7 +417,7 @@ async function fetchNihGrants(sixMonthsAgo, today, currentYear) {
  * @param {number} currentYear
  * @returns {Promise<number>} Signals inserted
  */
-async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap = new Map()) {
+async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap = new Map(), excludedCompanies = new Set()) {
   let signalsInserted = 0;
   let projects;
 
@@ -472,6 +473,11 @@ async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap
     const alreadyExists = await signalExists(company.id, signalType, sourceUrl);
     if (alreadyExists) {
       console.log(`[fundingMaAgent] NIH SKIP: ${orgName} — reason: dedup`);
+      continue;
+    }
+
+    if (isExcludedCompany(orgName, excludedCompanies)) {
+      console.log(`[fundingMaAgent] EXCLUDED (large company): ${orgName}`);
       continue;
     }
 
@@ -1454,7 +1460,7 @@ async function enrichMaSignal(entityName, transactionType, existingDealAmount, e
  * @param {string} today
  * @returns {Promise<number>} Signals inserted
  */
-async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map()) {
+async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map(), excludedCompanies = new Set()) {
   let signalsInserted = 0;
   const MA_BASE_SCORE = 27;
   let liEnrichRequests = 0;
@@ -1557,6 +1563,11 @@ async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map())
         source_url:           filingUrl,
         ...preHiringDetail,
       };
+
+      if (isExcludedCompany(entityName, excludedCompanies)) {
+        console.log(`[fundingMaAgent] EXCLUDED (large company): ${entityName}`);
+        continue;
+      }
 
       const company = await upsertCompany(supabase, { name: entityName });
       if (company) {
@@ -1691,7 +1702,7 @@ function extractCompanyFromBioSpaceTitle(title) {
  * @param {string} today - YYYY-MM-DD
  * @returns {Promise<number>} Signals inserted
  */
-async function processBioSpaceDeals(today, pastClientsMap = new Map()) {
+async function processBioSpaceDeals(today, pastClientsMap = new Map(), excludedCompanies = new Set()) {
   let signalsInserted = 0;
   const BASE_SCORE = 28;
   const SOURCE_URL = 'https://www.biospace.com/deals/';
@@ -1730,6 +1741,11 @@ async function processBioSpaceDeals(today, pastClientsMap = new Map()) {
 
     // Skip if it looks like a large pharma filer (we want the smaller biotech)
     if (LARGE_PHARMA_PATTERNS.test(rawCompany) && dealType === 'pharma_partnership') continue;
+
+    if (isExcludedCompany(rawCompany, excludedCompanies)) {
+      console.log(`[fundingMaAgent] EXCLUDED (large company): ${rawCompany}`);
+      continue;
+    }
 
     const amount = extractAmount(title);
     const company = await upsertCompany(supabase, { name: rawCompany });
@@ -1785,7 +1801,7 @@ async function processBioSpaceDeals(today, pastClientsMap = new Map()) {
  * @param {string} today - YYYY-MM-DD
  * @returns {Promise<number>} Signals inserted
  */
-async function processBioSpaceFunding(today, pastClientsMap = new Map()) {
+async function processBioSpaceFunding(today, pastClientsMap = new Map(), excludedCompanies = new Set()) {
   let signalsInserted = 0;
   const BASE_SCORE = 28;
   const SOURCE_URL = 'https://www.biospace.com/funding/';
@@ -1824,6 +1840,11 @@ async function processBioSpaceFunding(today, pastClientsMap = new Map()) {
 
     // Exclude VC fund entities that appear as company names
     if (VC_FUND_PATTERNS.test(rawCompany)) continue;
+
+    if (isExcludedCompany(rawCompany, excludedCompanies)) {
+      console.log(`[fundingMaAgent] EXCLUDED (large company): ${rawCompany}`);
+      continue;
+    }
 
     const amount = extractAmount(title);
     const company = await upsertCompany(supabase, { name: rawCompany });
@@ -1891,12 +1912,15 @@ export async function run() {
   const pastClientsMap = await loadPastClients();
   console.log(`[fundingMaAgent] Loaded ${pastClientsMap.size} past clients for scoring.`);
 
+  const excludedCompanies = await loadExcludedCompanies();
+  console.log(`[fundingMaAgent] Loaded ${excludedCompanies.size} excluded companies.`);
+
   const sourceCounts = { nih: 0, ma: 0, biospaceDeals: 0, biospaceVcIpo: 0 };
   let signalsFound = 0;
 
   // Source 1: NIH SBIR/STTR grants
   try {
-    sourceCounts.nih = await processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap);
+    sourceCounts.nih = await processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap, excludedCompanies);
     signalsFound += sourceCounts.nih;
     console.log(`[fundingMaAgent] NIH grants: ${sourceCounts.nih} signals`);
   } catch (err) {
@@ -1905,7 +1929,7 @@ export async function run() {
 
   // Source 2: SEC EDGAR M&A 8-K filings
   try {
-    sourceCounts.ma = await processMaFilings(sixMonthsAgo, today, pastClientsMap);
+    sourceCounts.ma = await processMaFilings(sixMonthsAgo, today, pastClientsMap, excludedCompanies);
     signalsFound += sourceCounts.ma;
     console.log(`[fundingMaAgent] M&A filings: ${sourceCounts.ma} signals`);
   } catch (err) {
@@ -1914,7 +1938,7 @@ export async function run() {
 
   // Source 3: BioSpace /deals/ — pharma partnerships & licensing
   try {
-    sourceCounts.biospaceDeals = await processBioSpaceDeals(today, pastClientsMap);
+    sourceCounts.biospaceDeals = await processBioSpaceDeals(today, pastClientsMap, excludedCompanies);
     signalsFound += sourceCounts.biospaceDeals;
     console.log(`[fundingMaAgent] BioSpace deals: ${sourceCounts.biospaceDeals} signals`);
   } catch (err) {
@@ -1923,7 +1947,7 @@ export async function run() {
 
   // Source 4: BioSpace /funding/ — VC rounds & IPOs
   try {
-    sourceCounts.biospaceVcIpo = await processBioSpaceFunding(today, pastClientsMap);
+    sourceCounts.biospaceVcIpo = await processBioSpaceFunding(today, pastClientsMap, excludedCompanies);
     signalsFound += sourceCounts.biospaceVcIpo;
     console.log(`[fundingMaAgent] BioSpace funding: ${sourceCounts.biospaceVcIpo} signals`);
   } catch (err) {

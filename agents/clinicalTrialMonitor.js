@@ -10,6 +10,7 @@
 
 import { supabase, upsertCompany } from '../lib/supabase.js';
 import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js';
+import { loadExcludedCompanies, isExcludedCompany } from '../lib/companyExclusion.js';
 
 const CT_API_BASE = 'https://clinicaltrials.gov/api/v2/studies';
 const CT_STUDY_BASE = 'https://clinicaltrials.gov/study';
@@ -421,7 +422,7 @@ async function finaliseAgentRun(runId, status, signalsFound, errorMessage = null
  * @param {Date} completionCutoff - Furthest future date for completion signals
  * @returns {Promise<number>}
  */
-async function processStudy(study, now, pastClientsMap = new Map()) {
+async function processStudy(study, now, pastClientsMap = new Map(), excludedCompanies = new Set()) {
   const proto = extractProtocol(study);
 
   // Guard 1: only INDUSTRY sponsors (API pre-filters, but we confirm)
@@ -446,6 +447,11 @@ async function processStudy(study, now, pastClientsMap = new Map()) {
   }
 
   console.log(`[clinicalTrialMonitor] INDUSTRY PASS: ${proto.nctId} — ${proto.leadSponsorName}`);
+
+  if (isExcludedCompany(proto.leadSponsorName, excludedCompanies)) {
+    console.log(`[clinicalTrialMonitor] EXCLUDED (large company): ${proto.leadSponsorName}`);
+    return 0;
+  }
 
   const { phaseStr, phaseNum, isCombined } = parsePhase(proto.phases);
   const studySummary = buildStudySummary(proto);
@@ -568,6 +574,8 @@ export async function run() {
 
   const pastClientsMap = await loadPastClients();
   console.log(`[clinicalTrialMonitor] Loaded ${pastClientsMap.size} past clients for scoring.`);
+  const excludedCompanies = await loadExcludedCompanies();
+  console.log(`[clinicalTrialMonitor] Loaded ${excludedCompanies.size} excluded companies.`);
 
   let signalsFound = 0;
   let studiesProcessed = 0;
@@ -588,7 +596,7 @@ export async function run() {
         industryFiltered++;
       }
 
-      const inserted = await processStudy(study, now, pastClientsMap);
+      const inserted = await processStudy(study, now, pastClientsMap, excludedCompanies);
       signalsFound += inserted;
     }
 
