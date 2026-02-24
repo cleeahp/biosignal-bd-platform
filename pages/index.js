@@ -539,6 +539,17 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
 // ─── Tab: Jobs ────────────────────────────────────────────────────────────────
 
 function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim }) {
+  const [copiedId, setCopiedId] = useState(null)
+
+  function copyMatchPrompt(e, signal) {
+    e.stopPropagation()
+    const desc = parseDetail(signal.signal_detail).job_description || ''
+    const prompt = `This is a job description. Infer who you believe is the specific company hiring this role. ${desc}`
+    navigator.clipboard.writeText(prompt).then(() => {
+      setCopiedId(signal.id)
+      setTimeout(() => setCopiedId(null), 1500)
+    })
+  }
   const competitorSignals = signals.filter(s => s.signal_type === 'competitor_job_posting')
   const staleSignals = signals.filter(s =>
     s.signal_type === 'stale_job_posting' || s.signal_type === 'target_company_job'
@@ -592,6 +603,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                 <Th>Location</Th>
                 <Th>Date Posted</Th>
                 <Th>View</Th>
+                <Th>Prompt</Th>
                 <Th>Claim</Th>
               </tr>
             </thead>
@@ -647,12 +659,24 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                         ) : <span className="text-xs text-gray-600">—</span>}
                       </td>
                       <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                        {d.job_description ? (
+                          <button
+                            onClick={e => copyMatchPrompt(e, signal)}
+                            className="px-2 py-1 rounded text-xs font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white transition-colors whitespace-nowrap"
+                          >
+                            {copiedId === signal.id ? 'Copied!' : 'Match Prompt'}
+                          </button>
+                        ) : (
+                          <span className="text-xs text-gray-600">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                         <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
                       </td>
                     </tr>
                     {isExpanded && (
                       <tr key={`${signal.id}-exp`}>
-                        <td colSpan={8} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                        <td colSpan={9} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
                           <ExpandedDetailCard signal={signal} />
                         </td>
                       </tr>
