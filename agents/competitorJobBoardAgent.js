@@ -3,7 +3,7 @@ import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
 
 // ─── Competitor firms seed data ────────────────────────────────────────────────
-// 30 life sciences staffing firms. Upserted into competitor_firms when the
+// 45 life sciences staffing firms. Upserted into competitor_firms when the
 // table has fewer than 30 rows. LinkedIn is the sole job source — no career
 // pages are scraped.
 
@@ -19,7 +19,6 @@ const COMPETITOR_FIRMS_SEED = [
   { name: 'Randstad' },
   { name: 'Joule Staffing' },
   { name: 'Beacon Hill Staffing Group' },
-  { name: 'ASGN Incorporated' },
   { name: 'Net2Source' },
   { name: 'USTech Solutions' },
   { name: 'Yoh Services' },
@@ -55,6 +54,11 @@ const COMPETITOR_FIRMS_SEED = [
   { name: 'The Fountain Group' },
   { name: 'Hueman RPO' },
 ]
+
+// CRO / non-staffing firms — jobs posted BY these companies must be skipped even
+// if LinkedIn surfaces them in a staffing-firm search.
+const CRO_PATTERNS =
+  /\b(syneos|fortrea|labcorp|iqvia|propharma|premier\s+research|worldwide\s+clinical|halloran|medpace|ppd\b|parexel|covance|charles\s+river|wuxi|pra\s+health|pharmaceutical\s+product\s+development|icon\s+plc|icon\s+strategic|asgn)\b/i
 
 // Non-US job location filter — skip non-US postings
 const NON_US_JOB_LOC =
@@ -495,6 +499,13 @@ export async function run() {
       for (const job of liJobs.slice(0, 3)) {
         if (!matchesRoleKeywords(job.title)) continue
         if (NON_US_JOB_LOC.test(job.location)) continue
+
+        // Skip jobs posted BY a CRO/non-staffing company (LinkedIn sometimes
+        // surfaces CRO postings when searching for a staffing firm's keyword)
+        if (job.company && CRO_PATTERNS.test(job.company)) {
+          console.log(`[CompetitorJobs] FILTERED (CRO): "${job.company}" — ${job.title}`)
+          continue
+        }
 
         // Fetch description via guest API (/jobs-guest/jobs/api/jobPosting/{id})
         let description = ''
