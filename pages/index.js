@@ -598,8 +598,6 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
               <tr>
                 <Th>Role Title</Th>
                 <Th>Competitor</Th>
-                <Th>Likely Client</Th>
-                <Th>Confidence</Th>
                 <Th>Location</Th>
                 <Th>Date Posted</Th>
                 <Th>View</Th>
@@ -612,13 +610,6 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                 const isExpanded = expandedRows.has(signal.id)
                 const d = parseDetail(signal.signal_detail)
                 const rowBg = i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-950'
-                const confBadge = d.client_confidence === 'High'
-                  ? 'bg-green-900 text-green-300'
-                  : d.client_confidence === 'Medium'
-                    ? 'bg-yellow-900 text-yellow-300'
-                    : d.client_confidence === 'Low'
-                      ? 'bg-gray-700 text-gray-400'
-                      : null
                 return (
                   <>
                     <tr
@@ -629,18 +620,6 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                       <td className="px-4 py-3 text-sm text-white font-medium">{d.job_title || '—'}</td>
                       <td className="px-4 py-3 text-sm font-semibold text-gray-100 whitespace-nowrap">
                         {d.competitor_firm || signal.companies?.name || '—'}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-100 whitespace-nowrap">
-                        {d.inferred_client
-                          ? <span className="font-medium">{d.inferred_client}</span>
-                          : <span className="text-gray-600">—</span>
-                        }
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        {confBadge
-                          ? <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${confBadge}`}>{d.client_confidence}</span>
-                          : <span className="text-gray-600 text-xs">—</span>
-                        }
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">{d.job_location || '—'}</td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
@@ -676,7 +655,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                     </tr>
                     {isExpanded && (
                       <tr key={`${signal.id}-exp`}>
-                        <td colSpan={9} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                        <td colSpan={7} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
                           <ExpandedDetailCard signal={signal} />
                         </td>
                       </tr>
