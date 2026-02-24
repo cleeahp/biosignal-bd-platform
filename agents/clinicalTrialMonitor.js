@@ -502,6 +502,7 @@ async function processStudy(study, now, pastClientsMap = new Map()) {
         signal_detail: detail,
         source_url: dedupUrl,
         created_at: new Date().toISOString(),
+        score_breakdown: { signal_strength: baseScore, past_client_boost: pastClient?.boost_score || 0 },
       });
       if (inserted) signalsInserted++;
     }
@@ -540,6 +541,7 @@ async function processStudy(study, now, pastClientsMap = new Map()) {
         signal_detail: detail,
         source_url: dedupUrl,
         created_at: new Date().toISOString(),
+        score_breakdown: { signal_strength: baseScore, past_client_boost: pastClient?.boost_score || 0 },
       });
       if (inserted) signalsInserted++;
     }

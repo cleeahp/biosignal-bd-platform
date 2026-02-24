@@ -505,6 +505,7 @@ async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap
       signal_detail: detail,
       source_url: sourceUrl,
       created_at: new Date().toISOString(),
+      score_breakdown: { signal_strength: adjustedScore, past_client_boost: pastClient?.boost_score || 0 },
     });
 
     if (inserted) {
@@ -1570,6 +1571,7 @@ async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map())
           signal_detail: detail,
           source_url: filingUrl,
           created_at: new Date().toISOString(),
+          score_breakdown: { signal_strength: adjustedScore, past_client_boost: pastClient?.boost_score || 0 },
         });
 
         if (inserted) signalsInserted++;
@@ -1763,6 +1765,7 @@ async function processBioSpaceDeals(today, pastClientsMap = new Map()) {
       signal_detail: detail,
       source_url: url,
       created_at: new Date().toISOString(),
+      score_breakdown: { signal_strength: adjustedScore, past_client_boost: pastClient?.boost_score || 0 },
     });
 
     if (inserted) signalsInserted++;
@@ -1856,6 +1859,7 @@ async function processBioSpaceFunding(today, pastClientsMap = new Map()) {
       signal_detail: detail,
       source_url: url,
       created_at: new Date().toISOString(),
+      score_breakdown: { signal_strength: adjustedScore, past_client_boost: pastClient?.boost_score || 0 },
     });
 
     if (inserted) signalsInserted++;

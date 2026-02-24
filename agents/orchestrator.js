@@ -13,14 +13,21 @@ function recalculatePriorityScore(signal) {
   const breakdown = signal.score_breakdown || {}
   const daysInQueue = signal.days_in_queue || 0
 
-  // Base signal strength
-  const signalStrength = breakdown.signal_strength || 15
+  // Base signal strength — score_breakdown.signal_strength (clinical/funding agents),
+  // fall back to breakdown.base (stale-job format), then default 15
+  const signalStrength = breakdown.signal_strength || breakdown.base || 15
 
   // Relationship warmth (unchanged)
   const warmthScore = breakdown.relationship_warmth || 0
 
   // Actionability (unchanged)
   const actionability = breakdown.actionability || 0
+
+  // Past client boost — from score_breakdown (new signals) or fall back to
+  // signal_detail.past_client (covers signals inserted before score_breakdown tracked it)
+  const pastClientBoost = breakdown.past_client_boost
+    || (signal.signal_detail && signal.signal_detail.past_client && signal.signal_detail.past_client.boost_score)
+    || 0
 
   // Recency with decay:
   // - Each day old reduces recency by 3, floor of 10
@@ -34,7 +41,7 @@ function recalculatePriorityScore(signal) {
     recency = Math.min(baseRecency + urgencyBonus, 25) // cap back at 25
   }
 
-  return Math.min(signalStrength + recency + warmthScore + actionability, 100)
+  return Math.min(signalStrength + recency + warmthScore + actionability + pastClientBoost, 100)
 }
 
 // ─── Orchestrator ─────────────────────────────────────────────────────────────
@@ -106,7 +113,7 @@ export async function runOrchestrator() {
     // ── Step 3: Recalculate priority scores for all active signals ────────────
     const { data: activeSignals } = await supabase
       .from('signals')
-      .select('id, score_breakdown, days_in_queue, first_detected_at, status')
+      .select('id, score_breakdown, signal_detail, days_in_queue, first_detected_at, status')
       .in('status', ['new', 'carried_forward'])
 
     if (activeSignals && activeSignals.length > 0) {
