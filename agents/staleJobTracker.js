@@ -1,6 +1,11 @@
 import { supabase, upsertCompany } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
+import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js'
+
+// CRO company patterns — skip jobs from CROs (they belong to competitor_job_posting)
+const CRO_PATTERNS =
+  /\b(syneos|fortrea|labcorp|iqvia|propharma|premier\s+research|worldwide\s+clinical|halloran|medpace|ppd\b|parexel|covance|charles\s+river|wuxi|pra\s+health|pharmaceutical\s+product\s+development|icon\s+plc|icon\s+strategic|asgn)\b/i
 
 // Non-US country names in job location strings. Jobs located outside the US are
 // skipped — we only staff US positions. Blank/Remote locations are kept.
@@ -122,7 +127,7 @@ function computeScore(daysPosted) {
 
 // ─── Persist a single LinkedIn job as a stale_job_posting signal ───────────────
 
-async function persistJobSignal(job) {
+async function persistJobSignal(job, pastClientsMap = new Map()) {
   const loc = job.job_location || ''
   if (loc && NON_US_LOCATION_PATTERNS.test(loc)) {
     console.log(`[staleJobTracker] FILTERED (non-US location): "${loc}" — ${job.job_title} @ ${job.company_name}`)
@@ -135,30 +140,35 @@ async function persistJobSignal(job) {
   const exists = await signalExists(company.id, 'stale_job_posting', job.source_url)
   if (exists) return false
 
-  const score = computeScore(job.days_posted)
+  const baseScore = computeScore(job.days_posted)
+  const pastClient = matchPastClient(job.company_name, pastClientsMap)
+  const finalScore = pastClient ? baseScore + pastClient.boost_score : baseScore
   const today = new Date().toISOString().split('T')[0]
+
+  const detail = {
+    company_name:    job.company_name,
+    job_title:       job.job_title,
+    job_location:    job.job_location,
+    date_posted:     job.date_posted || today,
+    days_posted:     job.days_posted,
+    source_url:      job.source_url,
+    job_board:       'linkedin',
+    source:          'LinkedIn',
+    hiring_manager:  job.hiring_manager || 'Unknown',
+  }
+  if (pastClient) detail.past_client = { name: pastClient.name, priority_rank: pastClient.priority_rank, boost_score: pastClient.boost_score }
 
   const { error } = await supabase.from('signals').insert({
     company_id:      company.id,
     signal_type:     'stale_job_posting',
     signal_summary:  `"${job.job_title}" at ${job.company_name} posted for ${job.days_posted}+ days`,
-    signal_detail: {
-      company_name:    job.company_name,
-      job_title:       job.job_title,
-      job_location:    job.job_location,
-      date_posted:     job.date_posted || today,
-      days_posted:     job.days_posted,
-      source_url:      job.source_url,
-      job_board:       'linkedin',
-      source:          'LinkedIn',
-      hiring_manager:  job.hiring_manager || 'Unknown',
-    },
+    signal_detail:   detail,
     source_url:         job.source_url,
     source_name:        'LinkedIn',
     first_detected_at:  new Date().toISOString(),
     status:             'new',
-    priority_score:     score,
-    score_breakdown:    { base: 15, days_posted_boost: score - 15 },
+    priority_score:     finalScore,
+    score_breakdown:    { base: 15, days_posted_boost: baseScore - 15, past_client_boost: pastClient?.boost_score || 0 },
     days_in_queue:      0,
     is_carried_forward: false,
   })
@@ -183,6 +193,9 @@ export async function run() {
     .select()
     .single()
   const runId = runEntry?.id
+
+  const pastClientsMap = await loadPastClients()
+  console.log(`[StaleJobs] Loaded ${pastClientsMap.size} past clients for scoring.`)
 
   let signalsFound = 0
 
@@ -231,6 +244,10 @@ export async function run() {
         if (COMPETITOR_FIRM_NAMES.has(job.company)) continue
         if (ACADEMIC_PATTERNS.test(job.company)) continue
         if (NON_US_LOCATION_PATTERNS.test(job.location)) continue
+        if (job.company && CRO_PATTERNS.test(job.company)) {
+          console.log(`[StaleJobs] FILTERED (CRO): ${job.company}`)
+          continue
+        }
 
         dedup.add(job.jobUrl)
 
@@ -249,7 +266,7 @@ export async function run() {
           days_posted:     job.daysPosted,
           source_url:      job.jobUrl,
           hiring_manager:  hiringManager,
-        })
+        }, pastClientsMap)
         if (inserted) { signalsFound++; liSignals++ }
         queryCount++
       }

@@ -298,6 +298,7 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
           <Th className="min-w-48">Summary</Th>
           <Th>Source</Th>
           <Th>Date Updated</Th>
+          <Th>Client Score</Th>
           <Th>Queue</Th>
           <Th>Claim</Th>
         </tr>
@@ -348,6 +349,11 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
                 <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
                   {formatDate(d.date_updated || signal.updated_at)}
                 </td>
+                <td className="px-4 py-3 whitespace-nowrap">
+                  {d.past_client
+                    ? <span className="inline-block px-2 py-0.5 rounded text-xs font-bold bg-amber-900 text-amber-300">+{d.past_client.boost_score}</span>
+                    : <span className="text-xs text-gray-600">—</span>}
+                </td>
                 <td className="px-4 py-3">
                   <DaysInQueueBadge dateStr={signal.first_detected_at} />
                 </td>
@@ -357,7 +363,7 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
               </tr>
               {isExpanded && (
                 <tr key={`${signal.id}-exp`}>
-                  <td colSpan={8} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                  <td colSpan={9} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
                     <ExpandedDetailCard signal={signal} />
                   </td>
                 </tr>
@@ -441,6 +447,7 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
           <Th>Amount</Th>
           <Th className="min-w-64">Summary</Th>
           <Th>Date</Th>
+          <Th>Client Score</Th>
           <Th>Queue</Th>
           <Th>Claim</Th>
         </tr>
@@ -513,6 +520,11 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
                 <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
                   {formatDate(d.date_announced || signal.first_detected_at)}
                 </td>
+                <td className="px-4 py-3 whitespace-nowrap">
+                  {d.past_client
+                    ? <span className="inline-block px-2 py-0.5 rounded text-xs font-bold bg-amber-900 text-amber-300">+{d.past_client.boost_score}</span>
+                    : <span className="text-xs text-gray-600">—</span>}
+                </td>
                 <td className="px-4 py-3">
                   <DaysInQueueBadge dateStr={signal.first_detected_at} />
                 </td>
@@ -522,7 +534,7 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
               </tr>
               {isExpanded && (
                 <tr key={`${signal.id}-exp`}>
-                  <td colSpan={7} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                  <td colSpan={8} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
                     <ExpandedDetailCard signal={signal} />
                   </td>
                 </tr>
@@ -699,6 +711,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                 <Th>Hiring Manager</Th>
                 <Th>Location</Th>
                 <Th>Days Open</Th>
+                <Th>Client Score</Th>
                 <Th>View</Th>
                 <Th>Claim</Th>
               </tr>
@@ -739,6 +752,11 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                           </span>
                         ) : <span className="text-xs text-gray-600">—</span>}
                       </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        {d.past_client
+                          ? <span className="inline-block px-2 py-0.5 rounded text-xs font-bold bg-amber-900 text-amber-300">+{d.past_client.boost_score}</span>
+                          : <span className="text-xs text-gray-600">—</span>}
+                      </td>
                       <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                         {(d.job_url || d.careers_url) ? (
                           <a
@@ -757,7 +775,7 @@ function JobsTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUncla
                     </tr>
                     {isExpanded && (
                       <tr key={`${signal.id}-exp`}>
-                        <td colSpan={7} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
+                        <td colSpan={8} className="bg-gray-800 px-8 py-5 border-b border-gray-700">
                           <ExpandedDetailCard signal={signal} />
                         </td>
                       </tr>

@@ -21,6 +21,7 @@
  */
 
 import { supabase, normalizeCompanyName, upsertCompany } from '../lib/supabase.js';
+import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js';
 
 // LinkedIn li_at cookie for company posts enrichment (best-effort)
 const LINKEDIN_LI_AT = process.env.LINKEDIN_LI_AT;
@@ -415,7 +416,7 @@ async function fetchNihGrants(sixMonthsAgo, today, currentYear) {
  * @param {number} currentYear
  * @returns {Promise<number>} Signals inserted
  */
-async function processNihGrants(sixMonthsAgo, today, currentYear) {
+async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap = new Map()) {
   let signalsInserted = 0;
   let projects;
 
@@ -480,6 +481,9 @@ async function processNihGrants(sixMonthsAgo, today, currentYear) {
       ? ' — Pre-hiring signal'
       : '';
 
+    const pastClient = matchPastClient(orgName, pastClientsMap);
+    const finalScore = pastClient ? adjustedScore + pastClient.boost_score : adjustedScore;
+
     const detail = {
       company_name: orgName,
       funding_type: 'government_grant',
@@ -491,11 +495,12 @@ async function processNihGrants(sixMonthsAgo, today, currentYear) {
       project_title: projectTitle,
       ...preHiringDetail,
     };
+    if (pastClient) detail.past_client = { name: pastClient.name, priority_rank: pastClient.priority_rank, boost_score: pastClient.boost_score };
 
     const inserted = await insertSignal({
       company_id: company.id,
       signal_type: signalType,
-      priority_score: adjustedScore,
+      priority_score: finalScore,
       signal_summary: `${fundingSummary}${signalSummaryLabel}`,
       signal_detail: detail,
       source_url: sourceUrl,
@@ -1448,7 +1453,7 @@ async function enrichMaSignal(entityName, transactionType, existingDealAmount, e
  * @param {string} today
  * @returns {Promise<number>} Signals inserted
  */
-async function processMaFilings(sixMonthsAgo, today) {
+async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map()) {
   let signalsInserted = 0;
   const MA_BASE_SCORE = 27;
   let liEnrichRequests = 0;
@@ -1554,10 +1559,13 @@ async function processMaFilings(sixMonthsAgo, today) {
 
       const company = await upsertCompany(supabase, { name: entityName });
       if (company) {
+        const pastClient = matchPastClient(entityName, pastClientsMap);
+        const finalScore = pastClient ? adjustedScore + pastClient.boost_score : adjustedScore;
+        if (pastClient) detail.past_client = { name: pastClient.name, priority_rank: pastClient.priority_rank, boost_score: pastClient.boost_score };
         const inserted = await insertSignal({
           company_id:    company.id,
           signal_type:   'ma_transaction',
-          priority_score: adjustedScore,
+          priority_score: finalScore,
           signal_summary: `${finalAcquirerName} M&A transaction${finalDealAmount ? ` (${finalDealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
           signal_detail: detail,
           source_url: filingUrl,
@@ -1681,7 +1689,7 @@ function extractCompanyFromBioSpaceTitle(title) {
  * @param {string} today - YYYY-MM-DD
  * @returns {Promise<number>} Signals inserted
  */
-async function processBioSpaceDeals(today) {
+async function processBioSpaceDeals(today, pastClientsMap = new Map()) {
   let signalsInserted = 0;
   const BASE_SCORE = 28;
   const SOURCE_URL = 'https://www.biospace.com/deals/';
@@ -1733,6 +1741,9 @@ async function processBioSpaceDeals(today) {
     const fundingType = dealType === 'ipo' ? 'ipo' : dealType === 'venture_capital' ? 'venture_capital' : 'pharma_partnership';
     const summaryVerb = fundingType === 'pharma_partnership' ? 'signed pharma deal' : fundingType === 'ipo' ? 'filed for IPO' : 'raised funding round';
 
+    const pastClient = matchPastClient(rawCompany, pastClientsMap);
+    const finalScore = pastClient ? adjustedScore + pastClient.boost_score : adjustedScore;
+
     const detail = {
       company_name: rawCompany,
       funding_type: fundingType,
@@ -1742,11 +1753,12 @@ async function processBioSpaceDeals(today) {
       source_url: url,
       ...preHiringDetail,
     };
+    if (pastClient) detail.past_client = { name: pastClient.name, priority_rank: pastClient.priority_rank, boost_score: pastClient.boost_score };
 
     const inserted = await insertSignal({
       company_id: company.id,
       signal_type: 'funding_new_award',
-      priority_score: adjustedScore,
+      priority_score: finalScore,
       signal_summary: `${rawCompany} ${summaryVerb}${amount ? ` (${amount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
       signal_detail: detail,
       source_url: url,
@@ -1770,7 +1782,7 @@ async function processBioSpaceDeals(today) {
  * @param {string} today - YYYY-MM-DD
  * @returns {Promise<number>} Signals inserted
  */
-async function processBioSpaceFunding(today) {
+async function processBioSpaceFunding(today, pastClientsMap = new Map()) {
   let signalsInserted = 0;
   const BASE_SCORE = 28;
   const SOURCE_URL = 'https://www.biospace.com/funding/';
@@ -1822,6 +1834,9 @@ async function processBioSpaceFunding(today) {
     const fundingType = dealType === 'ipo' ? 'ipo' : dealType === 'pharma_partnership' ? 'pharma_partnership' : 'venture_capital';
     const summaryVerb = fundingType === 'ipo' ? 'filed for IPO' : fundingType === 'pharma_partnership' ? 'signed deal' : 'raised funding';
 
+    const pastClient = matchPastClient(rawCompany, pastClientsMap);
+    const finalScore = pastClient ? adjustedScore + pastClient.boost_score : adjustedScore;
+
     const detail = {
       company_name: rawCompany,
       funding_type: fundingType,
@@ -1831,11 +1846,12 @@ async function processBioSpaceFunding(today) {
       source_url: url,
       ...preHiringDetail,
     };
+    if (pastClient) detail.past_client = { name: pastClient.name, priority_rank: pastClient.priority_rank, boost_score: pastClient.boost_score };
 
     const inserted = await insertSignal({
       company_id: company.id,
       signal_type: 'funding_new_award',
-      priority_score: adjustedScore,
+      priority_score: finalScore,
       signal_summary: `${rawCompany} ${summaryVerb}${amount ? ` (${amount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
       signal_detail: detail,
       source_url: url,
@@ -1868,12 +1884,15 @@ export async function run() {
 
   console.log(`[fundingMaAgent] Starting run. Window: ${sixMonthsAgo} → ${today}`);
 
+  const pastClientsMap = await loadPastClients();
+  console.log(`[fundingMaAgent] Loaded ${pastClientsMap.size} past clients for scoring.`);
+
   const sourceCounts = { nih: 0, ma: 0, biospaceDeals: 0, biospaceVcIpo: 0 };
   let signalsFound = 0;
 
   // Source 1: NIH SBIR/STTR grants
   try {
-    sourceCounts.nih = await processNihGrants(sixMonthsAgo, today, currentYear);
+    sourceCounts.nih = await processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap);
     signalsFound += sourceCounts.nih;
     console.log(`[fundingMaAgent] NIH grants: ${sourceCounts.nih} signals`);
   } catch (err) {
@@ -1882,7 +1901,7 @@ export async function run() {
 
   // Source 2: SEC EDGAR M&A 8-K filings
   try {
-    sourceCounts.ma = await processMaFilings(sixMonthsAgo, today);
+    sourceCounts.ma = await processMaFilings(sixMonthsAgo, today, pastClientsMap);
     signalsFound += sourceCounts.ma;
     console.log(`[fundingMaAgent] M&A filings: ${sourceCounts.ma} signals`);
   } catch (err) {
@@ -1891,7 +1910,7 @@ export async function run() {
 
   // Source 3: BioSpace /deals/ — pharma partnerships & licensing
   try {
-    sourceCounts.biospaceDeals = await processBioSpaceDeals(today);
+    sourceCounts.biospaceDeals = await processBioSpaceDeals(today, pastClientsMap);
     signalsFound += sourceCounts.biospaceDeals;
     console.log(`[fundingMaAgent] BioSpace deals: ${sourceCounts.biospaceDeals} signals`);
   } catch (err) {
@@ -1900,7 +1919,7 @@ export async function run() {
 
   // Source 4: BioSpace /funding/ — VC rounds & IPOs
   try {
-    sourceCounts.biospaceVcIpo = await processBioSpaceFunding(today);
+    sourceCounts.biospaceVcIpo = await processBioSpaceFunding(today, pastClientsMap);
     signalsFound += sourceCounts.biospaceVcIpo;
     console.log(`[fundingMaAgent] BioSpace funding: ${sourceCounts.biospaceVcIpo} signals`);
   } catch (err) {

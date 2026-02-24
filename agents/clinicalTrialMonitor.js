@@ -9,6 +9,7 @@
  */
 
 import { supabase, upsertCompany } from '../lib/supabase.js';
+import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js';
 
 const CT_API_BASE = 'https://clinicaltrials.gov/api/v2/studies';
 const CT_STUDY_BASE = 'https://clinicaltrials.gov/study';
@@ -420,7 +421,7 @@ async function finaliseAgentRun(runId, status, signalsFound, errorMessage = null
  * @param {Date} completionCutoff - Furthest future date for completion signals
  * @returns {Promise<number>}
  */
-async function processStudy(study, now) {
+async function processStudy(study, now, pastClientsMap = new Map()) {
   const proto = extractProtocol(study);
 
   // Guard 1: only INDUSTRY sponsors (API pre-filters, but we confirm)
@@ -488,12 +489,17 @@ async function processStudy(study, now) {
     if (alreadyExists) {
       console.log(`[clinicalTrialMonitor] ${proto.nctId} DEDUP: skipping (${phaseStr} signal already exists)`);
     } else {
+      const pastClient = matchPastClient(proto.leadSponsorName, pastClientsMap);
+      const baseScore = SIGNAL_TYPES.PHASE_TRANSITION.score;
+      const finalScore = pastClient ? baseScore + pastClient.boost_score : baseScore;
+      const detail = { ...baseDetail, phase_from: phaseFrom, phase_to: phaseStr };
+      if (pastClient) detail.past_client = { name: pastClient.name, priority_rank: pastClient.priority_rank, boost_score: pastClient.boost_score };
       const inserted = await insertSignal({
         company_id: company.id,
         signal_type: SIGNAL_TYPES.PHASE_TRANSITION.type,
-        priority_score: SIGNAL_TYPES.PHASE_TRANSITION.score,
+        priority_score: finalScore,
         signal_summary: `${proto.leadSponsorName} study in ${phaseStr}: ${proto.briefTitle}`,
-        signal_detail: { ...baseDetail, phase_from: phaseFrom, phase_to: phaseStr },
+        signal_detail: detail,
         source_url: dedupUrl,
         created_at: new Date().toISOString(),
       });
@@ -521,12 +527,17 @@ async function processStudy(study, now) {
     if (alreadyExists) {
       console.log(`[clinicalTrialMonitor] ${proto.nctId} DEDUP: skipping (new_ind already exists)`);
     } else {
+      const pastClient = matchPastClient(proto.leadSponsorName, pastClientsMap);
+      const baseScore = SIGNAL_TYPES.NEW_IND.score;
+      const finalScore = pastClient ? baseScore + pastClient.boost_score : baseScore;
+      const detail = { ...baseDetail, phase_from: 'Pre-Clinical', phase_to: 'Phase 1' };
+      if (pastClient) detail.past_client = { name: pastClient.name, priority_rank: pastClient.priority_rank, boost_score: pastClient.boost_score };
       const inserted = await insertSignal({
         company_id: company.id,
         signal_type: SIGNAL_TYPES.NEW_IND.type,
-        priority_score: SIGNAL_TYPES.NEW_IND.score,
+        priority_score: finalScore,
         signal_summary: `${proto.leadSponsorName} filed new IND / initiated Phase 1: ${proto.briefTitle}`,
-        signal_detail: { ...baseDetail, phase_from: 'Pre-Clinical', phase_to: 'Phase 1' },
+        signal_detail: detail,
         source_url: dedupUrl,
         created_at: new Date().toISOString(),
       });
@@ -553,6 +564,9 @@ export async function run() {
   const lookbackDate = daysAgo(LOOKBACK_DAYS);
   const lastUpdateGte = formatDate(lookbackDate);
 
+  const pastClientsMap = await loadPastClients();
+  console.log(`[clinicalTrialMonitor] Loaded ${pastClientsMap.size} past clients for scoring.`);
+
   let signalsFound = 0;
   let studiesProcessed = 0;
   let industryFiltered = 0;
@@ -572,7 +586,7 @@ export async function run() {
         industryFiltered++;
       }
 
-      const inserted = await processStudy(study, now);
+      const inserted = await processStudy(study, now, pastClientsMap);
       signalsFound += inserted;
     }
 
