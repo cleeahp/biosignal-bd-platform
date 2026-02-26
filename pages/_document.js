@@ -24,7 +24,7 @@ export default function Document() {
           }}
         />
       </Head>
-      <body className="bg-gray-50 text-gray-900">
+      <body className="bg-[#111827] text-gray-100">
         <Main />
         <NextScript />
       </body>
