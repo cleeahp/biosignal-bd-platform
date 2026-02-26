@@ -72,22 +72,33 @@ function parseEmployeeCount(html) {
 
 /**
  * Extract the company name as shown on the LinkedIn page for slug mismatch detection.
- * Tries page title first (most reliable), then HTML-encoded JSON, then plain JSON.
+ *
+ * LinkedIn pages often don't include the company name in <title>, and the JSON
+ * embedded in the page starts with internal class names like
+ * "com.linkedin.voyager.dash.deco...". We skip any candidate that contains dots
+ * (class-path indicator) and return the first clean-looking name we find.
  */
 function extractPageCompanyName(html) {
-  // Page title: "CompanyName | LinkedIn" or "CompanyName: Overview | LinkedIn"
-  const titleMatch = html.match(/<title>\s*([^|<\n]{2,}?)\s*(?::\s*[^|<\n]+)?\s*\|/)
-  if (titleMatch) return titleMatch[1].trim()
+  // Page title — only reliable if it contains a "|" separator
+  const titleMatch = html.match(/<title>\s*(?:\(\d+\)\s*)?([^|<]{2,80}?)\s*(?::\s*[^|<]{0,60})?\s*\|/)
+  if (titleMatch) {
+    const name = titleMatch[1].trim()
+    if (name.length > 1 && name.toLowerCase() !== 'linkedin') return name
+  }
 
-  // HTML-encoded JSON: &quot;name&quot;:&quot;CompanyName&quot;
-  const htmlEncMatch = html.match(/&quot;name&quot;:&quot;([^&]{2,100})&quot;/)
-  if (htmlEncMatch) return htmlEncMatch[1].trim()
+  // HTML-encoded JSON — iterate matches and skip internal class names (contain dots)
+  for (const m of html.matchAll(/&quot;name&quot;:&quot;([^&]{2,100})&quot;/g)) {
+    const name = m[1].trim()
+    if (!name.includes('.') && !name.toLowerCase().includes('linkedin')) return name
+  }
 
-  // Plain JSON: "name":"CompanyName"
-  const jsonMatch = html.match(/"name"\s*:\s*"([^"]{2,100})"/)
-  if (jsonMatch) return jsonMatch[1].trim()
+  // Plain JSON — iterate matches and skip class paths (com.linkedin.voyager.* etc.)
+  for (const m of html.matchAll(/"name"\s*:\s*"([^"]{2,100})"/g)) {
+    const name = m[1].trim()
+    if (!name.includes('.') && !name.toLowerCase().includes('linkedin')) return name
+  }
 
-  return null
+  return null   // Can't determine — caller treats this as "assume OK"
 }
 
 /** Extract first significant word from a name (skip stop words like The, Inc, Corp). */
