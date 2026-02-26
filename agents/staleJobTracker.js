@@ -300,7 +300,7 @@ export async function run() {
 
         dedup.add(job.jobUrl)
 
-        if (isExcludedCompany(job.company || '', excludedCompanies)) {
+        if (isExcludedCompany(job.company || '', excludedCompanies, pastClientsMap)) {
           console.log(`[StaleJobs] EXCLUDED (large company): ${job.company}`)
           continue
         }
@@ -380,6 +380,11 @@ export async function run() {
         }
 
         dedup.add(job.jobUrl)
+
+        if (isExcludedCompany(job.company || '', excludedCompanies, pastClientsMap)) {
+          console.log(`[StaleJobs] EXCLUDED (large company): ${job.company}`)
+          continue
+        }
 
         // Attempt to fetch hiring manager from job posting page (best-effort,
         // only if we have remaining request budget)

@@ -2,21 +2,23 @@
  * checkCompanySizes.js
  *
  * Weekly script (also run manually) that checks LinkedIn company pages for
- * employee/member counts. Companies with > 5,000 members are inserted into
+ * employee counts. Companies with 10,001+ employees are inserted into
  * the excluded_companies table and their signals are deleted.
+ * Companies that drop below 10,001 are reinstated (removed from the table).
+ * Past clients are never excluded regardless of size.
  *
  * Run: node --env-file=.env.local scripts/checkCompanySizes.js
  * GitHub Actions: .github/workflows/company-size-check.yml
  */
 
-import * as cheerio from 'cheerio'
 import { supabase } from '../lib/supabase.js'
 import { shuffleArray } from '../lib/linkedinClient.js'
+import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const LINKEDIN_LI_AT = process.env.LINKEDIN_LI_AT
-const MAX_EMPLOYEE_COUNT = 5_000
+const MIN_EXCLUDE_COUNT = 10_001   // employeeCountRange.start >= 10001 means 10,001+ employees
 const MAX_REQUESTS = 150
 const BATCH_SIZE = 100   // Supabase .in() batch size
 
@@ -47,27 +49,65 @@ function toLinkedInSlug(name) {
     .replace(/-+/g, '-')
 }
 
-/** Parse employee/member count from LinkedIn company page HTML. */
+/**
+ * Parse employee count from LinkedIn company page HTML.
+ *
+ * LinkedIn embeds employeeCountRange immediately after jobSearchUrl in the
+ * page HTML (either HTML-encoded or plain JSON). The `start` field of that
+ * range is the most reliable employee count available without full auth.
+ *
+ * start values map to LinkedIn ranges:
+ *   1 → 1-10,  11 → 11-50,  51 → 51-200,  201 → 201-500,
+ *   501 → 501-1000,  1001 → 1001-5000,  5001 → 5001-10000,  10001 → 10001+
+ *
+ * Returns null if the pattern is not found (do not exclude).
+ */
 function parseEmployeeCount(html) {
-  // JSON embedded in page — most reliable
-  const staffMatch = html.match(/"staffCount"\s*:\s*(\d+)/)
-  if (staffMatch) return parseInt(staffMatch[1])
+  const m = html.match(
+    /jobSearchUrl.{0,200}?employeeCountRange.{0,50}?start(?:&quot;|")\s*(?::|&#58;)\s*(\d+)/s
+  )
+  if (m) return parseInt(m[1], 10)
+  return null
+}
 
-  const empCountMatch = html.match(/"employeeCount"\s*:\s*(\d+)/)
-  if (empCountMatch) return parseInt(empCountMatch[1])
+/**
+ * Extract the company name as shown on the LinkedIn page for slug mismatch detection.
+ * Tries page title first (most reliable), then HTML-encoded JSON, then plain JSON.
+ */
+function extractPageCompanyName(html) {
+  // Page title: "CompanyName | LinkedIn" or "CompanyName: Overview | LinkedIn"
+  const titleMatch = html.match(/<title>\s*([^|<\n]{2,}?)\s*(?::\s*[^|<\n]+)?\s*\|/)
+  if (titleMatch) return titleMatch[1].trim()
 
-  // Visible text: "X,XXX employees" or "X,XXX+ employees"
-  const empTextMatch = html.match(/([\d,]+)\+?\s+(?:employees|associated\s+members)/i)
-  if (empTextMatch) return parseInt(empTextMatch[1].replace(/,/g, ''))
+  // HTML-encoded JSON: &quot;name&quot;:&quot;CompanyName&quot;
+  const htmlEncMatch = html.match(/&quot;name&quot;:&quot;([^&]{2,100})&quot;/)
+  if (htmlEncMatch) return htmlEncMatch[1].trim()
 
-  // Range indicator: "10,001+" in aria-label or text nodes
-  const rangeMatch = html.match(/([\d,]+)\+\s*(?:<|employees|members)/i)
-  if (rangeMatch) {
-    const num = parseInt(rangeMatch[1].replace(/,/g, ''))
-    if (num > 100) return num
-  }
+  // Plain JSON: "name":"CompanyName"
+  const jsonMatch = html.match(/"name"\s*:\s*"([^"]{2,100})"/)
+  if (jsonMatch) return jsonMatch[1].trim()
 
   return null
+}
+
+/** Extract first significant word from a name (skip stop words like The, Inc, Corp). */
+function firstSignificantWord(name) {
+  if (!name) return ''
+  const stop = /^(the|a|an|inc|corp|llc|ltd|lp|gmbh|co|plc|and|of|for)$/i
+  const words = name.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim().split(/\s+/)
+  return words.find(w => w.length > 1 && !stop.test(w)) || words[0] || ''
+}
+
+/**
+ * Return true if the page company name plausibly matches our DB company name.
+ * Compares only the first significant word to catch gross slug collisions.
+ */
+function isSlugMatch(dbName, pageName) {
+  if (!pageName) return true   // Can't determine — assume OK
+  const dbFirst = firstSignificantWord(dbName)
+  const pageFirst = firstSignificantWord(pageName)
+  if (!dbFirst || !pageFirst) return true
+  return dbFirst === pageFirst
 }
 
 /** Fetch a LinkedIn company page with rate-limit delay. */
@@ -108,6 +148,10 @@ if (!LINKEDIN_LI_AT) {
 
 console.log(`[CompanySize] Starting company size check — budget: ${MAX_REQUESTS} requests`)
 
+// Load past clients — they are never excluded regardless of size
+const pastClientsMap = await loadPastClients()
+console.log(`[CompanySize] Loaded ${pastClientsMap.size} past clients (protected from exclusion)`)
+
 // Step 1: Get all distinct company IDs from relevant signals
 const { data: signalRows, error: signalErr } = await supabase
   .from('signals')
@@ -130,24 +174,40 @@ for (let i = 0; i < uniqueIds.length; i += BATCH_SIZE) {
   allCompanies = allCompanies.concat(data || [])
 }
 
-// Step 3: Filter out companies already in excluded_companies
-const { data: alreadyExcluded } = await supabase.from('excluded_companies').select('name')
-const excludedNames = new Set((alreadyExcluded || []).map(r => r.name.toLowerCase().trim()))
+// Step 3: Get already-excluded companies.
+// We check them too so we can reinstate any whose count has since dropped below 10,001.
+const { data: alreadyExcludedData } = await supabase.from('excluded_companies').select('name')
+const alreadyExcludedNames = new Set((alreadyExcludedData || []).map(r => r.name.toLowerCase().trim()))
 
-const toCheck = allCompanies.filter(c => !excludedNames.has(c.name.toLowerCase().trim()))
-console.log(`[CompanySize] ${toCheck.length} companies to check (${excludedNames.size} already excluded)`)
+// Build unified check list: all signal companies + excluded companies no longer in signals
+const toCheckMap = new Map()
+for (const c of allCompanies) {
+  toCheckMap.set(c.name.toLowerCase().trim(), { id: c.id, name: c.name })
+}
+for (const row of (alreadyExcludedData || [])) {
+  const key = row.name.toLowerCase().trim()
+  if (!toCheckMap.has(key)) {
+    toCheckMap.set(key, { id: null, name: row.name })
+  }
+}
+const toCheck = [...toCheckMap.values()]
+
+console.log(`[CompanySize] ${toCheck.length} companies to check (${alreadyExcludedNames.size} currently excluded)`)
 
 // Step 4: Shuffle and check each company
 const shuffled = shuffleArray([...toCheck])
 let requestsUsed = 0
 let checked = 0
 const newlyExcluded = []
+const reinstated = []
 
 for (const company of shuffled) {
   if (requestsUsed >= MAX_REQUESTS) {
     console.log(`[CompanySize] Budget exhausted (${MAX_REQUESTS} requests)`)
     break
   }
+
+  const isAlreadyExcluded = alreadyExcludedNames.has(company.name.toLowerCase().trim())
 
   const slug = toLinkedInSlug(company.name)
   const { html, url } = await fetchCompanyPage(slug, LINKEDIN_LI_AT, requestsUsed)
@@ -165,6 +225,13 @@ for (const company of shuffled) {
     break
   }
 
+  // Slug mismatch check — skip if the page belongs to a different company
+  const pageName = extractPageCompanyName(html)
+  if (!isSlugMatch(company.name, pageName)) {
+    console.log(`[CompanySize] ${company.name}: slug mismatch — page shows "${pageName}", skipping`)
+    continue
+  }
+
   const count = parseEmployeeCount(html)
 
   if (count === null) {
@@ -172,28 +239,57 @@ for (const company of shuffled) {
     continue
   }
 
-  if (count > MAX_EMPLOYEE_COUNT) {
-    console.log(`[CompanySize] ${company.name}: ${count.toLocaleString()} members — EXCLUDED`)
-    const { error: insertErr } = await supabase.from('excluded_companies').insert({
-      name: company.name,
-      linkedin_member_count: count,
-      linkedin_url: url,
-      exclusion_reason: 'employee_count_above_5000',
-      last_checked_at: new Date().toISOString(),
-    })
-    if (insertErr && !insertErr.message.includes('duplicate') && !insertErr.message.includes('unique')) {
-      console.warn(`[CompanySize] Insert failed for ${company.name}: ${insertErr.message}`)
+  if (count >= MIN_EXCLUDE_COUNT) {
+    // Past clients are never excluded, even if large
+    if (matchPastClient(company.name, pastClientsMap)) {
+      console.log(`[CompanySize] ${company.name}: ${count.toLocaleString()} employees — SKIPPED (past client)`)
+      continue
+    }
+
+    if (!isAlreadyExcluded) {
+      console.log(`[CompanySize] ${company.name}: ${count.toLocaleString()} employees — EXCLUDED`)
+      const { error: insertErr } = await supabase.from('excluded_companies').insert({
+        name: company.name,
+        linkedin_member_count: count,
+        linkedin_url: url,
+        exclusion_reason: 'employee_count_above_10000',
+        last_checked_at: new Date().toISOString(),
+      })
+      if (insertErr && !insertErr.message.includes('duplicate') && !insertErr.message.includes('unique')) {
+        console.warn(`[CompanySize] Insert failed for ${company.name}: ${insertErr.message}`)
+      } else {
+        newlyExcluded.push({ id: company.id, name: company.name })
+      }
     } else {
-      newlyExcluded.push({ id: company.id, name: company.name })
+      // Already excluded — refresh timestamp and member count
+      await supabase.from('excluded_companies')
+        .update({ linkedin_member_count: count, last_checked_at: new Date().toISOString() })
+        .ilike('name', company.name)
+      console.log(`[CompanySize] ${company.name}: ${count.toLocaleString()} employees — still excluded`)
     }
   } else {
-    console.log(`[CompanySize] ${company.name}: ${count.toLocaleString()} members — OK`)
+    if (isAlreadyExcluded) {
+      // Count has dropped below threshold — reinstate
+      const { error: deleteErr } = await supabase
+        .from('excluded_companies')
+        .delete()
+        .ilike('name', company.name)
+      if (deleteErr) {
+        console.warn(`[CompanySize] Reinstatement failed for ${company.name}: ${deleteErr.message}`)
+      } else {
+        console.log(`[CompanySize] ${company.name}: ${count.toLocaleString()} employees — REINSTATED (below threshold)`)
+        reinstated.push(company.name)
+      }
+    } else {
+      console.log(`[CompanySize] ${company.name}: ${count.toLocaleString()} employees — OK`)
+    }
   }
 }
 
-// Step 5: Delete signals from newly excluded companies
-if (newlyExcluded.length > 0) {
-  const excludedIds = newlyExcluded.map(c => c.id)
+// Step 5: Delete signals from newly excluded companies (only those with a known company ID)
+const newlyExcludedWithIds = newlyExcluded.filter(c => c.id !== null)
+if (newlyExcludedWithIds.length > 0) {
+  const excludedIds = newlyExcludedWithIds.map(c => c.id)
   const { data: deleted, error: deleteErr } = await supabase
     .from('signals')
     .delete()
@@ -212,7 +308,8 @@ if (newlyExcluded.length > 0) {
 // Summary
 console.log(`\n${'═'.repeat(50)}`)
 console.log(`[CompanySize] Complete`)
-console.log(`Companies checked:              ${checked}`)
-console.log(`Newly excluded (>5,000 members): ${newlyExcluded.length}`)
-console.log(`Requests used:                  ${requestsUsed} / ${MAX_REQUESTS}`)
+console.log(`Companies checked:                 ${checked}`)
+console.log(`Newly excluded (≥10,001 employees): ${newlyExcluded.length}`)
+console.log(`Reinstated (below threshold):       ${reinstated.length}`)
+console.log(`Requests used:                      ${requestsUsed} / ${MAX_REQUESTS}`)
 console.log('═'.repeat(50))

@@ -448,7 +448,7 @@ async function processStudy(study, now, pastClientsMap = new Map(), excludedComp
 
   console.log(`[clinicalTrialMonitor] INDUSTRY PASS: ${proto.nctId} — ${proto.leadSponsorName}`);
 
-  if (isExcludedCompany(proto.leadSponsorName, excludedCompanies)) {
+  if (isExcludedCompany(proto.leadSponsorName, excludedCompanies, pastClientsMap)) {
     console.log(`[clinicalTrialMonitor] EXCLUDED (large company): ${proto.leadSponsorName}`);
     return 0;
   }

@@ -476,7 +476,7 @@ async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap
       continue;
     }
 
-    if (isExcludedCompany(orgName, excludedCompanies)) {
+    if (isExcludedCompany(orgName, excludedCompanies, pastClientsMap)) {
       console.log(`[fundingMaAgent] EXCLUDED (large company): ${orgName}`);
       continue;
     }
@@ -1564,7 +1564,7 @@ async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map(),
         ...preHiringDetail,
       };
 
-      if (isExcludedCompany(entityName, excludedCompanies)) {
+      if (isExcludedCompany(entityName, excludedCompanies, pastClientsMap)) {
         console.log(`[fundingMaAgent] EXCLUDED (large company): ${entityName}`);
         continue;
       }
@@ -1742,7 +1742,7 @@ async function processBioSpaceDeals(today, pastClientsMap = new Map(), excludedC
     // Skip if it looks like a large pharma filer (we want the smaller biotech)
     if (LARGE_PHARMA_PATTERNS.test(rawCompany) && dealType === 'pharma_partnership') continue;
 
-    if (isExcludedCompany(rawCompany, excludedCompanies)) {
+    if (isExcludedCompany(rawCompany, excludedCompanies, pastClientsMap)) {
       console.log(`[fundingMaAgent] EXCLUDED (large company): ${rawCompany}`);
       continue;
     }
@@ -1841,7 +1841,7 @@ async function processBioSpaceFunding(today, pastClientsMap = new Map(), exclude
     // Exclude VC fund entities that appear as company names
     if (VC_FUND_PATTERNS.test(rawCompany)) continue;
 
-    if (isExcludedCompany(rawCompany, excludedCompanies)) {
+    if (isExcludedCompany(rawCompany, excludedCompanies, pastClientsMap)) {
       console.log(`[fundingMaAgent] EXCLUDED (large company): ${rawCompany}`);
       continue;
     }
