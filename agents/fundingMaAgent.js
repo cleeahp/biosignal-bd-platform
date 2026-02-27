@@ -1448,6 +1448,17 @@ async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map(),
         continue;
       }
 
+      // Check exclusions BEFORE making enrichment API calls
+      if (isExcludedCompany(entityName, excludedCompanies, pastClientsMap)) {
+        console.log(`[fundingMaAgent] EXCLUDED (large company): ${entityName}`);
+        continue;
+      }
+      const dismissCheckEarly = checkDismissalExclusion(dismissalRules, 'ma_transaction', { company: entityName });
+      if (dismissCheckEarly.excluded) {
+        console.log(`[fundingMaAgent] AUTO-EXCLUDED (${dismissCheckEarly.rule_type}): ${dismissCheckEarly.rule_value}`);
+        continue;
+      }
+
       // Fetch filing document text and extract all deal details
       const filingBodyText     = await fetchMaFilingText(hit);
       const edgarDetails       = extractDealDetails(filingBodyText, entityName);
@@ -1499,18 +1510,6 @@ async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map(),
         filing_url:           filingUrl,
         source_url:           filingUrl,
       };
-
-      if (isExcludedCompany(entityName, excludedCompanies, pastClientsMap)) {
-        console.log(`[fundingMaAgent] EXCLUDED (large company): ${entityName}`);
-        continue;
-      }
-
-      // Check dismissal rules
-      const dismissCheck = checkDismissalExclusion(dismissalRules, 'ma_transaction', { company: entityName });
-      if (dismissCheck.excluded) {
-        console.log(`[fundingMaAgent] AUTO-EXCLUDED (${dismissCheck.rule_type}): ${dismissCheck.rule_value}`);
-        continue;
-      }
 
       const company = await upsertCompany(supabase, { name: entityName });
       if (company) {

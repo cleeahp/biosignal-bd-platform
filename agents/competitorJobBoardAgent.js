@@ -514,6 +514,16 @@ export async function run() {
           continue
         }
 
+        // Check dismissal rules BEFORE making any LinkedIn API calls
+        const dismissCheck = checkDismissalExclusion(dismissalRules, 'competitor_job_posting', {
+          role_title: job.title || '',
+          location: job.location || '',
+        })
+        if (dismissCheck.excluded) {
+          console.log(`[CompetitorJobs] AUTO-EXCLUDED (${dismissCheck.rule_type}): ${dismissCheck.rule_value}`)
+          continue
+        }
+
         // Fetch description via guest API (/jobs-guest/jobs/api/jobPosting/{id})
         let description = ''
         if (job.jobUrl && linkedin.isAvailable) {
@@ -540,16 +550,6 @@ export async function run() {
         }
         if (clientData) {
           console.log(`[CompetitorJobs] Client inferred: "${clientData.inferred_client}" (${clientData.client_confidence}, ${clientData.client_inference_method})`)
-        }
-
-        // Check dismissal rules for auto-exclusion
-        const dismissCheck = checkDismissalExclusion(dismissalRules, 'competitor_job_posting', {
-          role_title: job.title || '',
-          location: job.location || '',
-        })
-        if (dismissCheck.excluded) {
-          console.log(`[CompetitorJobs] AUTO-EXCLUDED (${dismissCheck.rule_type}): ${dismissCheck.rule_value}`)
-          continue
         }
 
         const insertedId = await persistCompetitorSignal(

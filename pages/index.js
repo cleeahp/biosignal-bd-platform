@@ -1686,23 +1686,250 @@ function PastCandidatesPage() {
 }
 
 function SettingsPage() {
-  const sections = [
-    {
-      title: 'Agent Configuration',
-      description: 'Configure which agents run, their schedules, and target company lists.',
-    },
-    {
-      title: 'Past Client Management',
-      description: 'Add, remove, or update past client companies and their boost scores.',
-    },
-    {
-      title: 'Notification Preferences',
-      description: 'Configure Slack or email alerts for new high-priority signals.',
-    },
+  const [rules, setRules] = useState([])
+  const [rulesLoading, setRulesLoading] = useState(true)
+  const [excludedCompanies, setExcludedCompanies] = useState([])
+  const [excludedLoading, setExcludedLoading] = useState(true)
+  const [editingThreshold, setEditingThreshold] = useState(null)
+  const [thresholdValue, setThresholdValue] = useState('')
+
+  useEffect(() => {
+    if (!supabase) return
+    const loadRules = async () => {
+      const { data } = await supabase
+        .from('dismissal_rules')
+        .select('*')
+        .order('auto_exclude', { ascending: false })
+        .order('dismiss_count', { ascending: false })
+      setRules(data || [])
+      setRulesLoading(false)
+    }
+    const loadExcluded = async () => {
+      const { data } = await supabase
+        .from('excluded_companies')
+        .select('*')
+        .order('name')
+      setExcludedCompanies(data || [])
+      setExcludedLoading(false)
+    }
+    loadRules()
+    loadExcluded()
+  }, [])
+
+  const toggleAutoExclude = async (rule) => {
+    if (!supabase) return
+    const newValue = !rule.auto_exclude
+    setRules(prev => prev.map(r => r.id === rule.id ? { ...r, auto_exclude: newValue } : r))
+    await supabase.from('dismissal_rules').update({ auto_exclude: newValue }).eq('id', rule.id)
+  }
+
+  const deleteRule = async (rule) => {
+    if (!supabase) return
+    setRules(prev => prev.filter(r => r.id !== rule.id))
+    await supabase.from('dismissal_rules').delete().eq('id', rule.id)
+  }
+
+  const startEditThreshold = (rule) => {
+    setEditingThreshold(rule.id)
+    setThresholdValue(String(rule.threshold || 3))
+  }
+
+  const saveThreshold = async (rule) => {
+    if (!supabase) return
+    const val = parseInt(thresholdValue, 10)
+    if (isNaN(val) || val < 1) return
+    setRules(prev => prev.map(r => r.id === rule.id ? { ...r, threshold: val, auto_exclude: r.dismiss_count >= val } : r))
+    await supabase.from('dismissal_rules').update({ threshold: val, auto_exclude: rule.dismiss_count >= val }).eq('id', rule.id)
+    setEditingThreshold(null)
+  }
+
+  const deleteExcludedCompany = async (company) => {
+    if (!supabase) return
+    setExcludedCompanies(prev => prev.filter(c => c.id !== company.id))
+    await supabase.from('excluded_companies').delete().eq('id', company.id)
+  }
+
+  const sortedRules = [...rules].sort((a, b) => {
+    if (a.auto_exclude !== b.auto_exclude) return a.auto_exclude ? -1 : 1
+    return (b.dismiss_count || 0) - (a.dismiss_count || 0)
+  })
+
+  const placeholders = [
+    { title: 'Agent Configuration', description: 'Configure which agents run, their schedules, and target company lists.' },
+    { title: 'Notification Preferences', description: 'Configure Slack or email alerts for new high-priority signals.' },
   ]
+
   return (
-    <div className="flex flex-col gap-4 max-w-2xl">
-      {sections.map(section => (
+    <div className="flex flex-col gap-8">
+      {/* ── Dismissal Rules ──────────────────────────────────────────────── */}
+      <div>
+        <div className="mb-4">
+          <h2 className="text-base font-semibold text-white">
+            Dismissal Rules ({rules.length})
+          </h2>
+          <p className="text-sm text-gray-400 mt-1">
+            Rules are created automatically when you dismiss a listing. Once a rule reaches its threshold, future search results matching that field/value will be skipped.
+          </p>
+        </div>
+        {rulesLoading ? (
+          <div className="text-sm text-gray-500 py-8 text-center">Loading rules...</div>
+        ) : rules.length === 0 ? (
+          <div className="text-sm text-gray-500 py-8 text-center bg-[#1f2937] border border-[#374151] rounded-xl">
+            No dismissal rules yet. Dismiss signals from the tables to create rules.
+          </div>
+        ) : (
+          <div className="rounded-xl border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] w-[14%]">Field</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] w-[28%]">Value</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] w-[20%]">Signal Type</th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] w-[8%]">Count</th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] w-[10%]">Threshold</th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] w-[10%]">Active</th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] w-[6%]"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {sortedRules.map((rule, i) => {
+                  const rowBg = rule.auto_exclude
+                    ? (i % 2 === 0 ? 'bg-blue-950/30' : 'bg-blue-950/20')
+                    : (i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]')
+                  const fieldLabel = (rule.rule_type || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+                  const signalLabel = (rule.signal_type || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+                  return (
+                    <tr key={rule.id} className={`${rowBg} transition-colors`}>
+                      <td className="px-4 py-3">
+                        <span className="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-gray-700 text-gray-300">
+                          {fieldLabel}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-white truncate" title={rule.rule_value}>
+                        {rule.rule_value}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-400 truncate" title={signalLabel}>
+                        {signalLabel}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className="text-sm font-mono text-white">{rule.dismiss_count || 0}</span>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        {editingThreshold === rule.id ? (
+                          <input
+                            type="number"
+                            min="1"
+                            value={thresholdValue}
+                            onChange={e => setThresholdValue(e.target.value)}
+                            onBlur={() => saveThreshold(rule)}
+                            onKeyDown={e => { if (e.key === 'Enter') saveThreshold(rule); if (e.key === 'Escape') setEditingThreshold(null) }}
+                            autoFocus
+                            className="w-12 bg-[#111827] border border-blue-500 rounded px-1.5 py-0.5 text-sm text-white text-center focus:outline-none"
+                          />
+                        ) : (
+                          <button
+                            onClick={() => startEditThreshold(rule)}
+                            className="text-sm font-mono text-gray-300 hover:text-white cursor-pointer"
+                            title="Click to edit threshold"
+                          >
+                            {rule.threshold || 3}
+                          </button>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <button
+                          onClick={() => toggleAutoExclude(rule)}
+                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                            rule.auto_exclude ? 'bg-blue-600' : 'bg-gray-600'
+                          }`}
+                        >
+                          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                            rule.auto_exclude ? 'translate-x-4.5' : 'translate-x-0.5'
+                          }`} style={{ transform: rule.auto_exclude ? 'translateX(18px)' : 'translateX(2px)' }} />
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <button
+                          onClick={() => deleteRule(rule)}
+                          title="Delete rule"
+                          className="p-1 rounded hover:bg-red-900/40 text-gray-500 hover:text-red-400 transition-colors"
+                        >
+                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="3,6 5,6 21,6" />
+                            <path d="M19,6v14a2,2,0,0,1-2,2H7a2,2,0,0,1-2-2V6M8,6V4a2,2,0,0,1,2-2h4a2,2,0,0,1,2,2V6" />
+                          </svg>
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Excluded Companies ────────────────────────────────────────────── */}
+      <div>
+        <div className="mb-4">
+          <h2 className="text-base font-semibold text-white">
+            Excluded Companies — Large Employers ({excludedCompanies.length})
+          </h2>
+          <p className="text-sm text-gray-400 mt-1">
+            Companies with 10,001+ LinkedIn members are automatically excluded from signal generation.
+          </p>
+        </div>
+        {excludedLoading ? (
+          <div className="text-sm text-gray-500 py-8 text-center">Loading excluded companies...</div>
+        ) : excludedCompanies.length === 0 ? (
+          <div className="text-sm text-gray-500 py-8 text-center bg-[#1f2937] border border-[#374151] rounded-xl">
+            No excluded companies.
+          </div>
+        ) : (
+          <div className="rounded-xl border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] w-[40%]">Company</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] w-[20%]">LinkedIn Members</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] w-[25%]">Last Checked</th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] w-[10%]"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {excludedCompanies.map((company, i) => {
+                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                  const members = company.linkedin_member_count
+                    ? Number(company.linkedin_member_count).toLocaleString()
+                    : '—'
+                  return (
+                    <tr key={company.id} className={`${rowBg} transition-colors`}>
+                      <td className="px-4 py-3 text-sm text-white truncate" title={company.name}>{company.name}</td>
+                      <td className="px-4 py-3 text-sm text-gray-300 font-mono">{members}</td>
+                      <td className="px-4 py-3 text-sm text-gray-400">{formatDate(company.last_checked_at)}</td>
+                      <td className="px-4 py-3 text-center">
+                        <button
+                          onClick={() => deleteExcludedCompany(company)}
+                          title="Remove from excluded list"
+                          className="p-1 rounded hover:bg-red-900/40 text-gray-500 hover:text-red-400 transition-colors"
+                        >
+                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="3,6 5,6 21,6" />
+                            <path d="M19,6v14a2,2,0,0,1-2,2H7a2,2,0,0,1-2-2V6M8,6V4a2,2,0,0,1,2-2h4a2,2,0,0,1,2,2V6" />
+                          </svg>
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── Coming soon placeholders ─────────────────────────────────────── */}
+      {placeholders.map(section => (
         <div key={section.title} className="bg-[#1f2937] border border-[#374151] rounded-xl p-6">
           <h3 className="text-base font-semibold text-white mb-1">{section.title}</h3>
           <p className="text-sm text-gray-400 mb-4">{section.description}</p>
@@ -1897,12 +2124,10 @@ export default function Home() {
 
   const confirmDismiss = async (signal, reasonKey, reasonValue) => {
     setDismissTarget(null)
-    // Optimistic update
     setSignals(prev => prev.filter(s => s.id !== signal.id))
 
     try {
       // 1. Update signal status to dismissed + store reason in signal_detail
-      const d = parseDetail(signal.signal_detail)
       await fetch('/api/signals', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
