@@ -90,6 +90,13 @@ function truncate(str, n) {
   return str.length > n ? str.substring(0, n) + '...' : str
 }
 
+function formatClaimerName(name) {
+  if (!name) return ''
+  const parts = name.trim().split(/\s+/)
+  if (parts.length >= 2) return `${parts[0]} ${parts[parts.length - 1][0]}.`
+  return parts[0]
+}
+
 function hasPastClient(signal) {
   const d = parseDetail(signal.signal_detail)
   return !!d.past_client
@@ -338,6 +345,8 @@ function ConfidenceBadge({ confidence }) {
 }
 
 function ClaimCell({ signal, repName, onClaim, onUnclaim }) {
+  const [hovered, setHovered] = useState(false)
+
   if (!repName) {
     return <span className="text-xs text-gray-600 italic">Set name</span>
   }
@@ -353,24 +362,29 @@ function ClaimCell({ signal, repName, onClaim, onUnclaim }) {
   }
   if (signal.claimed_by === repName) {
     return (
-      <span className="inline-flex items-center gap-1">
-        <span className="px-2 py-1 rounded text-xs font-semibold bg-blue-700 text-blue-100">Claimed</span>
-        <button
-          onClick={(e) => { e.stopPropagation(); onUnclaim(signal) }}
-          className="w-5 h-5 flex items-center justify-center rounded-full bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-white text-xs transition-colors"
-          title="Unclaim"
-        >
-          ×
-        </button>
+      <span
+        className="inline-flex items-center"
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      >
+        {hovered ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onUnclaim(signal) }}
+            className="px-2 py-1 rounded text-xs font-semibold bg-gray-600 hover:bg-red-700 text-gray-200 hover:text-white transition-colors whitespace-nowrap"
+          >
+            Unclaim
+          </button>
+        ) : (
+          <span className="px-2 py-1 rounded text-xs font-semibold bg-blue-700 text-blue-100 whitespace-nowrap">
+            {formatClaimerName(repName)}
+          </span>
+        )}
       </span>
     )
   }
   return (
-    <span
-      className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-gray-700 text-gray-300 text-xs font-bold"
-      title={signal.claimed_by}
-    >
-      {getRepInitials(signal.claimed_by)}
+    <span className="text-xs text-gray-400 font-medium whitespace-nowrap" title={signal.claimed_by}>
+      {formatClaimerName(signal.claimed_by)}
     </span>
   )
 }
@@ -468,6 +482,55 @@ function EmptyState({ message }) {
         <span className="text-gray-600 text-xl font-mono">—</span>
       </div>
       <p className="text-gray-400 text-sm">{message}</p>
+    </div>
+  )
+}
+
+// ─── Name Modal ───────────────────────────────────────────────────────────────
+
+function NameModal({ onSave }) {
+  const [value, setValue] = useState('')
+  const [error, setError] = useState(false)
+  const inputRef = useRef(null)
+
+  useEffect(() => { if (inputRef.current) inputRef.current.focus() }, [])
+
+  const handleSave = () => {
+    const trimmed = value.trim()
+    if (!trimmed) { setError(true); return }
+    onSave(trimmed)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75">
+      <div className="bg-[#1f2937] border border-[#374151] rounded-xl p-8 max-w-sm w-full mx-4 shadow-2xl">
+        <div className="w-10 h-10 rounded-full bg-blue-600/20 flex items-center justify-center mb-4">
+          <NavIcon type="user" className="w-5 h-5 text-blue-400" />
+        </div>
+        <h2 className="text-white text-lg font-bold mb-1">Enter your name</h2>
+        <p className="text-gray-400 text-sm mb-5">This identifies you when claiming leads.</p>
+        <input
+          ref={inputRef}
+          type="text"
+          value={value}
+          onChange={e => { setValue(e.target.value); setError(false) }}
+          onKeyDown={e => { if (e.key === 'Enter') handleSave() }}
+          placeholder="First Last"
+          className={`w-full bg-[#111827] border rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none mb-1 ${
+            error ? 'border-red-500 focus:border-red-400' : 'border-[#374151] focus:border-blue-500'
+          }`}
+        />
+        {error
+          ? <p className="text-red-400 text-xs mb-4">Please enter your name to continue.</p>
+          : <div className="mb-4" />
+        }
+        <button
+          onClick={handleSave}
+          className="w-full px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg transition-colors text-sm"
+        >
+          Continue
+        </button>
+      </div>
     </div>
   )
 }
@@ -863,168 +926,158 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
 
 // ─── Tab: My Leads ────────────────────────────────────────────────────────────
 
-function LeadsNoteCell({ signal, notes, onSaveNotes, savingNotes }) {
-  const d = parseDetail(signal.signal_detail)
-  const serverNote = d.rep_notes || notes[signal.id] || ''
-  const [localNote, setLocalNote] = useState(serverNote)
-  const isSaving = savingNotes.has(signal.id)
-  const isDirty = localNote !== serverNote
+function LeadNoteCell({ lead, onSave }) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(lead.notes || '')
+  const inputRef = useRef(null)
 
-  return (
-    <div className="flex flex-col gap-1.5">
-      <textarea
-        rows={2}
-        value={localNote}
-        onChange={e => setLocalNote(e.target.value)}
-        onBlur={() => { if (isDirty) onSaveNotes(signal.id, localNote) }}
-        placeholder="Add outreach notes..."
-        className="w-full bg-[#111827] border border-[#374151] rounded px-2 py-1.5 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500 resize-none min-w-48"
+  useEffect(() => { setValue(lead.notes || '') }, [lead.notes])
+  useEffect(() => { if (editing && inputRef.current) inputRef.current.focus() }, [editing])
+
+  const save = () => {
+    setEditing(false)
+    if (value !== (lead.notes || '')) onSave(lead.id, value)
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter') save()
+          if (e.key === 'Escape') { setValue(lead.notes || ''); setEditing(false) }
+        }}
+        onBlur={save}
+        className="w-full bg-[#111827] border border-blue-500/50 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-400 min-w-32"
       />
-      {isDirty && (
-        <button
-          onClick={() => onSaveNotes(signal.id, localNote)}
-          disabled={isSaving}
-          className="self-end px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-xs text-white font-medium transition-colors"
-        >
-          {isSaving ? 'Saving...' : 'Save'}
-        </button>
-      )}
-    </div>
-  )
-}
-
-function LeadsGroup({ groupKey, label, signals, notes, savingNotes, onSaveNotes, onUpdateStatus, groupOpen, setGroupOpen }) {
-  const isOpen = groupOpen[groupKey] !== false
-  const toggle = () => setGroupOpen(prev => ({ ...prev, [groupKey]: !isOpen }))
-
+    )
+  }
   return (
-    <div className="rounded-lg border border-[#374151] overflow-hidden">
-      <button
-        onClick={toggle}
-        className="w-full flex items-center justify-between px-5 py-3.5 bg-[#1a2234] hover:bg-[#263045] transition-colors text-left"
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-gray-300 uppercase tracking-widest">{label}</span>
-          <span className="px-2 py-0.5 rounded-full bg-blue-900 text-blue-300 text-xs font-bold">{signals.length}</span>
-        </div>
-        <span className="text-gray-500 text-xs">{isOpen ? '▲' : '▼'}</span>
-      </button>
-
-      {isOpen && (
-        <div className="overflow-hidden">
-          <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
-            <thead>
-              <tr>
-                <Th className="w-[12%]">Type</Th>
-                <Th className="w-[18%]">Company</Th>
-                <Th className="w-[28%]">Summary</Th>
-                <Th className="w-[12%]">Date Claimed</Th>
-                <Th className="w-[10%]">Status</Th>
-                <Th className="w-[20%]">Notes</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#374151]">
-              {signals.map((signal, i) => {
-                const d = parseDetail(signal.signal_detail)
-                const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
-                return (
-                  <tr key={signal.id} className={`${rowBg} hover:bg-[#263045] transition-colors`}>
-                    <TdTruncate>
-                      <SignalTypeBadge signalType={signal.signal_type} fundingType={d.funding_type} />
-                    </TdTruncate>
-                    <TdTruncate className="text-sm font-semibold text-white" title={signal.companies?.name || d.company_name || d.sponsor || ''}>
-                      {signal.companies?.name || d.company_name || d.sponsor || '—'}
-                    </TdTruncate>
-                    <TdTruncate title={d.funding_summary || d.study_summary || signal.signal_summary || ''}>
-                      <span className="text-sm text-gray-300 leading-snug">
-                        {truncate(d.funding_summary || d.study_summary || signal.signal_summary, 90)}
-                      </span>
-                    </TdTruncate>
-                    <TdTruncate className="text-sm text-gray-400">
-                      {formatDate(signal.updated_at)}
-                    </TdTruncate>
-                    <td className="px-3 py-3">
-                      <select
-                        value={signal.status}
-                        onChange={e => onUpdateStatus(signal, e.target.value)}
-                        onClick={e => e.stopPropagation()}
-                        className="bg-[#111827] border border-[#374151] rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-blue-500 cursor-pointer"
-                      >
-                        <option value="claimed">Claimed</option>
-                        <option value="contacted">Contacted</option>
-                        <option value="closed">Closed</option>
-                      </select>
-                    </td>
-                    <td className="px-3 py-3">
-                      <LeadsNoteCell
-                        signal={signal}
-                        notes={notes}
-                        onSaveNotes={onSaveNotes}
-                        savingNotes={savingNotes}
-                      />
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+    <div
+      onClick={() => setEditing(true)}
+      className="cursor-text min-h-[24px] truncate"
+      title={value || 'Click to add notes'}
+    >
+      {value
+        ? <span className="text-xs text-gray-300">{value}</span>
+        : <span className="text-xs text-gray-600 italic">Add notes...</span>
+      }
     </div>
   )
 }
 
-function LeadsTab({ signals, repName, notes, savingNotes, onSaveNotes, onUpdateStatus, groupOpen, setGroupOpen }) {
+const LEAD_STATUS_OPTIONS = [
+  { value: 'new',         label: 'New' },
+  { value: 'contacted',   label: 'Contacted' },
+  { value: 'in_progress', label: 'In Progress' },
+  { value: 'won',         label: 'Won' },
+  { value: 'lost',        label: 'Lost' },
+]
+
+function LeadsTab({ leads, repName, showAllLeads, onToggleShowAll, onUpdateStatus, onUpdateNotes }) {
   if (!repName) {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center">
         <div className="w-14 h-14 rounded-full bg-[#1f2937] flex items-center justify-center mb-4">
           <span className="text-gray-500 text-2xl font-bold">?</span>
         </div>
-        <p className="text-gray-300 text-base font-semibold mb-1">Set your name above to see your leads.</p>
-        <p className="text-gray-500 text-sm">Your claimed signals will appear here for tracking and outreach notes.</p>
+        <p className="text-gray-300 text-base font-semibold mb-1">Set your name to see your leads.</p>
+        <p className="text-gray-500 text-sm">Your claimed signals will appear here for tracking and outreach.</p>
       </div>
     )
   }
 
-  if (signals.length === 0) {
+  const myCount = leads.filter(l => l.claimed_by === repName).length
+  const displayLeads = showAllLeads ? leads : leads.filter(l => l.claimed_by === repName)
+
+  const toggleLabel = showAllLeads
+    ? `Show my leads (${myCount})`
+    : `Show all leads (${leads.length})`
+
+  if (displayLeads.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-24 text-center">
-        <div className="w-14 h-14 rounded-full bg-[#1f2937] flex items-center justify-center mb-4">
-          <span className="text-gray-500 text-2xl font-mono">—</span>
+      <div className="flex flex-col gap-4">
+        <div className="flex justify-end">
+          <button onClick={onToggleShowAll} className="text-xs text-blue-400 hover:text-blue-300 font-medium px-2 py-1 rounded bg-blue-900/30 hover:bg-blue-900/50 transition-colors">
+            {toggleLabel}
+          </button>
         </div>
-        <p className="text-gray-300 text-base font-semibold mb-1">No leads claimed yet.</p>
-        <p className="text-gray-500 text-sm">Claim signals from the other tabs to track them here.</p>
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <div className="w-14 h-14 rounded-full bg-[#1f2937] flex items-center justify-center mb-4">
+            <span className="text-gray-500 text-2xl font-mono">—</span>
+          </div>
+          <p className="text-gray-300 text-base font-semibold mb-1">
+            {showAllLeads ? 'No leads found.' : 'No leads claimed yet.'}
+          </p>
+          <p className="text-gray-500 text-sm">Claim signals from the other tabs to track them here.</p>
+        </div>
       </div>
     )
   }
-
-  const clinicalSignals = signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'clinical')
-  const fundingSignals  = signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'funding')
-  const jobsSignals     = signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'jobs')
-
-  const groups = [
-    { key: 'clinical', label: 'Clinical Trials',  items: clinicalSignals },
-    { key: 'funding',  label: 'Funding & M&A',    items: fundingSignals },
-    { key: 'jobs',     label: 'Jobs',              items: jobsSignals },
-  ].filter(g => g.items.length > 0)
 
   return (
-    <div className="flex flex-col gap-5">
-      {groups.map(group => (
-        <LeadsGroup
-          key={group.key}
-          groupKey={group.key}
-          label={group.label}
-          signals={group.items}
-          notes={notes}
-          savingNotes={savingNotes}
-          onSaveNotes={onSaveNotes}
-          onUpdateStatus={onUpdateStatus}
-          groupOpen={groupOpen}
-          setGroupOpen={setGroupOpen}
-        />
-      ))}
+    <div className="flex flex-col gap-4">
+      <div className="flex justify-end">
+        <button onClick={onToggleShowAll} className="text-xs text-blue-400 hover:text-blue-300 font-medium px-2 py-1 rounded bg-blue-900/30 hover:bg-blue-900/50 transition-colors">
+          {toggleLabel}
+        </button>
+      </div>
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <Th className="w-[16%]">Company</Th>
+              <Th className="w-[12%]">Signal Type</Th>
+              <Th className="w-[22%]">Summary</Th>
+              <Th className="w-[10%]">Claimed By</Th>
+              <Th className="w-[10%]">Claimed At</Th>
+              <Th className="w-[12%]">Status</Th>
+              <Th className="w-[18%]">Notes</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {displayLeads.map((lead, i) => {
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              return (
+                <tr key={lead.id} className={`${rowBg} hover:bg-[#263045] transition-colors`}>
+                  <TdTruncate className="text-sm font-semibold text-white" title={lead.company_name || ''}>
+                    {lead.company_name || '—'}
+                  </TdTruncate>
+                  <TdTruncate>
+                    <SignalTypeBadge signalType={lead.signal_type} />
+                  </TdTruncate>
+                  <TdTruncate title={lead.signal_summary || ''}>
+                    <span className="text-xs text-gray-300">{truncate(lead.signal_summary, 90) || '—'}</span>
+                  </TdTruncate>
+                  <TdTruncate className="text-sm text-gray-300" title={lead.claimed_by || ''}>
+                    {lead.claimed_by || '—'}
+                  </TdTruncate>
+                  <TdTruncate className="text-sm text-gray-400">
+                    {formatDate(lead.claimed_at)}
+                  </TdTruncate>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    <select
+                      value={lead.status || 'new'}
+                      onChange={e => onUpdateStatus(lead.id, e.target.value)}
+                      className="bg-[#111827] border border-[#374151] rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-blue-500 cursor-pointer"
+                    >
+                      {LEAD_STATUS_OPTIONS.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="px-3 py-3">
+                    <LeadNoteCell lead={lead} onSave={onUpdateNotes} />
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -1201,12 +1254,7 @@ const PAGE_TITLES = {
   settings:   'Settings',
 }
 
-function TopBar({
-  activePage, loading, agentRunning,
-  repName, showRepInput, repInputValue, repInputRef,
-  onRefresh, onRunAgents,
-  onEditRep, onStartRep, onRepChange, onSaveRep, onCancelRep,
-}) {
+function TopBar({ activePage, loading, agentRunning, repName, onRefresh, onRunAgents, onShowNameModal }) {
   return (
     <div className="bg-[#1f2937] border-b border-[#374151] px-6 py-3 flex items-center justify-between gap-4 sticky top-0 z-30">
       {/* Page title */}
@@ -1246,37 +1294,10 @@ function TopBar({
           ) : 'Run Agents'}
         </button>
 
-        {/* Rep identity */}
-        {showRepInput ? (
-          <div className="flex items-center gap-2">
-            <input
-              ref={repInputRef}
-              type="text"
-              value={repInputValue}
-              onChange={onRepChange}
-              onKeyDown={e => {
-                if (e.key === 'Enter') onSaveRep()
-                if (e.key === 'Escape') onCancelRep()
-              }}
-              className="bg-[#111827] border border-[#374151] rounded px-2.5 py-1 text-sm text-white focus:outline-none focus:border-blue-500 w-32"
-              placeholder="First Last"
-            />
-            <button
-              onClick={onSaveRep}
-              className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded font-semibold transition-colors"
-            >
-              Save
-            </button>
-            <button
-              onClick={onCancelRep}
-              className="px-2 py-1 bg-white/10 hover:bg-white/20 text-gray-300 text-xs rounded transition-colors"
-            >
-              Cancel
-            </button>
-          </div>
-        ) : repName ? (
+        {/* Rep identity — opens name modal */}
+        {repName ? (
           <button
-            onClick={onEditRep}
+            onClick={onShowNameModal}
             className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 hover:bg-white/10 transition-colors group"
           >
             <span className="w-6 h-6 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold text-white select-none">
@@ -1286,7 +1307,7 @@ function TopBar({
           </button>
         ) : (
           <button
-            onClick={onStartRep}
+            onClick={onShowNameModal}
             className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors"
           >
             Set name →
@@ -1976,21 +1997,20 @@ function SettingsPage() {
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const [activePage, setActivePage]       = useState('dashboard')
-  const [signals, setSignals]             = useState([])
-  const [loading, setLoading]             = useState(true)
-  const [agentRuns, setAgentRuns]         = useState([])
-  const [repName, setRepName]             = useState('')
-  const [showRepInput, setShowRepInput]   = useState(false)
-  const [repInputValue, setRepInputValue] = useState('')
-  const [expandedRows, setExpandedRows]   = useState(new Set())
-  const [notes, setNotes]                 = useState({})
-  const [savingNotes, setSavingNotes]     = useState(new Set())
-  const [leadsGroupOpen, setLeadsGroupOpen] = useState({ clinical: true, funding: true, jobs: true })
-  const [agentRunning, setAgentRunning]     = useState(false)
-  const [toast, setToast]                   = useState(null)
-  const [dismissTarget, setDismissTarget]   = useState(null) // { signal, tabKey }
-  const repInputRef = useRef(null)
+  const [activePage, setActivePage]     = useState('dashboard')
+  const [signals, setSignals]           = useState([])
+  const [loading, setLoading]           = useState(true)
+  const [agentRuns, setAgentRuns]       = useState([])
+  const [repName, setRepName]           = useState('')
+  const [showNameModal, setShowNameModal] = useState(false)
+  const [leads, setLeads]               = useState([])
+  const [showAllLeads, setShowAllLeads] = useState(false)
+  const [expandedRows, setExpandedRows] = useState(new Set())
+  const [notes, setNotes]               = useState({})
+  const [savingNotes, setSavingNotes]   = useState(new Set())
+  const [agentRunning, setAgentRunning] = useState(false)
+  const [toast, setToast]               = useState(null)
+  const [dismissTarget, setDismissTarget] = useState(null) // { signal, tabKey }
 
   const fetchSignals = useCallback(async () => {
     try {
@@ -2019,12 +2039,28 @@ export default function Home() {
     }
   }, [])
 
+  const fetchLeads = useCallback(async () => {
+    try {
+      const res = await fetch('/api/leads', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = await res.json()
+      setLeads(data.leads || [])
+    } catch (err) {
+      console.error('Error fetching leads:', err)
+    }
+  }, [])
+
   useEffect(() => {
     const stored = localStorage.getItem('biosignal_rep_name')
-    if (stored) setRepName(stored)
+    if (stored) {
+      setRepName(stored)
+    } else {
+      setShowNameModal(true)
+    }
     fetchSignals()
     fetchAgentRuns()
-  }, [fetchSignals, fetchAgentRuns])
+    fetchLeads()
+  }, [fetchSignals, fetchAgentRuns, fetchLeads])
 
   useEffect(() => {
     if (!supabase) return
@@ -2036,10 +2072,6 @@ export default function Home() {
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [fetchSignals])
-
-  useEffect(() => {
-    if (showRepInput && repInputRef.current) repInputRef.current.focus()
-  }, [showRepInput])
 
   const activeStatuses = ['new', 'carried_forward', 'claimed', 'contacted']
 
@@ -2054,14 +2086,12 @@ export default function Home() {
   const fundingSignals    = signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'funding' && activeStatuses.includes(s.status))
   const competitorSignals = signals.filter(s => s.signal_type === 'competitor_job_posting' && activeStatuses.includes(s.status))
   const staleSignals      = signals.filter(s => ['stale_job_posting', 'target_company_job'].includes(s.signal_type) && activeStatuses.includes(s.status))
-  const leadsSignals      = repName ? signals.filter(s => s.claimed_by === repName) : []
-
   const tabCounts = {
     clinical:   clinicalSignals.length,
     funding:    fundingSignals.length,
     competitor: competitorSignals.length,
     stale:      staleSignals.length,
-    leads:      leadsSignals.length,
+    leads:      repName ? leads.filter(l => l.claimed_by === repName).length : 0,
   }
 
   const toggleRow = (id) => {
@@ -2074,14 +2104,31 @@ export default function Home() {
 
   const claimSignal = async (signal) => {
     if (!repName) return
+    const claimedAt = new Date().toISOString()
     setSignals(prev => prev.map(s => s.id === signal.id ? { ...s, claimed_by: repName, status: 'claimed' } : s))
     try {
       await fetch('/api/signals', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: signal.id, claimed_by: repName, status: 'claimed' }),
+        body: JSON.stringify({ id: signal.id, claimed_by: repName, status: 'claimed', claimed_at: claimedAt }),
+      })
+      const d = parseDetail(signal.signal_detail)
+      const companyName = signal.companies?.name || d.company_name || d.sponsor || d.acquirer_name || ''
+      const signalSummary = d.job_title || d.study_title || d.deal_summary || d.funding_summary || signal.signal_summary || ''
+      await fetch('/api/leads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          signal_id: signal.id,
+          signal_type: signal.signal_type,
+          company_name: companyName,
+          signal_summary: signalSummary,
+          claimed_by: repName,
+          claimed_at: claimedAt,
+        }),
       })
       fetchSignals()
+      fetchLeads()
     } catch (err) {
       console.error('Error claiming signal:', err)
       fetchSignals()
@@ -2282,13 +2329,39 @@ export default function Home() {
     }
   }
 
-  const saveRepName = () => {
-    const trimmed = repInputValue.trim()
-    if (trimmed) {
-      setRepName(trimmed)
-      localStorage.setItem('biosignal_rep_name', trimmed)
+  const saveRepName = (name) => {
+    setRepName(name)
+    localStorage.setItem('biosignal_rep_name', name)
+    document.cookie = `biosignal_rep_name=${encodeURIComponent(name)}; path=/`
+    setShowNameModal(false)
+  }
+
+  const updateLeadStatus = async (leadId, newStatus) => {
+    setLeads(prev => prev.map(l => l.id === leadId ? { ...l, status: newStatus } : l))
+    try {
+      await fetch('/api/leads', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: leadId, status: newStatus }),
+      })
+    } catch (err) {
+      console.error('Error updating lead status:', err)
+      fetchLeads()
     }
-    setShowRepInput(false)
+  }
+
+  const updateLeadNotes = async (leadId, noteText) => {
+    setLeads(prev => prev.map(l => l.id === leadId ? { ...l, notes: noteText } : l))
+    try {
+      await fetch('/api/leads', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: leadId, notes: noteText }),
+      })
+    } catch (err) {
+      console.error('Error updating lead notes:', err)
+      fetchLeads()
+    }
   }
 
   return (
@@ -2301,16 +2374,9 @@ export default function Home() {
           loading={loading}
           agentRunning={agentRunning}
           repName={repName}
-          showRepInput={showRepInput}
-          repInputValue={repInputValue}
-          repInputRef={repInputRef}
           onRefresh={fetchSignals}
           onRunAgents={runAgents}
-          onEditRep={() => { setRepInputValue(repName); setShowRepInput(true) }}
-          onStartRep={() => { setRepInputValue(''); setShowRepInput(true) }}
-          onRepChange={e => setRepInputValue(e.target.value)}
-          onSaveRep={saveRepName}
-          onCancelRep={() => setShowRepInput(false)}
+          onShowNameModal={() => setShowNameModal(true)}
         />
 
         <main className="flex-1 p-6">
@@ -2371,14 +2437,12 @@ export default function Home() {
               )}
               {activePage === 'leads'      && (
                 <LeadsTab
-                  signals={leadsSignals}
+                  leads={leads}
                   repName={repName}
-                  notes={notes}
-                  savingNotes={savingNotes}
-                  onSaveNotes={saveNotes}
-                  onUpdateStatus={updateStatus}
-                  groupOpen={leadsGroupOpen}
-                  setGroupOpen={setLeadsGroupOpen}
+                  showAllLeads={showAllLeads}
+                  onToggleShowAll={() => setShowAllLeads(prev => !prev)}
+                  onUpdateStatus={updateLeadStatus}
+                  onUpdateNotes={updateLeadNotes}
                 />
               )}
               {activePage === 'buyers'     && <PastBuyersPage />}
@@ -2388,6 +2452,11 @@ export default function Home() {
           )}
         </main>
       </div>
+
+      {/* Name modal — shown on first visit or when clicking name */}
+      {showNameModal && (
+        <NameModal onSave={saveRepName} />
+      )}
 
       {/* Dismiss modal */}
       {dismissTarget && (
