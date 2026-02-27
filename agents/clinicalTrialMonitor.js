@@ -11,6 +11,7 @@
 import { supabase, upsertCompany } from '../lib/supabase.js';
 import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js';
 import { loadExcludedCompanies, isExcludedCompany } from '../lib/companyExclusion.js';
+import { loadDismissalRules, checkDismissalExclusion } from '../lib/dismissalRules.js';
 
 const CT_API_BASE = 'https://clinicaltrials.gov/api/v2/studies';
 const CT_STUDY_BASE = 'https://clinicaltrials.gov/study';
@@ -422,7 +423,7 @@ async function finaliseAgentRun(runId, status, signalsFound, errorMessage = null
  * @param {Date} completionCutoff - Furthest future date for completion signals
  * @returns {Promise<number>}
  */
-async function processStudy(study, now, pastClientsMap = new Map(), excludedCompanies = new Set()) {
+async function processStudy(study, now, pastClientsMap = new Map(), excludedCompanies = new Set(), dismissalRules = new Map()) {
   const proto = extractProtocol(study);
 
   // Guard 1: only INDUSTRY sponsors (API pre-filters, but we confirm)
@@ -450,6 +451,14 @@ async function processStudy(study, now, pastClientsMap = new Map(), excludedComp
 
   if (isExcludedCompany(proto.leadSponsorName, excludedCompanies, pastClientsMap)) {
     console.log(`[clinicalTrialMonitor] EXCLUDED (large company): ${proto.leadSponsorName}`);
+    return 0;
+  }
+
+  // Check dismissal rules for auto-exclusion
+  const dismissCheck = checkDismissalExclusion(dismissalRules, 'clinical_trial_phase_transition', { company: proto.leadSponsorName });
+  const dismissCheckInd = checkDismissalExclusion(dismissalRules, 'clinical_trial_new_ind', { company: proto.leadSponsorName });
+  if (dismissCheck.excluded && dismissCheckInd.excluded) {
+    console.log(`[clinicalTrialMonitor] AUTO-EXCLUDED (${dismissCheck.rule_type}): ${dismissCheck.rule_value}`);
     return 0;
   }
 
@@ -576,6 +585,8 @@ export async function run() {
   console.log(`[clinicalTrialMonitor] Loaded ${pastClientsMap.size} past clients for scoring.`);
   const excludedCompanies = await loadExcludedCompanies();
   console.log(`[clinicalTrialMonitor] Loaded ${excludedCompanies.size} excluded companies.`);
+  const dismissalRules = await loadDismissalRules();
+  console.log(`[clinicalTrialMonitor] Loaded ${[...dismissalRules.values()].flat().length} active dismissal rules.`);
 
   let signalsFound = 0;
   let studiesProcessed = 0;
@@ -596,7 +607,7 @@ export async function run() {
         industryFiltered++;
       }
 
-      const inserted = await processStudy(study, now, pastClientsMap, excludedCompanies);
+      const inserted = await processStudy(study, now, pastClientsMap, excludedCompanies, dismissalRules);
       signalsFound += inserted;
     }
 

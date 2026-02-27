@@ -23,6 +23,7 @@
 import { supabase, normalizeCompanyName, upsertCompany } from '../lib/supabase.js';
 import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js';
 import { loadExcludedCompanies, isExcludedCompany } from '../lib/companyExclusion.js';
+import { loadDismissalRules, checkDismissalExclusion } from '../lib/dismissalRules.js';
 
 // LinkedIn li_at cookie for company posts enrichment (best-effort)
 const LINKEDIN_LI_AT = process.env.LINKEDIN_LI_AT;
@@ -417,7 +418,7 @@ async function fetchNihGrants(sixMonthsAgo, today, currentYear) {
  * @param {number} currentYear
  * @returns {Promise<number>} Signals inserted
  */
-async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap = new Map(), excludedCompanies = new Set()) {
+async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap = new Map(), excludedCompanies = new Set(), dismissalRules = new Map()) {
   let signalsInserted = 0;
   let projects;
 
@@ -486,6 +487,13 @@ async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap
     const signalSummaryLabel = preHiringDetail.pre_hiring_signal
       ? ' — Pre-hiring signal'
       : '';
+
+    // Check dismissal rules
+    const dismissCheck = checkDismissalExclusion(dismissalRules, signalType, { company: orgName });
+    if (dismissCheck.excluded) {
+      console.log(`[fundingMaAgent] AUTO-EXCLUDED (${dismissCheck.rule_type}): ${dismissCheck.rule_value}`);
+      continue;
+    }
 
     const pastClient = matchPastClient(orgName, pastClientsMap);
     const finalScore = pastClient ? adjustedScore + pastClient.boost_score : adjustedScore;
@@ -1460,7 +1468,7 @@ async function enrichMaSignal(entityName, transactionType, existingDealAmount, e
  * @param {string} today
  * @returns {Promise<number>} Signals inserted
  */
-async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map(), excludedCompanies = new Set()) {
+async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map(), excludedCompanies = new Set(), dismissalRules = new Map()) {
   let signalsInserted = 0;
   const MA_BASE_SCORE = 27;
   let liEnrichRequests = 0;
@@ -1566,6 +1574,13 @@ async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map(),
 
       if (isExcludedCompany(entityName, excludedCompanies, pastClientsMap)) {
         console.log(`[fundingMaAgent] EXCLUDED (large company): ${entityName}`);
+        continue;
+      }
+
+      // Check dismissal rules
+      const dismissCheck = checkDismissalExclusion(dismissalRules, 'ma_transaction', { company: entityName });
+      if (dismissCheck.excluded) {
+        console.log(`[fundingMaAgent] AUTO-EXCLUDED (${dismissCheck.rule_type}): ${dismissCheck.rule_value}`);
         continue;
       }
 
@@ -1702,7 +1717,7 @@ function extractCompanyFromBioSpaceTitle(title) {
  * @param {string} today - YYYY-MM-DD
  * @returns {Promise<number>} Signals inserted
  */
-async function processBioSpaceDeals(today, pastClientsMap = new Map(), excludedCompanies = new Set()) {
+async function processBioSpaceDeals(today, pastClientsMap = new Map(), excludedCompanies = new Set(), dismissalRules = new Map()) {
   let signalsInserted = 0;
   const BASE_SCORE = 28;
   const SOURCE_URL = 'https://www.biospace.com/deals/';
@@ -1759,6 +1774,13 @@ async function processBioSpaceDeals(today, pastClientsMap = new Map(), excludedC
     const fundingType = dealType === 'ipo' ? 'ipo' : dealType === 'venture_capital' ? 'venture_capital' : 'pharma_partnership';
     const summaryVerb = fundingType === 'pharma_partnership' ? 'signed pharma deal' : fundingType === 'ipo' ? 'filed for IPO' : 'raised funding round';
 
+    // Check dismissal rules
+    const dismissCheck = checkDismissalExclusion(dismissalRules, 'funding_new_award', { company: rawCompany });
+    if (dismissCheck.excluded) {
+      console.log(`[fundingMaAgent] AUTO-EXCLUDED (${dismissCheck.rule_type}): ${dismissCheck.rule_value}`);
+      continue;
+    }
+
     const pastClient = matchPastClient(rawCompany, pastClientsMap);
     const finalScore = pastClient ? adjustedScore + pastClient.boost_score : adjustedScore;
 
@@ -1801,7 +1823,7 @@ async function processBioSpaceDeals(today, pastClientsMap = new Map(), excludedC
  * @param {string} today - YYYY-MM-DD
  * @returns {Promise<number>} Signals inserted
  */
-async function processBioSpaceFunding(today, pastClientsMap = new Map(), excludedCompanies = new Set()) {
+async function processBioSpaceFunding(today, pastClientsMap = new Map(), excludedCompanies = new Set(), dismissalRules = new Map()) {
   let signalsInserted = 0;
   const BASE_SCORE = 28;
   const SOURCE_URL = 'https://www.biospace.com/funding/';
@@ -1857,6 +1879,13 @@ async function processBioSpaceFunding(today, pastClientsMap = new Map(), exclude
 
     const fundingType = dealType === 'ipo' ? 'ipo' : dealType === 'pharma_partnership' ? 'pharma_partnership' : 'venture_capital';
     const summaryVerb = fundingType === 'ipo' ? 'filed for IPO' : fundingType === 'pharma_partnership' ? 'signed deal' : 'raised funding';
+
+    // Check dismissal rules
+    const dismissCheck = checkDismissalExclusion(dismissalRules, 'funding_new_award', { company: rawCompany });
+    if (dismissCheck.excluded) {
+      console.log(`[fundingMaAgent] AUTO-EXCLUDED (${dismissCheck.rule_type}): ${dismissCheck.rule_value}`);
+      continue;
+    }
 
     const pastClient = matchPastClient(rawCompany, pastClientsMap);
     const finalScore = pastClient ? adjustedScore + pastClient.boost_score : adjustedScore;
@@ -1914,13 +1943,15 @@ export async function run() {
 
   const excludedCompanies = await loadExcludedCompanies();
   console.log(`[fundingMaAgent] Loaded ${excludedCompanies.size} excluded companies.`);
+  const dismissalRules = await loadDismissalRules();
+  console.log(`[fundingMaAgent] Loaded ${[...dismissalRules.values()].flat().length} active dismissal rules.`);
 
   const sourceCounts = { nih: 0, ma: 0, biospaceDeals: 0, biospaceVcIpo: 0 };
   let signalsFound = 0;
 
   // Source 1: NIH SBIR/STTR grants
   try {
-    sourceCounts.nih = await processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap, excludedCompanies);
+    sourceCounts.nih = await processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap, excludedCompanies, dismissalRules);
     signalsFound += sourceCounts.nih;
     console.log(`[fundingMaAgent] NIH grants: ${sourceCounts.nih} signals`);
   } catch (err) {
@@ -1929,7 +1960,7 @@ export async function run() {
 
   // Source 2: SEC EDGAR M&A 8-K filings
   try {
-    sourceCounts.ma = await processMaFilings(sixMonthsAgo, today, pastClientsMap, excludedCompanies);
+    sourceCounts.ma = await processMaFilings(sixMonthsAgo, today, pastClientsMap, excludedCompanies, dismissalRules);
     signalsFound += sourceCounts.ma;
     console.log(`[fundingMaAgent] M&A filings: ${sourceCounts.ma} signals`);
   } catch (err) {
@@ -1938,7 +1969,7 @@ export async function run() {
 
   // Source 3: BioSpace /deals/ — pharma partnerships & licensing
   try {
-    sourceCounts.biospaceDeals = await processBioSpaceDeals(today, pastClientsMap, excludedCompanies);
+    sourceCounts.biospaceDeals = await processBioSpaceDeals(today, pastClientsMap, excludedCompanies, dismissalRules);
     signalsFound += sourceCounts.biospaceDeals;
     console.log(`[fundingMaAgent] BioSpace deals: ${sourceCounts.biospaceDeals} signals`);
   } catch (err) {
@@ -1947,7 +1978,7 @@ export async function run() {
 
   // Source 4: BioSpace /funding/ — VC rounds & IPOs
   try {
-    sourceCounts.biospaceVcIpo = await processBioSpaceFunding(today, pastClientsMap, excludedCompanies);
+    sourceCounts.biospaceVcIpo = await processBioSpaceFunding(today, pastClientsMap, excludedCompanies, dismissalRules);
     signalsFound += sourceCounts.biospaceVcIpo;
     console.log(`[fundingMaAgent] BioSpace funding: ${sourceCounts.biospaceVcIpo} signals`);
   } catch (err) {

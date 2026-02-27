@@ -46,7 +46,7 @@ async function handleGet(req, res) {
 }
 
 async function handlePatch(req, res) {
-  const { id, status, claimed_by, notes } = req.body || {}
+  const { id, status, claimed_by, notes, dismissal_reason, dismissal_value } = req.body || {}
 
   if (!id) return res.status(400).json({ error: 'Missing id' })
 
@@ -54,8 +54,8 @@ async function handlePatch(req, res) {
   if (status !== undefined) updates.status = status
   if (claimed_by !== undefined) updates.claimed_by = claimed_by
 
-  // If notes provided, merge into signal_detail as rep_notes
-  if (notes !== undefined) {
+  // If notes or dismissal info provided, merge into signal_detail
+  if (notes !== undefined || dismissal_reason !== undefined) {
     const { data: existing, error: fetchError } = await supabase
       .from('signals')
       .select('signal_detail')
@@ -68,7 +68,12 @@ async function handlePatch(req, res) {
     }
 
     const currentDetail = existing?.signal_detail || {}
-    updates.signal_detail = { ...currentDetail, rep_notes: notes }
+    if (notes !== undefined) currentDetail.rep_notes = notes
+    if (dismissal_reason !== undefined) {
+      currentDetail.dismissal_reason = dismissal_reason
+      currentDetail.dismissal_value = dismissal_value
+    }
+    updates.signal_detail = currentDetail
   }
 
   if (Object.keys(updates).length === 0) {

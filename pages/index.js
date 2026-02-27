@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -36,6 +36,15 @@ const MA_TRANSACTION_TYPE_CONFIG = {
   product_acquisition: { label: 'Product Acquisition', color: 'bg-violet-600' },
   merger:              { label: 'Merger',              color: 'bg-amber-600' },
   partnership:         { label: 'Partnership',         color: 'bg-blue-600' },
+}
+
+// ─── Dismissal reason options per tab ────────────────────────────────────────
+
+const DISMISS_REASONS = {
+  clinical:   [{ key: 'company', label: 'Company' }],
+  funding:    [{ key: 'company', label: 'Company' }],
+  competitor: [{ key: 'role_title', label: 'Role Title' }, { key: 'location', label: 'Location' }],
+  stale:      [{ key: 'role_title', label: 'Role Title' }, { key: 'company', label: 'Company' }, { key: 'location', label: 'Location' }],
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -81,7 +90,207 @@ function truncate(str, n) {
   return str.length > n ? str.substring(0, n) + '...' : str
 }
 
+function hasPastClient(signal) {
+  const d = parseDetail(signal.signal_detail)
+  return !!d.past_client
+}
+
+function sortSignals(signals) {
+  return [...signals].sort((a, b) => {
+    const aPast = hasPastClient(a) ? 1 : 0
+    const bPast = hasPastClient(b) ? 1 : 0
+    if (bPast !== aPast) return bPast - aPast
+    return (b.priority_score || 0) - (a.priority_score || 0)
+  })
+}
+
+// ─── Column Filter Hook ──────────────────────────────────────────────────────
+
+function useColumnFilters() {
+  const [filters, setFilters] = useState({})
+
+  const setFilter = useCallback((colKey, selectedValues) => {
+    setFilters(prev => {
+      const next = { ...prev }
+      if (!selectedValues || selectedValues.length === 0) {
+        delete next[colKey]
+      } else {
+        next[colKey] = selectedValues
+      }
+      return next
+    })
+  }, [])
+
+  const clearAll = useCallback(() => setFilters({}), [])
+
+  const hasActiveFilters = Object.keys(filters).length > 0
+
+  const applyFilters = useCallback((rows, extractors) => {
+    if (!hasActiveFilters) return rows
+    return rows.filter(row => {
+      for (const [colKey, allowedValues] of Object.entries(filters)) {
+        const extractor = extractors[colKey]
+        if (!extractor) continue
+        const cellValue = String(extractor(row) || '').toLowerCase()
+        const match = allowedValues.some(v => cellValue === v.toLowerCase())
+        if (!match) return false
+      }
+      return true
+    })
+  }, [filters, hasActiveFilters])
+
+  return { filters, setFilter, clearAll, hasActiveFilters, applyFilters }
+}
+
+// ─── Column Filter Dropdown Component ────────────────────────────────────────
+
+function ColumnFilterDropdown({ colKey, label, allValues, activeValues, onApply, className = '' }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [selected, setSelected] = useState(new Set(activeValues || []))
+  const btnRef = useRef(null)
+  const dropdownRef = useRef(null)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+
+  const hasFilter = activeValues && activeValues.length > 0
+
+  useEffect(() => {
+    setSelected(new Set(activeValues || []))
+  }, [activeValues])
+
+  const openDropdown = (e) => {
+    e.stopPropagation()
+    if (btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      setPos({ top: rect.bottom + 4, left: Math.max(4, Math.min(rect.left, window.innerWidth - 240)) })
+    }
+    setSearch('')
+    setIsOpen(true)
+  }
+
+  useEffect(() => {
+    if (!isOpen) return
+    const handleClick = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target) && !btnRef.current.contains(e.target)) {
+        onApply(colKey, [...selected])
+        setIsOpen(false)
+      }
+    }
+    const handleKey = (e) => {
+      if (e.key === 'Enter' || e.key === 'Escape') {
+        onApply(colKey, [...selected])
+        setIsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [isOpen, selected, colKey, onApply])
+
+  const uniqueVals = useMemo(() => {
+    const vals = [...new Set(allValues.map(v => String(v || '')))]
+      .filter(v => v && v !== '—' && v !== 'undefined')
+      .sort((a, b) => a.localeCompare(b))
+    if (!search) return vals
+    const q = search.toLowerCase()
+    return vals.filter(v => v.toLowerCase().includes(q))
+  }, [allValues, search])
+
+  const toggle = (val) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(val) ? next.delete(val) : next.add(val)
+      return next
+    })
+  }
+
+  return (
+    <>
+      <th
+        ref={btnRef}
+        onClick={openDropdown}
+        className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap cursor-pointer hover:text-gray-200 select-none ${className}`}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          {label}
+          {hasFilter && <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />}
+          <svg className="w-3 h-3 opacity-40" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+        </span>
+      </th>
+      {isOpen && (
+        <div
+          ref={dropdownRef}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 50 }}
+          className="w-56 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl"
+        >
+          <div className="p-2 border-b border-[#374151]">
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search..."
+              autoFocus
+              className="w-full bg-[#111827] border border-[#374151] rounded px-2 py-1 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div className="max-h-48 overflow-y-auto p-1.5">
+            {uniqueVals.length === 0 && (
+              <p className="text-xs text-gray-500 px-2 py-1">No values</p>
+            )}
+            {uniqueVals.map(val => (
+              <label key={val} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-[#374151] cursor-pointer text-xs text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={selected.has(val)}
+                  onChange={() => toggle(val)}
+                  className="rounded border-gray-600 bg-[#111827] text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                />
+                <span className="truncate">{val}</span>
+              </label>
+            ))}
+          </div>
+          <div className="p-2 border-t border-[#374151] flex justify-between">
+            <button
+              onClick={() => { setSelected(new Set()); onApply(colKey, []); setIsOpen(false) }}
+              className="text-xs text-gray-400 hover:text-white"
+            >
+              Clear
+            </button>
+            <button
+              onClick={() => { onApply(colKey, [...selected]); setIsOpen(false) }}
+              className="text-xs text-blue-400 hover:text-blue-300 font-semibold"
+            >
+              Apply
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+function ClearAllFiltersButton({ hasActiveFilters, onClear }) {
+  if (!hasActiveFilters) return null
+  return (
+    <div className="flex justify-end mb-2">
+      <button
+        onClick={onClear}
+        className="text-xs text-blue-400 hover:text-blue-300 font-medium px-2 py-1 rounded bg-blue-900/30 hover:bg-blue-900/50 transition-colors"
+      >
+        Clear all filters
+      </button>
+    </div>
+  )
+}
+
 // ─── Shared UI components ─────────────────────────────────────────────────────
+
+function PastClientStar() {
+  return <span className="text-[#fbbf24] mr-1" title="Past Client">★</span>
+}
 
 function SignalTypeBadge({ signalType, fundingType }) {
   let label, color
@@ -166,6 +375,21 @@ function ClaimCell({ signal, repName, onClaim, onUnclaim }) {
   )
 }
 
+function DismissButton({ signal, onDismiss }) {
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onDismiss(signal) }}
+      title="Dismiss signal"
+      className="p-1 rounded hover:bg-red-900/40 text-gray-500 hover:text-red-400 transition-colors"
+    >
+      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="3,6 5,6 21,6" />
+        <path d="M19,6v14a2,2,0,0,1-2,2H7a2,2,0,0,1-2-2V6M8,6V4a2,2,0,0,1,2-2h4a2,2,0,0,1,2,2V6" />
+      </svg>
+    </button>
+  )
+}
+
 function ExpandedDetailCard({ signal }) {
   const d = parseDetail(signal.signal_detail)
   const fields = Object.entries(d).filter(([k, v]) => k !== 'rep_notes' && v !== null && v !== undefined && v !== '')
@@ -211,8 +435,8 @@ function ExpandedDetailCard({ signal }) {
 
 function TableWrapper({ children }) {
   return (
-    <div className="overflow-x-auto rounded-lg border border-[#374151]">
-      <table className="min-w-full divide-y divide-[#374151]">{children}</table>
+    <div className="rounded-lg border border-[#374151] overflow-hidden">
+      <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>{children}</table>
     </div>
   )
 }
@@ -220,10 +444,20 @@ function TableWrapper({ children }) {
 function Th({ children, className = '' }) {
   return (
     <th
-      className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap ${className}`}
+      className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap ${className}`}
     >
       {children}
     </th>
+  )
+}
+
+function TdTruncate({ children, className = '', title }) {
+  return (
+    <td className={`px-3 py-3 ${className}`} title={title}>
+      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {children}
+      </div>
+    </td>
   )
 }
 
@@ -234,6 +468,65 @@ function EmptyState({ message }) {
         <span className="text-gray-600 text-xl font-mono">—</span>
       </div>
       <p className="text-gray-400 text-sm">{message}</p>
+    </div>
+  )
+}
+
+// ─── Dismiss Modal ───────────────────────────────────────────────────────────
+
+function DismissModal({ signal, tabKey, onConfirm, onCancel }) {
+  const [selectedReason, setSelectedReason] = useState(null)
+  const reasons = DISMISS_REASONS[tabKey] || []
+  const d = parseDetail(signal.signal_detail)
+
+  const getValueForReason = (key) => {
+    switch (key) {
+      case 'company': return signal.companies?.name || d.company_name || d.sponsor || ''
+      case 'role_title': return d.job_title || ''
+      case 'location': return d.job_location || ''
+      default: return ''
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onCancel}>
+      <div className="bg-[#1f2937] border border-[#374151] rounded-xl p-6 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
+        <h3 className="text-white font-semibold text-base mb-4">Why are you dismissing this signal?</h3>
+        <div className="flex flex-col gap-2 mb-6">
+          {reasons.map(r => {
+            const val = getValueForReason(r.key)
+            return (
+              <button
+                key={r.key}
+                onClick={() => setSelectedReason(r.key)}
+                className={`flex items-center justify-between px-4 py-3 rounded-lg border text-sm text-left transition-colors ${
+                  selectedReason === r.key
+                    ? 'border-blue-500 bg-blue-900/30 text-white'
+                    : 'border-[#374151] bg-[#111827] text-gray-300 hover:border-gray-500'
+                }`}
+              >
+                <span>{r.label}</span>
+                {val && <span className="text-xs text-gray-400 truncate ml-2 max-w-[180px]">{val}</span>}
+              </button>
+            )
+          })}
+        </div>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 rounded text-sm text-gray-400 hover:text-white bg-white/5 hover:bg-white/10 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => selectedReason && onConfirm(signal, selectedReason, getValueForReason(selectedReason))}
+            disabled={!selectedReason}
+            className="px-4 py-2 rounded text-sm font-semibold text-white bg-red-700 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -274,93 +567,114 @@ function ClinicalDetailCell({ signal }) {
   }
 }
 
-function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim }) {
+function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim, onDismiss }) {
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+
+  const extractors = useMemo(() => ({
+    type: s => SIGNAL_TYPE_CONFIG[s.signal_type]?.label || s.signal_type,
+    company: s => s.companies?.name || parseDetail(s.signal_detail).sponsor || '',
+    source: s => parseDetail(s.signal_detail).nct_id || '',
+  }), [])
+
+  const allValues = useMemo(() => ({
+    type: signals.map(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.label || s.signal_type),
+    company: signals.map(s => s.companies?.name || parseDetail(s.signal_detail).sponsor || ''),
+    source: signals.map(s => parseDetail(s.signal_detail).nct_id || ''),
+  }), [signals])
+
+  const sorted = useMemo(() => sortSignals(signals), [signals])
+  const filtered = applyFilters(sorted, extractors)
+
   if (signals.length === 0) return <EmptyState message="No active clinical trial signals." />
   return (
-    <TableWrapper>
-      <thead>
-        <tr>
-          <Th>Type</Th>
-          <Th>Company</Th>
-          <Th className="min-w-72">Detail</Th>
-          <Th className="min-w-48">Summary</Th>
-          <Th>Source</Th>
-          <Th>Date Updated</Th>
-          <Th>Client Score</Th>
-          <Th>Queue</Th>
-          <Th>Claim</Th>
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-[#374151]">
-        {signals.map((signal, i) => {
-          const isExpanded = expandedRows.has(signal.id)
-          const d = parseDetail(signal.signal_detail)
-          const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
-          return (
-            <>
-              <tr
-                key={signal.id}
-                onClick={() => onToggleRow(signal.id)}
-                className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
-              >
-                <td className="px-4 py-3 whitespace-nowrap">
-                  <SignalTypeBadge signalType={signal.signal_type} />
-                </td>
-                <td className="px-4 py-3">
-                  <div className="text-sm font-semibold text-white whitespace-nowrap">
-                    {signal.companies?.name || d.sponsor || '—'}
-                  </div>
-                  {signal.companies?.industry && (
-                    <div className="text-xs text-gray-500 mt-0.5">{signal.companies.industry}</div>
-                  )}
-                </td>
-                <td className="px-4 py-3 min-w-72">
-                  <ClinicalDetailCell signal={signal} />
-                </td>
-                <td className="px-4 py-3" style={{ maxWidth: '400px' }}>
-                  <span className="text-xs text-gray-400 leading-snug" style={{ wordBreak: 'break-word', overflowWrap: 'break-word', whiteSpace: 'normal', display: 'block' }}>
-                    {d.study_summary || signal.signal_summary || '—'}
-                  </span>
-                </td>
-                <td className="px-4 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                  {d.nct_id ? (
-                    <a
-                      href={`https://clinicaltrials.gov/study/${d.nct_id}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs text-blue-400 hover:text-blue-300 font-mono"
-                    >
-                      {d.nct_id}
-                    </a>
-                  ) : '—'}
-                </td>
-                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
-                  {formatDate(d.date_updated || signal.updated_at)}
-                </td>
-                <td className="px-4 py-3 whitespace-nowrap">
-                  {d.past_client
-                    ? <span className="inline-block px-2 py-0.5 rounded text-xs font-bold bg-[#78350f] text-[#fbbf24]">+{d.past_client.boost_score}</span>
-                    : <span className="text-xs text-gray-600">—</span>}
-                </td>
-                <td className="px-4 py-3">
-                  <DaysInQueueBadge dateStr={signal.first_detected_at} />
-                </td>
-                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                  <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
-                </td>
-              </tr>
-              {isExpanded && (
-                <tr key={`${signal.id}-exp`}>
-                  <td colSpan={9} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
-                    <ExpandedDetailCard signal={signal} />
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <TableWrapper>
+        <thead>
+          <tr>
+            <ColumnFilterDropdown colKey="type" label="Type" allValues={allValues.type} activeValues={filters.type} onApply={setFilter} className="w-[10%]" />
+            <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[18%]" />
+            <Th className="w-[16%]">Detail</Th>
+            <Th className="w-[22%]">Summary</Th>
+            <ColumnFilterDropdown colKey="source" label="Source" allValues={allValues.source} activeValues={filters.source} onApply={setFilter} className="w-[9%]" />
+            <Th className="w-[9%]">Date</Th>
+            <Th className="w-[6%]">Queue</Th>
+            <Th className="w-[7%]">Claim</Th>
+            <Th className="w-[3%]"></Th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[#374151]">
+          {filtered.map((signal, i) => {
+            const isExpanded = expandedRows.has(signal.id)
+            const d = parseDetail(signal.signal_detail)
+            const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+            const isPast = !!d.past_client
+            const companyName = signal.companies?.name || d.sponsor || '—'
+            return (
+              <>
+                <tr
+                  key={signal.id}
+                  onClick={() => onToggleRow(signal.id)}
+                  className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
+                >
+                  <TdTruncate>
+                    <SignalTypeBadge signalType={signal.signal_type} />
+                  </TdTruncate>
+                  <TdTruncate title={companyName}>
+                    <div className="text-sm font-semibold text-white">
+                      {isPast && <PastClientStar />}
+                      {companyName}
+                    </div>
+                    {signal.companies?.industry && (
+                      <div className="text-xs text-gray-500 mt-0.5 truncate">{signal.companies.industry}</div>
+                    )}
+                  </TdTruncate>
+                  <td className="px-3 py-3">
+                    <ClinicalDetailCell signal={signal} />
+                  </td>
+                  <TdTruncate title={d.study_summary || signal.signal_summary || ''}>
+                    <span className="text-xs text-gray-400 leading-snug">
+                      {d.study_summary || signal.signal_summary || '—'}
+                    </span>
+                  </TdTruncate>
+                  <td className="px-3 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                    {d.nct_id ? (
+                      <a
+                        href={`https://clinicaltrials.gov/study/${d.nct_id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-400 hover:text-blue-300 font-mono"
+                      >
+                        {d.nct_id}
+                      </a>
+                    ) : '—'}
+                  </td>
+                  <TdTruncate className="text-sm text-gray-400">
+                    {formatDate(d.date_updated || signal.updated_at)}
+                  </TdTruncate>
+                  <td className="px-3 py-3">
+                    <DaysInQueueBadge dateStr={signal.first_detected_at} />
+                  </td>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
+                  </td>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    <DismissButton signal={signal} onDismiss={onDismiss} />
                   </td>
                 </tr>
-              )}
-            </>
-          )
-        })}
-      </tbody>
-    </TableWrapper>
+                {isExpanded && (
+                  <tr key={`${signal.id}-exp`}>
+                    <td colSpan={9} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                      <ExpandedDetailCard signal={signal} />
+                    </td>
+                  </tr>
+                )}
+              </>
+            )
+          })}
+        </tbody>
+      </TableWrapper>
+    </div>
   )
 }
 
@@ -384,8 +698,9 @@ const FUNDING_FILTER_PILLS = [
   { key: 'ma',                 label: 'M&A',             activeClass: 'bg-gray-500 text-white',       inactiveClass: 'bg-gray-800 text-gray-400 hover:bg-gray-700' },
 ]
 
-function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim }) {
+function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim, onDismiss }) {
   const [selectedType, setSelectedType] = useState('all')
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
 
   const typeCounts = { all: signals.length }
   for (const s of signals) {
@@ -395,9 +710,29 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
 
   const visiblePills = FUNDING_FILTER_PILLS.filter(p => p.key === 'all' || (typeCounts[p.key] || 0) > 0)
 
-  const filteredSignals = selectedType === 'all'
+  const pillFiltered = selectedType === 'all'
     ? signals
     : signals.filter(s => getFundingFilterKey(s) === selectedType)
+
+  const extractors = useMemo(() => ({
+    type: s => {
+      const d = parseDetail(s.signal_detail)
+      if (s.signal_type === 'ma_transaction') return MA_TRANSACTION_TYPE_CONFIG[d.transaction_type]?.label || 'M&A'
+      return SIGNAL_TYPE_CONFIG[s.signal_type]?.label || s.signal_type
+    },
+    company: s => {
+      const d = parseDetail(s.signal_detail)
+      return s.companies?.name || d.company_name || d.acquirer_name || ''
+    },
+  }), [])
+
+  const allValues = useMemo(() => ({
+    type: pillFiltered.map(s => extractors.type(s)),
+    company: pillFiltered.map(s => extractors.company(s)),
+  }), [pillFiltered, extractors])
+
+  const sorted = useMemo(() => sortSignals(pillFiltered), [pillFiltered])
+  const filtered = applyFilters(sorted, extractors)
 
   if (signals.length === 0) return <EmptyState message="No active funding or M&A signals." />
   return (
@@ -421,24 +756,39 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
         })}
       </div>
 
+      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
       <TableWrapper>
         <thead>
           <tr>
-            <Th>Type</Th>
-            <Th>Company</Th>
-            <Th>Amount</Th>
-            <Th className="min-w-64">Summary</Th>
-            <Th>Date</Th>
-            <Th>Client Score</Th>
-            <Th>Queue</Th>
-            <Th>Claim</Th>
+            <ColumnFilterDropdown colKey="type" label="Type" allValues={allValues.type} activeValues={filters.type} onApply={setFilter} className="w-[10%]" />
+            <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[20%]" />
+            <Th className="w-[10%]">Amount</Th>
+            <Th className="w-[28%]">Summary</Th>
+            <Th className="w-[10%]">Date</Th>
+            <Th className="w-[6%]">Queue</Th>
+            <Th className="w-[8%]">Claim</Th>
+            <Th className="w-[3%]"></Th>
           </tr>
         </thead>
         <tbody className="divide-y divide-[#374151]">
-          {filteredSignals.map((signal, i) => {
+          {filtered.map((signal, i) => {
             const isExpanded = expandedRows.has(signal.id)
             const d = parseDetail(signal.signal_detail)
             const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+            const isPast = !!d.past_client
+
+            const companyDisplay = signal.signal_type === 'ma_transaction' ? (() => {
+              const tt = d.transaction_type
+              const acquirer = d.acquirer_name || signal.companies?.name || '—'
+              const acquired = d.acquired_name
+              const companyName = signal.companies?.name || d.company_name || acquirer
+              if (tt === 'ipo') return companyName
+              if (tt === 'merger') return acquired ? `${acquirer} → ${acquired}` : acquirer
+              if (tt === 'product_acquisition') return acquired ? `${companyName} → ${acquired}` : companyName
+              if (tt === 'partnership') return acquired ? `${companyName} ↔ ${acquired}` : companyName
+              return acquired ? `${acquirer} → ${acquired}` : acquirer
+            })() : signal.companies?.name || d.company_name || '—'
+
             return (
               <>
                 <tr
@@ -446,7 +796,7 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
                   onClick={() => onToggleRow(signal.id)}
                   className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
                 >
-                  <td className="px-4 py-3 whitespace-nowrap">
+                  <TdTruncate>
                     {signal.signal_type === 'ma_transaction' ? (() => {
                       const ttCfg = MA_TRANSACTION_TYPE_CONFIG[d.transaction_type] || { label: 'M&A', color: 'bg-orange-600' }
                       return (
@@ -457,58 +807,47 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
                     })() : (
                       <SignalTypeBadge signalType={signal.signal_type} fundingType={d.funding_type} />
                     )}
-                  </td>
-                  <td className="px-4 py-3">
+                  </TdTruncate>
+                  <TdTruncate title={companyDisplay}>
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-sm font-semibold text-white whitespace-nowrap">
-                        {signal.signal_type === 'ma_transaction' ? (() => {
-                          const tt = d.transaction_type
-                          const acquirer = d.acquirer_name || signal.companies?.name || '—'
-                          const acquired = d.acquired_name
-                          const companyName = signal.companies?.name || d.company_name || acquirer
-                          if (tt === 'ipo') return companyName
-                          if (tt === 'merger') return acquired ? `${acquirer} → ${acquired}` : acquirer
-                          if (tt === 'product_acquisition') return acquired ? `${companyName} → ${acquired}` : companyName
-                          if (tt === 'partnership') return acquired ? `${companyName} ↔ ${acquired}` : companyName
-                          return acquired ? `${acquirer} → ${acquired}` : acquirer
-                        })() : signal.companies?.name || d.company_name || '—'}
+                      <span className="text-sm font-semibold text-white truncate">
+                        {isPast && <PastClientStar />}
+                        {companyDisplay}
                       </span>
                       {d.pre_hiring_signal && (
-                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-semibold bg-yellow-900 text-yellow-300">
-                          ★ Pre-hiring
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-semibold bg-yellow-900 text-yellow-300 shrink-0">
+                          Pre-hiring
                         </span>
                       )}
                     </div>
                     {signal.companies?.industry && (
-                      <div className="text-xs text-gray-500 mt-0.5">{signal.companies.industry}</div>
+                      <div className="text-xs text-gray-500 mt-0.5 truncate">{signal.companies.industry}</div>
                     )}
                     {signal.signal_type === 'ma_transaction' && d.acquired_asset && (
-                      <div className="text-xs text-gray-400 mt-0.5">
+                      <div className="text-xs text-gray-400 mt-0.5 truncate">
                         Asset: <span className="font-mono text-blue-300">{d.acquired_asset}</span>
                       </div>
                     )}
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-green-400">
+                  </TdTruncate>
+                  <TdTruncate className="text-sm font-mono text-green-400">
                     {signal.signal_type === 'ma_transaction' ? 'N/A' : (d.funding_amount || 'Undisclosed')}
-                  </td>
-                  <td className="px-4 py-3 min-w-64">
+                  </TdTruncate>
+                  <TdTruncate title={d.deal_summary || d.funding_summary || signal.signal_summary || ''}>
                     <span className="text-sm text-gray-200">
                       {truncate(d.deal_summary || d.funding_summary || signal.signal_summary, 100)}
                     </span>
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
+                  </TdTruncate>
+                  <TdTruncate className="text-sm text-gray-400">
                     {formatDate(d.date_announced || signal.first_detected_at)}
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    {d.past_client
-                      ? <span className="inline-block px-2 py-0.5 rounded text-xs font-bold bg-[#78350f] text-[#fbbf24]">+{d.past_client.boost_score}</span>
-                      : <span className="text-xs text-gray-600">—</span>}
-                  </td>
-                  <td className="px-4 py-3">
+                  </TdTruncate>
+                  <td className="px-3 py-3">
                     <DaysInQueueBadge dateStr={signal.first_detected_at} />
                   </td>
-                  <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
                     <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
+                  </td>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    <DismissButton signal={signal} onDismiss={onDismiss} />
                   </td>
                 </tr>
                 {isExpanded && (
@@ -577,16 +916,16 @@ function LeadsGroup({ groupKey, label, signals, notes, savingNotes, onSaveNotes,
       </button>
 
       {isOpen && (
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-[#374151]">
+        <div className="overflow-hidden">
+          <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
             <thead>
               <tr>
-                <Th>Type</Th>
-                <Th>Company</Th>
-                <Th className="min-w-64">Summary</Th>
-                <Th>Date Claimed</Th>
-                <Th>Status</Th>
-                <Th className="min-w-52">Notes</Th>
+                <Th className="w-[12%]">Type</Th>
+                <Th className="w-[18%]">Company</Th>
+                <Th className="w-[28%]">Summary</Th>
+                <Th className="w-[12%]">Date Claimed</Th>
+                <Th className="w-[10%]">Status</Th>
+                <Th className="w-[20%]">Notes</Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#374151]">
@@ -595,21 +934,21 @@ function LeadsGroup({ groupKey, label, signals, notes, savingNotes, onSaveNotes,
                 const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
                 return (
                   <tr key={signal.id} className={`${rowBg} hover:bg-[#263045] transition-colors`}>
-                    <td className="px-4 py-3 whitespace-nowrap">
+                    <TdTruncate>
                       <SignalTypeBadge signalType={signal.signal_type} fundingType={d.funding_type} />
-                    </td>
-                    <td className="px-4 py-3 text-sm font-semibold text-white whitespace-nowrap">
+                    </TdTruncate>
+                    <TdTruncate className="text-sm font-semibold text-white" title={signal.companies?.name || d.company_name || d.sponsor || ''}>
                       {signal.companies?.name || d.company_name || d.sponsor || '—'}
-                    </td>
-                    <td className="px-4 py-3 min-w-64">
+                    </TdTruncate>
+                    <TdTruncate title={d.funding_summary || d.study_summary || signal.signal_summary || ''}>
                       <span className="text-sm text-gray-300 leading-snug">
                         {truncate(d.funding_summary || d.study_summary || signal.signal_summary, 90)}
                       </span>
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
+                    </TdTruncate>
+                    <TdTruncate className="text-sm text-gray-400">
                       {formatDate(signal.updated_at)}
-                    </td>
-                    <td className="px-4 py-3">
+                    </TdTruncate>
+                    <td className="px-3 py-3">
                       <select
                         value={signal.status}
                         onChange={e => onUpdateStatus(signal, e.target.value)}
@@ -621,7 +960,7 @@ function LeadsGroup({ groupKey, label, signals, notes, savingNotes, onSaveNotes,
                         <option value="closed">Closed</option>
                       </select>
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-3 py-3">
                       <LeadsNoteCell
                         signal={signal}
                         notes={notes}
@@ -777,11 +1116,11 @@ function NavIcon({ type, className = 'w-5 h-5' }) {
 
 const MAIN_NAV = [
   { key: 'dashboard',  label: 'Dashboard',        icon: 'grid' },
+  { key: 'leads',      label: 'My Leads',          icon: 'clipboard', countKey: 'leads' },
   { key: 'clinical',   label: 'Clinical Trials',   icon: 'beaker',    countKey: 'clinical' },
   { key: 'funding',    label: 'Funding & M&A',     icon: 'trending',  countKey: 'funding' },
   { key: 'competitor', label: 'Competitor Jobs',   icon: 'briefcase', countKey: 'competitor' },
   { key: 'stale',      label: 'Stale Roles',       icon: 'clock',     countKey: 'stale' },
-  { key: 'leads',      label: 'My Leads',          icon: 'clipboard', countKey: 'leads' },
   { key: 'buyers',     label: 'Past Buyers',       icon: 'users' },
   { key: 'candidates', label: 'Past Candidates',   icon: 'user' },
 ]
@@ -1056,8 +1395,9 @@ function DashboardPage({ signals, agentRuns }) {
 
 // ─── Competitor Jobs Page ─────────────────────────────────────────────────────
 
-function CompetitorJobsPage({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim }) {
+function CompetitorJobsPage({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim, onDismiss }) {
   const [copiedId, setCopiedId] = useState(null)
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
 
   function copyMatchPrompt(e, signal) {
     e.stopPropagation()
@@ -1074,178 +1414,226 @@ function CompetitorJobsPage({ signals, repName, expandedRows, onToggleRow, onCla
     })
   }
 
+  const extractors = useMemo(() => ({
+    role: s => parseDetail(s.signal_detail).job_title || '',
+    competitor: s => parseDetail(s.signal_detail).competitor_firm || s.companies?.name || '',
+    location: s => parseDetail(s.signal_detail).job_location || '',
+    client: s => parseDetail(s.signal_detail).inferred_client || '',
+  }), [])
+
+  const allValues = useMemo(() => ({
+    role: signals.map(s => parseDetail(s.signal_detail).job_title || ''),
+    competitor: signals.map(s => parseDetail(s.signal_detail).competitor_firm || s.companies?.name || ''),
+    location: signals.map(s => parseDetail(s.signal_detail).job_location || ''),
+    client: signals.map(s => parseDetail(s.signal_detail).inferred_client || ''),
+  }), [signals])
+
+  const filtered = applyFilters(signals, extractors)
+
   if (signals.length === 0) return <EmptyState message="No competitor job postings found. Run agents to search for open roles." />
 
   return (
-    <TableWrapper>
-      <thead>
-        <tr>
-          <Th>Role Title</Th>
-          <Th>Competitor</Th>
-          <Th>Location</Th>
-          <Th>Likely Client</Th>
-          <Th>Date Posted</Th>
-          <Th>View</Th>
-          <Th>Prompt</Th>
-          <Th>Claim</Th>
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-[#374151]">
-        {signals.map((signal, i) => {
-          const isExpanded = expandedRows.has(signal.id)
-          const d = parseDetail(signal.signal_detail)
-          const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
-          return (
-            <>
-              <tr
-                key={signal.id}
-                onClick={() => onToggleRow(signal.id)}
-                className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
-              >
-                <td className="px-4 py-3 text-sm text-white font-medium">{d.job_title || '—'}</td>
-                <td className="px-4 py-3 text-sm font-semibold text-gray-100 whitespace-nowrap">
-                  {d.competitor_firm || signal.companies?.name || '—'}
-                </td>
-                <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">{d.job_location || '—'}</td>
-                <td className="px-4 py-3 whitespace-nowrap">
-                  {d.inferred_client
-                    ? <span className="text-sm text-gray-200">{d.inferred_client}</span>
-                    : <span className="text-xs text-gray-600">—</span>}
-                </td>
-                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-400">
-                  {formatDate(d.posting_date || signal.first_detected_at)}
-                </td>
-                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                  {(d.job_url || d.source_url) ? (
-                    <a
-                      href={d.job_url || d.source_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs text-blue-400 hover:text-blue-300 font-medium whitespace-nowrap"
-                    >
-                      View ↗
-                    </a>
-                  ) : <span className="text-xs text-gray-600">—</span>}
-                </td>
-                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                  {d.job_description ? (
-                    <button
-                      onClick={e => copyMatchPrompt(e, signal)}
-                      className="px-2 py-1 rounded text-xs font-medium bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white transition-colors whitespace-nowrap"
-                    >
-                      {copiedId === signal.id ? 'Copied!' : 'Match Prompt'}
-                    </button>
-                  ) : (
-                    <span className="text-xs text-gray-600">—</span>
-                  )}
-                </td>
-                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                  <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
-                </td>
-              </tr>
-              {isExpanded && (
-                <tr key={`${signal.id}-exp`}>
-                  <td colSpan={8} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
-                    <ExpandedDetailCard signal={signal} />
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <TableWrapper>
+        <thead>
+          <tr>
+            <ColumnFilterDropdown colKey="role" label="Role Title" allValues={allValues.role} activeValues={filters.role} onApply={setFilter} className="w-[22%]" />
+            <ColumnFilterDropdown colKey="competitor" label="Competitor" allValues={allValues.competitor} activeValues={filters.competitor} onApply={setFilter} className="w-[14%]" />
+            <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[14%]" />
+            <ColumnFilterDropdown colKey="client" label="Likely Client" allValues={allValues.client} activeValues={filters.client} onApply={setFilter} className="w-[14%]" />
+            <Th className="w-[10%]">Date Posted</Th>
+            <Th className="w-[6%]">View</Th>
+            <Th className="w-[8%]">Prompt</Th>
+            <Th className="w-[7%]">Claim</Th>
+            <Th className="w-[3%]"></Th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[#374151]">
+          {filtered.map((signal, i) => {
+            const isExpanded = expandedRows.has(signal.id)
+            const d = parseDetail(signal.signal_detail)
+            const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+            return (
+              <>
+                <tr
+                  key={signal.id}
+                  onClick={() => onToggleRow(signal.id)}
+                  className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
+                >
+                  <TdTruncate className="text-sm text-white font-medium" title={d.job_title || ''}>{d.job_title || '—'}</TdTruncate>
+                  <TdTruncate className="text-sm font-semibold text-gray-100" title={d.competitor_firm || signal.companies?.name || ''}>
+                    {d.competitor_firm || signal.companies?.name || '—'}
+                  </TdTruncate>
+                  <TdTruncate className="text-sm text-gray-400" title={d.job_location || ''}>{d.job_location || '—'}</TdTruncate>
+                  <TdTruncate title={d.inferred_client || ''}>
+                    {d.inferred_client
+                      ? <span className="text-sm text-gray-200">{d.inferred_client}</span>
+                      : <span className="text-xs text-gray-600">—</span>}
+                  </TdTruncate>
+                  <TdTruncate className="text-sm text-gray-400">
+                    {formatDate(d.posting_date || signal.first_detected_at)}
+                  </TdTruncate>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    {(d.job_url || d.source_url) ? (
+                      <a
+                        href={d.job_url || d.source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-400 hover:text-blue-300 font-medium whitespace-nowrap"
+                      >
+                        View ↗
+                      </a>
+                    ) : <span className="text-xs text-gray-600">—</span>}
+                  </td>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    {d.job_description ? (
+                      <button
+                        onClick={e => copyMatchPrompt(e, signal)}
+                        className="px-2 py-1 rounded text-xs font-medium bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white transition-colors whitespace-nowrap"
+                      >
+                        {copiedId === signal.id ? 'Copied!' : 'Match Prompt'}
+                      </button>
+                    ) : (
+                      <span className="text-xs text-gray-600">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
+                  </td>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    <DismissButton signal={signal} onDismiss={onDismiss} />
                   </td>
                 </tr>
-              )}
-            </>
-          )
-        })}
-      </tbody>
-    </TableWrapper>
+                {isExpanded && (
+                  <tr key={`${signal.id}-exp`}>
+                    <td colSpan={9} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                      <ExpandedDetailCard signal={signal} />
+                    </td>
+                  </tr>
+                )}
+              </>
+            )
+          })}
+        </tbody>
+      </TableWrapper>
+    </div>
   )
 }
 
 // ─── Stale Roles Page ─────────────────────────────────────────────────────────
 
-function StaleRolesPage({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim }) {
+function StaleRolesPage({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim, onDismiss }) {
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+
+  const extractors = useMemo(() => ({
+    role: s => parseDetail(s.signal_detail).job_title || '',
+    company: s => s.companies?.name || parseDetail(s.signal_detail).company_name || '',
+    location: s => parseDetail(s.signal_detail).job_location || '',
+    manager: s => parseDetail(s.signal_detail).hiring_manager || '',
+  }), [])
+
+  const allValues = useMemo(() => ({
+    role: signals.map(s => parseDetail(s.signal_detail).job_title || ''),
+    company: signals.map(s => s.companies?.name || parseDetail(s.signal_detail).company_name || ''),
+    location: signals.map(s => parseDetail(s.signal_detail).job_location || ''),
+    manager: signals.map(s => parseDetail(s.signal_detail).hiring_manager || ''),
+  }), [signals])
+
+  const sorted = useMemo(() => sortSignals(signals), [signals])
+  const filtered = applyFilters(sorted, extractors)
+
   if (signals.length === 0) return <EmptyState message="No stale roles found yet — run agents to search target company career pages." />
 
   return (
-    <TableWrapper>
-      <thead>
-        <tr>
-          <Th>Role Title</Th>
-          <Th>Company</Th>
-          <Th>Hiring Manager</Th>
-          <Th>Location</Th>
-          <Th>Days Open</Th>
-          <Th>Client Score</Th>
-          <Th>View</Th>
-          <Th>Claim</Th>
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-[#374151]">
-        {signals.map((signal, i) => {
-          const isExpanded = expandedRows.has(signal.id)
-          const d = parseDetail(signal.signal_detail)
-          const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
-          const daysOpen = d.days_posted || signal.days_in_queue || 0
-          const dayCls = daysOpen >= 45
-            ? 'bg-red-900 text-red-300'
-            : daysOpen >= 30
-              ? 'bg-orange-900 text-orange-300'
-              : 'bg-gray-700 text-gray-300'
-          return (
-            <>
-              <tr
-                key={signal.id}
-                onClick={() => onToggleRow(signal.id)}
-                className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
-              >
-                <td className="px-4 py-3 text-sm text-white font-medium">{d.job_title || '—'}</td>
-                <td className="px-4 py-3 text-sm font-semibold text-gray-100 whitespace-nowrap">
-                  {signal.companies?.name || d.company_name || '—'}
-                </td>
-                <td className="px-4 py-3 whitespace-nowrap">
-                  {d.hiring_manager && d.hiring_manager !== 'Unknown'
-                    ? <span className="text-sm text-gray-100">{d.hiring_manager}</span>
-                    : <span className="text-xs text-gray-600 italic">Unknown</span>
-                  }
-                </td>
-                <td className="px-4 py-3 text-sm text-gray-400 whitespace-nowrap">{d.job_location || '—'}</td>
-                <td className="px-4 py-3">
-                  {daysOpen > 0 ? (
-                    <span className={`inline-block px-2 py-0.5 rounded text-xs font-mono font-semibold ${dayCls}`}>
-                      {daysOpen}d
-                    </span>
-                  ) : <span className="text-xs text-gray-600">—</span>}
-                </td>
-                <td className="px-4 py-3 whitespace-nowrap">
-                  {d.past_client
-                    ? <span className="inline-block px-2 py-0.5 rounded text-xs font-bold bg-[#78350f] text-[#fbbf24]">+{d.past_client.boost_score}</span>
-                    : <span className="text-xs text-gray-600">—</span>}
-                </td>
-                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                  {(d.job_url || d.careers_url) ? (
-                    <a
-                      href={d.job_url || d.careers_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs text-blue-400 hover:text-blue-300 font-medium whitespace-nowrap"
-                    >
-                      View ↗
-                    </a>
-                  ) : <span className="text-xs text-gray-600">—</span>}
-                </td>
-                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                  <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
-                </td>
-              </tr>
-              {isExpanded && (
-                <tr key={`${signal.id}-exp`}>
-                  <td colSpan={8} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
-                    <ExpandedDetailCard signal={signal} />
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <TableWrapper>
+        <thead>
+          <tr>
+            <ColumnFilterDropdown colKey="role" label="Role Title" allValues={allValues.role} activeValues={filters.role} onApply={setFilter} className="w-[22%]" />
+            <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[16%]" />
+            <ColumnFilterDropdown colKey="manager" label="Hiring Manager" allValues={allValues.manager} activeValues={filters.manager} onApply={setFilter} className="w-[14%]" />
+            <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[14%]" />
+            <Th className="w-[8%]">Days Open</Th>
+            <Th className="w-[6%]">View</Th>
+            <Th className="w-[8%]">Claim</Th>
+            <Th className="w-[3%]"></Th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[#374151]">
+          {filtered.map((signal, i) => {
+            const isExpanded = expandedRows.has(signal.id)
+            const d = parseDetail(signal.signal_detail)
+            const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+            const daysOpen = d.days_posted || signal.days_in_queue || 0
+            const dayCls = daysOpen >= 45
+              ? 'bg-red-900 text-red-300'
+              : daysOpen >= 30
+                ? 'bg-orange-900 text-orange-300'
+                : 'bg-gray-700 text-gray-300'
+            const isPast = !!d.past_client
+            const companyName = signal.companies?.name || d.company_name || '—'
+            return (
+              <>
+                <tr
+                  key={signal.id}
+                  onClick={() => onToggleRow(signal.id)}
+                  className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
+                >
+                  <TdTruncate className="text-sm text-white font-medium" title={d.job_title || ''}>
+                    {isPast && <PastClientStar />}
+                    {d.job_title || '—'}
+                  </TdTruncate>
+                  <TdTruncate className="text-sm font-semibold text-gray-100" title={companyName}>
+                    {companyName}
+                  </TdTruncate>
+                  <TdTruncate title={d.hiring_manager || ''}>
+                    {d.hiring_manager && d.hiring_manager !== 'Unknown'
+                      ? <span className="text-sm text-gray-100">{d.hiring_manager}</span>
+                      : <span className="text-xs text-gray-600 italic">Unknown</span>
+                    }
+                  </TdTruncate>
+                  <TdTruncate className="text-sm text-gray-400" title={d.job_location || ''}>{d.job_location || '—'}</TdTruncate>
+                  <td className="px-3 py-3">
+                    {daysOpen > 0 ? (
+                      <span className={`inline-block px-2 py-0.5 rounded text-xs font-mono font-semibold ${dayCls}`}>
+                        {daysOpen}d
+                      </span>
+                    ) : <span className="text-xs text-gray-600">—</span>}
+                  </td>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    {(d.job_url || d.careers_url) ? (
+                      <a
+                        href={d.job_url || d.careers_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-400 hover:text-blue-300 font-medium whitespace-nowrap"
+                      >
+                        View ↗
+                      </a>
+                    ) : <span className="text-xs text-gray-600">—</span>}
+                  </td>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    <ClaimCell signal={signal} repName={repName} onClaim={onClaim} onUnclaim={onUnclaim} />
+                  </td>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    <DismissButton signal={signal} onDismiss={onDismiss} />
                   </td>
                 </tr>
-              )}
-            </>
-          )
-        })}
-      </tbody>
-    </TableWrapper>
+                {isExpanded && (
+                  <tr key={`${signal.id}-exp`}>
+                    <td colSpan={8} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                      <ExpandedDetailCard signal={signal} />
+                    </td>
+                  </tr>
+                )}
+              </>
+            )
+          })}
+        </tbody>
+      </TableWrapper>
+    </div>
   )
 }
 
@@ -1254,12 +1642,12 @@ function StaleRolesPage({ signals, repName, expandedRows, onToggleRow, onClaim, 
 function PlaceholderTable({ columns, emptyMessage }) {
   return (
     <div className="bg-[#1f2937] border border-[#374151] rounded-xl overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-[#374151]">
+      <div className="overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
               {columns.map(col => (
-                <th key={col} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">
+                <th key={col} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">
                   {col}
                 </th>
               ))}
@@ -1267,7 +1655,7 @@ function PlaceholderTable({ columns, emptyMessage }) {
           </thead>
           <tbody>
             <tr>
-              <td colSpan={columns.length} className="px-4 py-12 text-center">
+              <td colSpan={columns.length} className="px-3 py-12 text-center">
                 <p className="text-gray-500 text-sm italic">{emptyMessage}</p>
               </td>
             </tr>
@@ -1348,6 +1736,7 @@ export default function Home() {
   const [leadsGroupOpen, setLeadsGroupOpen] = useState({ clinical: true, funding: true, jobs: true })
   const [agentRunning, setAgentRunning]     = useState(false)
   const [toast, setToast]                   = useState(null)
+  const [dismissTarget, setDismissTarget]   = useState(null) // { signal, tabKey }
   const repInputRef = useRef(null)
 
   const fetchSignals = useCallback(async () => {
@@ -1497,6 +1886,79 @@ export default function Home() {
     }
   }
 
+  // ─── Dismiss signal flow ──────────────────────────────────────────────────
+
+  const getTabKeyForSignal = (signal) => {
+    if (SIGNAL_TYPE_CONFIG[signal.signal_type]?.tab === 'clinical') return 'clinical'
+    if (SIGNAL_TYPE_CONFIG[signal.signal_type]?.tab === 'funding') return 'funding'
+    if (signal.signal_type === 'competitor_job_posting') return 'competitor'
+    if (['stale_job_posting', 'target_company_job'].includes(signal.signal_type)) return 'stale'
+    return 'clinical'
+  }
+
+  const openDismissModal = (signal) => {
+    setDismissTarget({ signal, tabKey: getTabKeyForSignal(signal) })
+  }
+
+  const confirmDismiss = async (signal, reasonKey, reasonValue) => {
+    setDismissTarget(null)
+    // Optimistic update
+    setSignals(prev => prev.filter(s => s.id !== signal.id))
+
+    try {
+      // 1. Update signal status to dismissed + store reason in signal_detail
+      const d = parseDetail(signal.signal_detail)
+      await fetch('/api/signals', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: signal.id,
+          status: 'dismissed',
+          dismissal_reason: reasonKey,
+          dismissal_value: reasonValue,
+        }),
+      })
+
+      // 2. Upsert dismissal_rules (via Supabase client)
+      if (supabase && reasonValue) {
+        const signalType = signal.signal_type
+        const { data: existing } = await supabase
+          .from('dismissal_rules')
+          .select('id, dismiss_count')
+          .eq('rule_type', reasonKey)
+          .eq('rule_value', reasonValue)
+          .eq('signal_type', signalType)
+          .maybeSingle()
+
+        if (existing) {
+          const newCount = (existing.dismiss_count || 0) + 1
+          await supabase
+            .from('dismissal_rules')
+            .update({
+              dismiss_count: newCount,
+              auto_exclude: newCount >= 3,
+            })
+            .eq('id', existing.id)
+        } else {
+          await supabase
+            .from('dismissal_rules')
+            .insert({
+              rule_type: reasonKey,
+              rule_value: reasonValue,
+              signal_type: signalType,
+              dismiss_count: 1,
+              auto_exclude: false,
+            })
+        }
+      }
+
+      fetchSignals()
+    } catch (err) {
+      console.error('Error dismissing signal:', err)
+      fetchSignals()
+    }
+  }
+
   const runAgents = async () => {
     setAgentRunning(true)
     setToast(null)
@@ -1576,6 +2038,7 @@ export default function Home() {
                   onToggleRow={toggleRow}
                   onClaim={claimSignal}
                   onUnclaim={unclaimSignal}
+                  onDismiss={openDismissModal}
                 />
               )}
               {activePage === 'funding'    && (
@@ -1586,6 +2049,7 @@ export default function Home() {
                   onToggleRow={toggleRow}
                   onClaim={claimSignal}
                   onUnclaim={unclaimSignal}
+                  onDismiss={openDismissModal}
                 />
               )}
               {activePage === 'competitor' && (
@@ -1596,6 +2060,7 @@ export default function Home() {
                   onToggleRow={toggleRow}
                   onClaim={claimSignal}
                   onUnclaim={unclaimSignal}
+                  onDismiss={openDismissModal}
                 />
               )}
               {activePage === 'stale'      && (
@@ -1606,6 +2071,7 @@ export default function Home() {
                   onToggleRow={toggleRow}
                   onClaim={claimSignal}
                   onUnclaim={unclaimSignal}
+                  onDismiss={openDismissModal}
                 />
               )}
               {activePage === 'leads'      && (
@@ -1627,6 +2093,16 @@ export default function Home() {
           )}
         </main>
       </div>
+
+      {/* Dismiss modal */}
+      {dismissTarget && (
+        <DismissModal
+          signal={dismissTarget.signal}
+          tabKey={dismissTarget.tabKey}
+          onConfirm={confirmDismiss}
+          onCancel={() => setDismissTarget(null)}
+        />
+      )}
 
       {/* Toast notification */}
       {toast && (

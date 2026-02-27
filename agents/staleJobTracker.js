@@ -3,6 +3,7 @@ import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
 import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js'
 import { loadExcludedCompanies, isExcludedCompany } from '../lib/companyExclusion.js'
+import { loadDismissalRules, checkDismissalExclusion } from '../lib/dismissalRules.js'
 
 // CRO company patterns — skip jobs from CROs (they belong to competitor_job_posting)
 const CRO_PATTERNS =
@@ -219,6 +220,8 @@ export async function run() {
 
   const excludedCompanies = await loadExcludedCompanies()
   console.log(`[StaleJobs] Loaded ${excludedCompanies.size} excluded companies.`)
+  const dismissalRules = await loadDismissalRules()
+  console.log(`[StaleJobs] Loaded ${[...dismissalRules.values()].flat().length} active dismissal rules.`)
 
   // Build one targeted query per past client: "{short name}" pharmaceutical
   const targetedQueries = [...pastClientsMap.values()].map((client) =>
@@ -305,6 +308,17 @@ export async function run() {
           continue
         }
 
+        // Check dismissal rules for auto-exclusion
+        const dismissCheck = checkDismissalExclusion(dismissalRules, 'stale_job_posting', {
+          company: job.company || '',
+          role_title: job.title || '',
+          location: job.location || '',
+        })
+        if (dismissCheck.excluded) {
+          console.log(`[StaleJobs] AUTO-EXCLUDED (${dismissCheck.rule_type}): ${dismissCheck.rule_value}`)
+          continue
+        }
+
         let hiringManager = 'Unknown'
         if (linkedin.requestsUsed < 78) {
           hiringManager = await linkedin.fetchHiringManager(job.jobUrl)
@@ -383,6 +397,17 @@ export async function run() {
 
         if (isExcludedCompany(job.company || '', excludedCompanies, pastClientsMap)) {
           console.log(`[StaleJobs] EXCLUDED (large company): ${job.company}`)
+          continue
+        }
+
+        // Check dismissal rules for auto-exclusion
+        const dismissCheckGeneric = checkDismissalExclusion(dismissalRules, 'stale_job_posting', {
+          company: job.company || '',
+          role_title: job.title || '',
+          location: job.location || '',
+        })
+        if (dismissCheckGeneric.excluded) {
+          console.log(`[StaleJobs] AUTO-EXCLUDED (${dismissCheckGeneric.rule_type}): ${dismissCheckGeneric.rule_value}`)
           continue
         }
 

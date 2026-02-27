@@ -2,6 +2,7 @@ import { supabase, upsertCompany } from '../lib/supabase.js'
 import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
 import { batchInferClients } from '../lib/llmClientInference.js'
+import { loadDismissalRules, checkDismissalExclusion } from '../lib/dismissalRules.js'
 
 // ─── Competitor firms seed data ────────────────────────────────────────────────
 // 45 life sciences staffing firms. Upserted into competitor_firms when the
@@ -411,6 +412,10 @@ export async function run() {
   let signalsFound = 0
 
   try {
+    // ── Step 0: Load dismissal rules for auto-exclusion ──────────────────────
+    const dismissalRules = await loadDismissalRules()
+    console.log(`[CompetitorJobs] Loaded ${[...dismissalRules.values()].flat().length} active dismissal rules.`)
+
     // ── Step 1: Seed competitor firms table if needed ────────────────────────
     const seedResult = await seedCompetitorFirms()
     console.log(`Competitor seed: ${seedResult.seeded} upserted, ${seedResult.skipped} skipped`)
@@ -535,6 +540,16 @@ export async function run() {
         }
         if (clientData) {
           console.log(`[CompetitorJobs] Client inferred: "${clientData.inferred_client}" (${clientData.client_confidence}, ${clientData.client_inference_method})`)
+        }
+
+        // Check dismissal rules for auto-exclusion
+        const dismissCheck = checkDismissalExclusion(dismissalRules, 'competitor_job_posting', {
+          role_title: job.title || '',
+          location: job.location || '',
+        })
+        if (dismissCheck.excluded) {
+          console.log(`[CompetitorJobs] AUTO-EXCLUDED (${dismissCheck.rule_type}): ${dismissCheck.rule_value}`)
+          continue
         }
 
         const insertedId = await persistCompetitorSignal(
