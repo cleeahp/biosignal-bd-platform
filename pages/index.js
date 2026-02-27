@@ -1390,8 +1390,10 @@ function DashboardPage({ signals, agentRuns }) {
 
 // ─── Competitor Jobs Page ─────────────────────────────────────────────────────
 
-function CompetitorJobsPage({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim, onDismiss }) {
+function CompetitorJobsPage({ signals, repName, expandedRows, onToggleRow, onClaim, onUnclaim, onDismiss, onUpdateClient }) {
   const [copiedId, setCopiedId] = useState(null)
+  const [editingClientId, setEditingClientId] = useState(null)
+  const [editingClientValue, setEditingClientValue] = useState('')
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
 
   function copyMatchPrompt(e, signal) {
@@ -1461,11 +1463,40 @@ function CompetitorJobsPage({ signals, repName, expandedRows, onToggleRow, onCla
                     {d.competitor_firm || signal.companies?.name || '—'}
                   </TdTruncate>
                   <TdTruncate className="text-sm text-gray-400" title={d.job_location || ''}>{d.job_location || '—'}</TdTruncate>
-                  <TdTruncate title={d.inferred_client || ''}>
-                    {d.inferred_client
-                      ? <span className="text-sm text-gray-200">{d.inferred_client}</span>
-                      : <span className="text-xs text-gray-600">—</span>}
-                  </TdTruncate>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    {editingClientId === signal.id ? (
+                      <input
+                        autoFocus
+                        type="text"
+                        value={editingClientValue}
+                        onChange={e => setEditingClientValue(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            onUpdateClient(signal.id, editingClientValue.trim())
+                            setEditingClientId(null)
+                          } else if (e.key === 'Escape') {
+                            setEditingClientId(null)
+                          }
+                        }}
+                        onBlur={() => setEditingClientId(null)}
+                        className="w-full bg-[#111827] text-sm text-white px-2 py-1 rounded border border-blue-500/50 outline-none focus:border-blue-400"
+                        placeholder="Enter client..."
+                      />
+                    ) : (
+                      <div
+                        onClick={() => {
+                          setEditingClientId(signal.id)
+                          setEditingClientValue(d.inferred_client || '')
+                        }}
+                        className="cursor-text truncate"
+                        title={d.inferred_client || 'Click to enter client'}
+                      >
+                        {d.inferred_client
+                          ? <span className="text-sm text-gray-200">{d.inferred_client}</span>
+                          : <span className="text-xs text-gray-500 italic">Enter client...</span>}
+                      </div>
+                    )}
+                  </td>
                   <TdTruncate className="text-sm text-gray-400">
                     {formatDate(d.posting_date || signal.first_detected_at)}
                   </TdTruncate>
@@ -1598,9 +1629,9 @@ function StaleRolesPage({ signals, repName, expandedRows, onToggleRow, onClaim, 
                     ) : <span className="text-xs text-gray-600">—</span>}
                   </td>
                   <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
-                    {(d.job_url || d.careers_url) ? (
+                    {(d.source_url || d.job_url || d.careers_url) ? (
                       <a
-                        href={d.job_url || d.careers_url}
+                        href={d.source_url || d.job_url || d.careers_url}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-xs text-blue-400 hover:text-blue-300 font-medium whitespace-nowrap"
@@ -2108,6 +2139,33 @@ export default function Home() {
     }
   }
 
+  // ─── Update inferred client ───────────────────────────────────────────────
+
+  const updateInferredClient = async (signalId, clientName) => {
+    // Optimistic local update
+    setSignals(prev => prev.map(s => {
+      if (s.id !== signalId) return s
+      const detail = typeof s.signal_detail === 'object' ? { ...s.signal_detail } : {}
+      detail.inferred_client = clientName
+      return { ...s, signal_detail: detail }
+    }))
+
+    try {
+      const res = await fetch('/api/signals', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: signalId, inferred_client: clientName }),
+      })
+      if (!res.ok) {
+        console.error('[UpdateClient] PATCH failed:', res.status)
+        fetchSignals()
+      }
+    } catch (err) {
+      console.error('[UpdateClient] Error:', err)
+      fetchSignals()
+    }
+  }
+
   // ─── Dismiss signal flow ──────────────────────────────────────────────────
 
   const getTabKeyForSignal = (signal) => {
@@ -2297,6 +2355,7 @@ export default function Home() {
                   onClaim={claimSignal}
                   onUnclaim={unclaimSignal}
                   onDismiss={openDismissModal}
+                  onUpdateClient={updateInferredClient}
                 />
               )}
               {activePage === 'stale'      && (
