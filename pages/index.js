@@ -1402,7 +1402,7 @@ function CompetitorJobsPage({ signals, repName, expandedRows, onToggleRow, onCla
     if (firmName) {
       desc = desc.replace(new RegExp(firmName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '').replace(/\s+/g, ' ').trim()
     }
-    const prompt = `This is a job description from a staffing firm. Infer who you believe is the specific end-client company hiring for this role. Ignore the staffing firm name. ${desc}`
+    const prompt = `Using the language in this job description, try to identify the employer. Compare it to language of other job descriptions associated with that employer to determine whether it is a match. ${desc}`
     navigator.clipboard.writeText(prompt).then(() => {
       setCopiedId(signal.id)
       setTimeout(() => setCopiedId(null), 1500)
