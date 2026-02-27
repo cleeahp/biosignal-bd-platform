@@ -814,11 +814,6 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
                         {isPast && <PastClientStar />}
                         {companyDisplay}
                       </span>
-                      {d.pre_hiring_signal && (
-                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-semibold bg-yellow-900 text-yellow-300 shrink-0">
-                          Pre-hiring
-                        </span>
-                      )}
                     </div>
                     {signal.companies?.industry && (
                       <div className="text-xs text-gray-500 mt-0.5 truncate">{signal.companies.industry}</div>

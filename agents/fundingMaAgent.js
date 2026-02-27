@@ -241,44 +241,6 @@ async function signalExists(companyId, signalType, url) {
  * @param {string} companyName
  * @returns {Promise<boolean>}
  */
-async function checkHasActiveJobs(companyName) {
-  try {
-    const { data, error } = await supabase
-      .from('job_postings')
-      .select('id')
-      .ilike('company_name', `%${companyName}%`)
-      .eq('is_active', true)
-      .limit(1)
-      .maybeSingle();
-
-    if (error) {
-      // Table might not exist — treat as no active jobs
-      return false;
-    }
-
-    return data !== null;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Adjust a base priority score based on whether active job postings exist.
- *
- * Pre-hiring (no active jobs):  +15 points
- * Active jobs present:          -15 points (floor of 5)
- *
- * @param {number} baseScore
- * @param {boolean} preHiring - true means NO active jobs (pre-hiring signal)
- * @returns {number}
- */
-function calcPriorityScore(baseScore, preHiring) {
-  if (preHiring) {
-    return baseScore + 15;
-  }
-  return Math.max(5, baseScore - 15);
-}
-
 /**
  * Insert a signal row into the signals table.
  *
@@ -344,30 +306,6 @@ async function finaliseAgentRun(runId, status, signalsFound, errorMessage = null
   if (error) {
     console.error('[fundingMaAgent] finaliseAgentRun error:', error.message);
   }
-}
-
-// ── Pre-hiring signal helper ──────────────────────────────────────────────────
-
-/**
- * Evaluate the pre-hiring status for a company and build the signal detail
- * additions and score adjustment.
- *
- * @param {string} companyName
- * @param {number} baseScore
- * @returns {Promise<{ adjustedScore: number, preHiringDetail: object }>}
- */
-async function evalPreHiring(companyName, baseScore) {
-  const hasActiveJobs = await checkHasActiveJobs(companyName);
-  const preHiring = !hasActiveJobs;
-  const adjustedScore = calcPriorityScore(baseScore, preHiring);
-
-  return {
-    adjustedScore,
-    preHiringDetail: {
-      has_active_jobs: hasActiveJobs,
-      pre_hiring_signal: preHiring,
-    },
-  };
 }
 
 // ── Source 1: NIH SBIR/STTR grants ───────────────────────────────────────────
@@ -482,12 +420,6 @@ async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap
       continue;
     }
 
-    const { adjustedScore, preHiringDetail } = await evalPreHiring(orgName, baseScore);
-
-    const signalSummaryLabel = preHiringDetail.pre_hiring_signal
-      ? ' — Pre-hiring signal'
-      : '';
-
     // Check dismissal rules
     const dismissCheck = checkDismissalExclusion(dismissalRules, signalType, { company: orgName });
     if (dismissCheck.excluded) {
@@ -496,7 +428,7 @@ async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap
     }
 
     const pastClient = matchPastClient(orgName, pastClientsMap);
-    const finalScore = pastClient ? adjustedScore + pastClient.boost_score : adjustedScore;
+    const finalScore = pastClient ? baseScore + pastClient.boost_score : baseScore;
 
     const detail = {
       company_name: orgName,
@@ -507,7 +439,6 @@ async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap
       source_url: sourceUrl,
       activity_code: activityCode,
       project_title: projectTitle,
-      ...preHiringDetail,
     };
     if (pastClient) detail.past_client = { name: pastClient.name, priority_rank: pastClient.priority_rank, boost_score: pastClient.boost_score };
 
@@ -515,11 +446,11 @@ async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap
       company_id: company.id,
       signal_type: signalType,
       priority_score: finalScore,
-      signal_summary: `${fundingSummary}${signalSummaryLabel}`,
+      signal_summary: fundingSummary,
       signal_detail: detail,
       source_url: sourceUrl,
       created_at: new Date().toISOString(),
-      score_breakdown: { signal_strength: adjustedScore, past_client_boost: pastClient?.boost_score || 0 },
+      score_breakdown: { signal_strength: baseScore, past_client_boost: pastClient?.boost_score || 0 },
     });
 
     if (inserted) {
@@ -1545,8 +1476,6 @@ async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map(),
       const finalAcquirerName    = edgarAcquirerName;   // always from EDGAR (most authoritative)
       const finalTransactionType = enriched.transaction_type || transactionType;
 
-      const { adjustedScore, preHiringDetail } = await evalPreHiring(entityName, MA_BASE_SCORE);
-
       const dealSummary = enriched.deal_summary
         || edgarDetails.deal_summary
         || `${finalAcquirerName} announced an M&A transaction${finalAcquiredName ? ` involving ${finalAcquiredName}` : ''}${finalDealAmount ? ` valued at ${finalDealAmount}` : ''}`;
@@ -1569,7 +1498,6 @@ async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map(),
         date_announced:       fileDate,
         filing_url:           filingUrl,
         source_url:           filingUrl,
-        ...preHiringDetail,
       };
 
       if (isExcludedCompany(entityName, excludedCompanies, pastClientsMap)) {
@@ -1587,17 +1515,17 @@ async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map(),
       const company = await upsertCompany(supabase, { name: entityName });
       if (company) {
         const pastClient = matchPastClient(entityName, pastClientsMap);
-        const finalScore = pastClient ? adjustedScore + pastClient.boost_score : adjustedScore;
+        const finalScore = pastClient ? MA_BASE_SCORE + pastClient.boost_score : MA_BASE_SCORE;
         if (pastClient) detail.past_client = { name: pastClient.name, priority_rank: pastClient.priority_rank, boost_score: pastClient.boost_score };
         const inserted = await insertSignal({
           company_id:    company.id,
           signal_type:   'ma_transaction',
           priority_score: finalScore,
-          signal_summary: `${finalAcquirerName} M&A transaction${finalDealAmount ? ` (${finalDealAmount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+          signal_summary: `${finalAcquirerName} M&A transaction${finalDealAmount ? ` (${finalDealAmount})` : ''}`,
           signal_detail: detail,
           source_url: filingUrl,
           created_at: new Date().toISOString(),
-          score_breakdown: { signal_strength: adjustedScore, past_client_boost: pastClient?.boost_score || 0 },
+          score_breakdown: { signal_strength: MA_BASE_SCORE, past_client_boost: pastClient?.boost_score || 0 },
         });
 
         if (inserted) signalsInserted++;
@@ -1769,8 +1697,6 @@ async function processBioSpaceDeals(today, pastClientsMap = new Map(), excludedC
     const alreadyExists = await signalExists(company.id, 'funding_new_award', url);
     if (alreadyExists) continue;
 
-    const { adjustedScore, preHiringDetail } = await evalPreHiring(rawCompany, BASE_SCORE);
-
     const fundingType = dealType === 'ipo' ? 'ipo' : dealType === 'venture_capital' ? 'venture_capital' : 'pharma_partnership';
     const summaryVerb = fundingType === 'pharma_partnership' ? 'signed pharma deal' : fundingType === 'ipo' ? 'filed for IPO' : 'raised funding round';
 
@@ -1782,7 +1708,7 @@ async function processBioSpaceDeals(today, pastClientsMap = new Map(), excludedC
     }
 
     const pastClient = matchPastClient(rawCompany, pastClientsMap);
-    const finalScore = pastClient ? adjustedScore + pastClient.boost_score : adjustedScore;
+    const finalScore = pastClient ? BASE_SCORE + pastClient.boost_score : BASE_SCORE;
 
     const detail = {
       company_name: rawCompany,
@@ -1791,7 +1717,6 @@ async function processBioSpaceDeals(today, pastClientsMap = new Map(), excludedC
       funding_summary: title,
       date_announced: today,
       source_url: url,
-      ...preHiringDetail,
     };
     if (pastClient) detail.past_client = { name: pastClient.name, priority_rank: pastClient.priority_rank, boost_score: pastClient.boost_score };
 
@@ -1799,11 +1724,11 @@ async function processBioSpaceDeals(today, pastClientsMap = new Map(), excludedC
       company_id: company.id,
       signal_type: 'funding_new_award',
       priority_score: finalScore,
-      signal_summary: `${rawCompany} ${summaryVerb}${amount ? ` (${amount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+      signal_summary: `${rawCompany} ${summaryVerb}${amount ? ` (${amount})` : ''}`,
       signal_detail: detail,
       source_url: url,
       created_at: new Date().toISOString(),
-      score_breakdown: { signal_strength: adjustedScore, past_client_boost: pastClient?.boost_score || 0 },
+      score_breakdown: { signal_strength: BASE_SCORE, past_client_boost: pastClient?.boost_score || 0 },
     });
 
     if (inserted) signalsInserted++;
@@ -1875,8 +1800,6 @@ async function processBioSpaceFunding(today, pastClientsMap = new Map(), exclude
     const alreadyExists = await signalExists(company.id, 'funding_new_award', url);
     if (alreadyExists) continue;
 
-    const { adjustedScore, preHiringDetail } = await evalPreHiring(rawCompany, BASE_SCORE);
-
     const fundingType = dealType === 'ipo' ? 'ipo' : dealType === 'pharma_partnership' ? 'pharma_partnership' : 'venture_capital';
     const summaryVerb = fundingType === 'ipo' ? 'filed for IPO' : fundingType === 'pharma_partnership' ? 'signed deal' : 'raised funding';
 
@@ -1888,7 +1811,7 @@ async function processBioSpaceFunding(today, pastClientsMap = new Map(), exclude
     }
 
     const pastClient = matchPastClient(rawCompany, pastClientsMap);
-    const finalScore = pastClient ? adjustedScore + pastClient.boost_score : adjustedScore;
+    const finalScore = pastClient ? BASE_SCORE + pastClient.boost_score : BASE_SCORE;
 
     const detail = {
       company_name: rawCompany,
@@ -1897,7 +1820,6 @@ async function processBioSpaceFunding(today, pastClientsMap = new Map(), exclude
       funding_summary: title,
       date_announced: today,
       source_url: url,
-      ...preHiringDetail,
     };
     if (pastClient) detail.past_client = { name: pastClient.name, priority_rank: pastClient.priority_rank, boost_score: pastClient.boost_score };
 
@@ -1905,11 +1827,11 @@ async function processBioSpaceFunding(today, pastClientsMap = new Map(), exclude
       company_id: company.id,
       signal_type: 'funding_new_award',
       priority_score: finalScore,
-      signal_summary: `${rawCompany} ${summaryVerb}${amount ? ` (${amount})` : ''}${preHiringDetail.pre_hiring_signal ? ' — Pre-hiring signal' : ''}`,
+      signal_summary: `${rawCompany} ${summaryVerb}${amount ? ` (${amount})` : ''}`,
       signal_detail: detail,
       source_url: url,
       created_at: new Date().toISOString(),
-      score_breakdown: { signal_strength: adjustedScore, past_client_boost: pastClient?.boost_score || 0 },
+      score_breakdown: { signal_strength: BASE_SCORE, past_client_boost: pastClient?.boost_score || 0 },
     });
 
     if (inserted) signalsInserted++;
