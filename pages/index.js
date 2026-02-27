@@ -1963,7 +1963,7 @@ export default function Home() {
 
   const fetchSignals = useCallback(async () => {
     try {
-      const res = await fetch('/api/signals')
+      const res = await fetch('/api/signals', { cache: 'no-store' })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setSignals(data.signals || [])
@@ -2124,11 +2124,18 @@ export default function Home() {
 
   const confirmDismiss = async (signal, reasonKey, reasonValue) => {
     setDismissTarget(null)
-    setSignals(prev => prev.filter(s => s.id !== signal.id))
+
+    // Optimistic removal — remove from React state immediately
+    console.log('[Dismiss] Removing signal from state:', signal.id)
+    setSignals(prev => {
+      const next = prev.filter(s => s.id !== signal.id)
+      console.log('[Dismiss] Signals count:', prev.length, '→', next.length)
+      return next
+    })
 
     try {
       // 1. Update signal status to dismissed + store reason in signal_detail
-      await fetch('/api/signals', {
+      const res = await fetch('/api/signals', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2138,6 +2145,15 @@ export default function Home() {
           dismissal_value: reasonValue,
         }),
       })
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}))
+        console.error('[Dismiss] PATCH failed:', res.status, errBody.error || '')
+        fetchSignals()
+        return
+      }
+
+      console.log('[Dismiss] PATCH succeeded for signal:', signal.id)
 
       // 2. Upsert dismissal_rules (via Supabase client)
       if (supabase && reasonValue) {
@@ -2171,10 +2187,8 @@ export default function Home() {
             })
         }
       }
-
-      fetchSignals()
     } catch (err) {
-      console.error('Error dismissing signal:', err)
+      console.error('[Dismiss] Error:', err)
       fetchSignals()
     }
   }

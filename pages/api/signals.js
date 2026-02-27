@@ -19,6 +19,7 @@ async function handleGet(req, res) {
         companies (id, name, domain, industry, relationship_warmth)
       `)
       .in('status', ['new', 'carried_forward', 'claimed', 'contacted'])
+      .neq('status', 'dismissed')
       .order('priority_score', { ascending: false })
 
     if (error) throw new Error(error.message)
