@@ -2149,7 +2149,8 @@ export default function Home() {
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}))
         console.error('[Dismiss] PATCH failed:', res.status, errBody.error || '')
-        fetchSignals()
+        // Rollback — restore the signal to local state
+        setSignals(prev => [...prev, signal])
         return
       }
 
@@ -2189,7 +2190,8 @@ export default function Home() {
       }
     } catch (err) {
       console.error('[Dismiss] Error:', err)
-      fetchSignals()
+      // Rollback — restore the signal to local state
+      setSignals(prev => [...prev, signal])
     }
   }
 
