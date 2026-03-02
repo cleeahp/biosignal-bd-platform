@@ -5,6 +5,19 @@ import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js'
 import { loadExcludedCompanies, isExcludedCompany } from '../lib/companyExclusion.js'
 import { loadDismissalRules, checkDismissalExclusion } from '../lib/dismissalRules.js'
 
+// Strip query-string tracking params so the same LinkedIn job with different
+// refId/trackingId values is recognised as the same posting.
+function normalizeJobUrl(url) {
+  if (!url) return ''
+  try {
+    const u = new URL(url)
+    u.search = ''
+    return u.toString()
+  } catch {
+    return url.split('?')[0]
+  }
+}
+
 // CRO company patterns — skip jobs from CROs (they belong to competitor_job_posting)
 const CRO_PATTERNS =
   /\b(syneos|fortrea|labcorp|iqvia|propharma|premier\s+research|worldwide\s+clinical|halloran|medpace|ppd\b|parexel|covance|charles\s+river|wuxi|pra\s+health|pharmaceutical\s+product\s+development|icon\s+plc|icon\s+strategic|asgn|katalyst|evolution\s+research|seran\s+bioscience|milestone\s+one|pharmaron|globyz|pharmavise|dcn\s+dx|vml\s+health|clinchoice|novaquest|ergomed|theorem\s+clinical|celerion|alimentiv|signant\s+health|clinical\s+ink|science\s+37|velocity\s+clinical|elligo\s+health|cmic|linical|criterium|navitas|calyx|firma\s+clinical|tfs\s+health|rho|psi\s+cro|veristat|makrocare|bioforum|deltamed|prometrika|salamandra|phastar|lotus\s+group)\b/i
@@ -172,6 +185,7 @@ async function persistJobSignal(job, pastClientsMap = new Map()) {
     job_location:    job.job_location,
     date_posted:     job.date_posted || today,
     days_posted:     job.days_posted,
+    job_url:         job.source_url,
     source_url:      job.source_url,
     job_board:       'linkedin',
     source:          'LinkedIn',
@@ -243,8 +257,23 @@ export async function run() {
       return { signalsFound: 0, requestsUsed: 0 }
     }
 
-    const dedup            = new Set()   // dedup by job URL within this run
+    // Load all existing stale job URLs for cross-run deduplication.
+    // Old records store the URL in signal_detail.source_url; new records also
+    // populate signal_detail.job_url. Fall back to the top-level source_url column.
+    const { data: existingStaleSignals } = await supabase
+      .from('signals')
+      .select('source_url, signal_detail')
+      .eq('signal_type', 'stale_job_posting')
+    const seenJobUrls = new Set()
+    for (const r of (existingStaleSignals || [])) {
+      const url = r.signal_detail?.job_url || r.signal_detail?.source_url || r.source_url
+      const norm = normalizeJobUrl(url)
+      if (norm) seenJobUrls.add(norm)
+    }
+    console.log(`[StaleJobs] Loaded ${seenJobUrls.size} existing job URLs for deduplication.`)
+
     let liSignals          = 0
+    let candidateJobsThisRun = 0
     const MAX_LI_SIGNALS    = 100
     const MAX_JOBS_PER_QUERY = 5
 
@@ -271,7 +300,11 @@ export async function run() {
       for (const job of results) {
         if (liSignals >= MAX_LI_SIGNALS) break
         if (queryCount >= MAX_JOBS_PER_QUERY) break
-        if (!job.jobUrl || dedup.has(job.jobUrl)) continue
+        const normalizedUrl = normalizeJobUrl(job.jobUrl)
+        if (!normalizedUrl || seenJobUrls.has(normalizedUrl)) {
+          if (normalizedUrl) console.log(`[StaleJobs] DEDUP (already exists): ${job.jobUrl}`)
+          continue
+        }
         if (job.daysPosted < 30) continue
         // matchesRoleKeywords intentionally skipped — all roles relevant for known past clients
         if (COMPETITOR_FIRM_NAMES.has(job.company)) continue
@@ -301,7 +334,8 @@ export async function run() {
           continue
         }
 
-        dedup.add(job.jobUrl)
+        seenJobUrls.add(normalizedUrl)
+        candidateJobsThisRun++
 
         if (isExcludedCompany(job.company || '', excludedCompanies, pastClientsMap)) {
           console.log(`[StaleJobs] EXCLUDED (large company): ${job.company}`)
@@ -363,7 +397,11 @@ export async function run() {
       for (const job of results) {
         if (liSignals >= MAX_LI_SIGNALS) break
         if (queryCount >= MAX_JOBS_PER_QUERY) break
-        if (!job.jobUrl || dedup.has(job.jobUrl)) continue
+        const normalizedUrl = normalizeJobUrl(job.jobUrl)
+        if (!normalizedUrl || seenJobUrls.has(normalizedUrl)) {
+          if (normalizedUrl) console.log(`[StaleJobs] DEDUP (already exists): ${job.jobUrl}`)
+          continue
+        }
         if (job.daysPosted < 30) continue
         if (!matchesRoleKeywords(job.title)) continue
         if (COMPETITOR_FIRM_NAMES.has(job.company)) continue
@@ -393,7 +431,8 @@ export async function run() {
           continue
         }
 
-        dedup.add(job.jobUrl)
+        seenJobUrls.add(normalizedUrl)
+        candidateJobsThisRun++
 
         if (isExcludedCompany(job.company || '', excludedCompanies, pastClientsMap)) {
           console.log(`[StaleJobs] EXCLUDED (large company): ${job.company}`)
@@ -441,7 +480,7 @@ export async function run() {
       run_detail: {
         linkedin_requests_used: requestsUsed,
         linkedin_bot_detected:  linkedin.botDetected,
-        total_candidate_jobs:   dedup.size,
+        total_candidate_jobs:   candidateJobsThisRun,
         signals_saved:          signalsFound,
       },
     }).eq('id', runId)

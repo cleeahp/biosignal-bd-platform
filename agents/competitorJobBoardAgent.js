@@ -3,6 +3,19 @@ import { matchesRoleKeywords } from '../lib/roleKeywords.js'
 import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
 import { loadDismissalRules, checkDismissalExclusion } from '../lib/dismissalRules.js'
 
+// Strip query-string tracking params so the same LinkedIn job with different
+// refId/trackingId values is recognised as the same posting.
+function normalizeJobUrl(url) {
+  if (!url) return ''
+  try {
+    const u = new URL(url)
+    u.search = ''
+    return u.toString()
+  } catch {
+    return url.split('?')[0]
+  }
+}
+
 // ─── Competitor firms seed data ────────────────────────────────────────────────
 // 45 life sciences staffing firms. Upserted into competitor_firms when the
 // table has fewer than 30 rows. LinkedIn is the sole job source — no career
@@ -140,10 +153,7 @@ async function persistCompetitorSignal(firmName, jobUrl, jobTitle, jobLocation, 
   const firmCompany = await upsertCompany(supabase, { name: firmName })
   if (!firmCompany) return false
 
-  // Dedup key: job URL + title slug per ISO week
-  const titleSlug = jobTitle.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40)
-  const weekNum   = Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000))
-  const sourceUrl = `${jobUrl || 'https://biosignal.app'}#${titleSlug}-week-${weekNum}`
+  const sourceUrl = normalizeJobUrl(jobUrl) || 'https://biosignal.app/signals'
   const exists    = await signalExists(firmCompany.id, 'competitor_job_posting', sourceUrl)
   if (exists) return false
 
@@ -200,6 +210,19 @@ export async function run() {
     // ── Step 0: Load dismissal rules for auto-exclusion ──────────────────────
     const dismissalRules = await loadDismissalRules()
     console.log(`[CompetitorJobs] Loaded ${[...dismissalRules.values()].flat().length} active dismissal rules.`)
+
+    // Load all existing competitor job URLs for cross-run deduplication.
+    // Keyed on signal_detail.job_url (the actual LinkedIn URL, not the source_url field).
+    const { data: existingCompetitorSignals } = await supabase
+      .from('signals')
+      .select('signal_detail')
+      .eq('signal_type', 'competitor_job_posting')
+    const seenJobUrls = new Set(
+      (existingCompetitorSignals || [])
+        .map(r => normalizeJobUrl(r.signal_detail?.job_url))
+        .filter(Boolean)
+    )
+    console.log(`[CompetitorJobs] Loaded ${seenJobUrls.size} existing job URLs for deduplication.`)
 
     // ── Step 1: Seed competitor firms table if needed ────────────────────────
     const seedResult = await seedCompetitorFirms()
@@ -287,6 +310,15 @@ export async function run() {
           console.log(`[CompetitorJobs] AUTO-EXCLUDED (${dismissCheck.rule_type}): ${dismissCheck.rule_value}`)
           continue
         }
+
+        // Dedup by normalized job URL — catches both within-run repeats and
+        // jobs already persisted in a previous run.
+        const normalizedUrl = normalizeJobUrl(job.jobUrl)
+        if (!normalizedUrl || seenJobUrls.has(normalizedUrl)) {
+          if (normalizedUrl) console.log(`[CompetitorJobs] DEDUP (already exists): ${job.jobUrl}`)
+          continue
+        }
+        seenJobUrls.add(normalizedUrl)
 
         // Fetch description via guest API (/jobs-guest/jobs/api/jobPosting/{id})
         let description = ''
