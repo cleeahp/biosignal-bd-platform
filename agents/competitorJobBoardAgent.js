@@ -54,6 +54,14 @@ const COMPETITOR_FIRMS_SEED = [
   { name: 'TriNet Pharma' },
   { name: 'The Fountain Group' },
   { name: 'Hueman RPO' },
+  { name: 'Surf Search' },
+  { name: 'Cornerstone Search Group' },
+  { name: 'Smith Hanley Associates' },
+  { name: 'Global Edge Recruiting' },
+  { name: 'Clinnect' },
+  { name: 'BioPhase Solutions' },
+  { name: 'Cowen Partners' },
+  { name: 'Barrington James' },
 ]
 
 // CRO / non-staffing firms — jobs posted BY these companies must be skipped even
