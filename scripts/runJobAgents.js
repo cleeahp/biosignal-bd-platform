@@ -12,7 +12,12 @@
  * Required env vars:
  *   SUPABASE_URL              — Supabase project URL
  *   SUPABASE_SERVICE_ROLE_KEY — Supabase service-role key (bypasses RLS)
- *   LINKEDIN_LI_AT            — LinkedIn li_at session cookie
+ *   LINKEDIN_LI_AT            — LinkedIn li_at session cookie (auto-extracted locally)
+ *
+ * Local LinkedIn cookie extraction (no manual setup needed):
+ *   The script auto-extracts li_at from Chrome using the DevTools Protocol.
+ *   Enable once: add --remote-debugging-port=9222 to your Chrome shortcut target.
+ *   Fallback: set LINKEDIN_LI_AT in .env.local if Chrome extraction is unavailable.
  */
 
 import dotenv from 'dotenv'
@@ -60,6 +65,22 @@ console.warn = (...args) => {
 console.error = (...args) => {
   _error(...args)
   logFile.write(`[ERROR] ${formatArgs(args)}\n`)
+}
+
+// ── LinkedIn cookie — auto-extract locally, require from env in production ─────
+// In GitHub Actions: LINKEDIN_LI_AT is injected as a secret.
+// Locally: try Chrome DevTools Protocol (requires --remote-debugging-port=9222),
+//          then fall back to LINKEDIN_LI_AT env var / .env.local.
+
+if (process.env.NODE_ENV !== 'production' && !process.env.LINKEDIN_LI_AT) {
+  try {
+    const { getChromeLinkedInCookie } = await import('../lib/getChromeLinkedInCookie.js')
+    process.env.LINKEDIN_LI_AT = await getChromeLinkedInCookie()
+    console.log('[JobAgents] Extracted li_at from Chrome (CDP)')
+  } catch (err) {
+    console.warn(`[JobAgents] Chrome cookie auto-extraction failed: ${err.message}`)
+    console.warn('[JobAgents] Tip: launch Chrome with --remote-debugging-port=9222, or set LINKEDIN_LI_AT in .env.local')
+  }
 }
 
 // ── Env-var validation ─────────────────────────────────────────────────────────
