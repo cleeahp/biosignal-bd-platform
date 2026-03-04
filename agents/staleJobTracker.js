@@ -1,5 +1,5 @@
 import { supabase, upsertCompany } from '../lib/supabase.js'
-import { matchesRoleKeywords } from '../lib/roleKeywords.js'
+import { matchesRoleKeywords, EXCLUDED_ROLE_PATTERNS } from '../lib/roleKeywords.js'
 import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
 import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js'
 import { loadExcludedCompanies, isExcludedCompany } from '../lib/companyExclusion.js'
@@ -307,6 +307,10 @@ export async function run() {
         }
         if (job.daysPosted < 30) continue
         // matchesRoleKeywords intentionally skipped — all roles relevant for known past clients
+        if (EXCLUDED_ROLE_PATTERNS.test(job.title)) {
+          console.log(`[staleJobTracker] FILTERED (internship/sales role): ${job.title}`)
+          continue
+        }
         if (COMPETITOR_FIRM_NAMES.has(job.company)) continue
         if (ACADEMIC_PATTERNS.test(job.company)) continue
         if (NON_US_LOCATION_PATTERNS.test(job.location)) continue
@@ -404,6 +408,10 @@ export async function run() {
         }
         if (job.daysPosted < 30) continue
         if (!matchesRoleKeywords(job.title)) continue
+        if (EXCLUDED_ROLE_PATTERNS.test(job.title)) {
+          console.log(`[staleJobTracker] FILTERED (internship/sales role): ${job.title}`)
+          continue
+        }
         if (COMPETITOR_FIRM_NAMES.has(job.company)) continue
         if (ACADEMIC_PATTERNS.test(job.company)) continue
         if (NON_US_LOCATION_PATTERNS.test(job.location)) continue

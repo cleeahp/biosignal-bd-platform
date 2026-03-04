@@ -1,5 +1,5 @@
 import { supabase, upsertCompany } from '../lib/supabase.js'
-import { matchesRoleKeywords } from '../lib/roleKeywords.js'
+import { matchesRoleKeywords, EXCLUDED_ROLE_PATTERNS } from '../lib/roleKeywords.js'
 import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
 import { loadDismissalRules, checkDismissalExclusion } from '../lib/dismissalRules.js'
 
@@ -292,6 +292,10 @@ export async function run() {
       let liInserted = 0
       for (const job of liJobs.slice(0, 3)) {
         if (!matchesRoleKeywords(job.title)) continue
+        if (EXCLUDED_ROLE_PATTERNS.test(job.title)) {
+          console.log(`[competitorJobBoard] FILTERED (internship/sales role): ${job.title}`)
+          continue
+        }
         if (NON_US_JOB_LOC.test(job.location)) continue
 
         // Skip jobs posted BY a CRO/non-staffing company (LinkedIn sometimes
