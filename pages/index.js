@@ -924,7 +924,7 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
   )
 }
 
-// ─── Tab: My Leads ────────────────────────────────────────────────────────────
+// ─── Tab: My Leads (rebuilt) ─────────────────────────────────────────────────
 
 function LeadNoteCell({ lead, onSave }) {
   const [editing, setEditing] = useState(false)
@@ -977,7 +977,454 @@ const LEAD_STATUS_OPTIONS = [
   { value: 'lost',        label: 'Lost' },
 ]
 
-function LeadsTab({ leads, repName, showAllLeads, onToggleShowAll, onUpdateStatus, onUpdateNotes }) {
+// ── Leads page helpers ────────────────────────────────────────────────────────
+
+const LEAD_TYPE_OPTIONS = [
+  { key: 'all',        label: 'All Leads' },
+  { key: 'clinical',   label: 'Clinical Trials' },
+  { key: 'funding',    label: 'Funding & M&A' },
+  { key: 'competitor', label: 'Competitor Jobs' },
+  { key: 'stale',      label: 'Stale Roles' },
+]
+
+const LEAD_SIGNAL_TYPES = {
+  clinical:   ['clinical_trial_phase_transition', 'clinical_trial_new_ind', 'clinical_trial_site_activation', 'clinical_trial_completion'],
+  funding:    ['ma_transaction', 'ma_acquirer', 'ma_acquired', 'funding_new_award', 'funding_renewal'],
+  competitor: ['competitor_job_posting'],
+  stale:      ['stale_job_posting', 'target_company_job'],
+}
+
+const LEADS_SECTION_META = {
+  clinical:   'Clinical Trials',
+  funding:    'Funding & M&A',
+  competitor: 'Competitor Jobs',
+  stale:      'Stale Roles',
+}
+
+function formatAmount(val) {
+  if (!val) return '—'
+  const num = parseFloat(String(val).replace(/[$,]/g, ''))
+  if (!isNaN(num) && num > 0) {
+    if (num >= 1e9) return `$${(num / 1e9).toFixed(1)}B`
+    if (num >= 1e6) return `$${(num / 1e6).toFixed(1)}M`
+    return `$${num.toLocaleString()}`
+  }
+  return String(val)
+}
+
+function ExternalLinkIcon({ href }) {
+  if (!href) return <span className="text-xs text-gray-600">—</span>
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      title="Open in new tab"
+      className="text-blue-400 hover:text-blue-300 transition-colors inline-flex"
+    >
+      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+        <polyline points="15 3 21 3 21 9"/>
+        <line x1="10" y1="14" x2="21" y2="3"/>
+      </svg>
+    </a>
+  )
+}
+
+function LeadStatusSelect({ lead, onUpdate }) {
+  return (
+    <select
+      value={lead.status || 'new'}
+      onChange={e => onUpdate(lead.id, e.target.value)}
+      className="bg-[#111827] border border-[#374151] rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-blue-500 cursor-pointer"
+    >
+      {LEAD_STATUS_OPTIONS.map(opt => (
+        <option key={opt.value} value={opt.value}>{opt.label}</option>
+      ))}
+    </select>
+  )
+}
+
+function LeadClientCell({ lead, onSave }) {
+  const getClient = () => parseDetail(lead.signal_detail).inferred_client || ''
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(getClient)
+  const inputRef = useRef(null)
+
+  useEffect(() => { setValue(getClient()) }, [lead.signal_detail])
+  useEffect(() => { if (editing && inputRef.current) inputRef.current.focus() }, [editing])
+
+  const save = () => {
+    setEditing(false)
+    if (value !== getClient()) onSave(lead.signal_id, value)
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter') save()
+          if (e.key === 'Escape') { setValue(getClient()); setEditing(false) }
+        }}
+        onBlur={save}
+        className="w-full bg-[#111827] border border-blue-500/50 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-400"
+        placeholder="Enter client..."
+      />
+    )
+  }
+  return (
+    <div onClick={() => setEditing(true)} className="cursor-text min-h-[24px] truncate" title={value || 'Click to enter client'}>
+      {value
+        ? <span className="text-sm text-gray-200">{value}</span>
+        : <span className="text-xs text-gray-500 italic">Enter client...</span>
+      }
+    </div>
+  )
+}
+
+function LeadTypeFilterDropdown({ selectedTypes, onToggle }) {
+  const [open, setOpen] = useState(false)
+  const dropRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handleClick = (e) => {
+      if (dropRef.current && !dropRef.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
+
+  const isAll = selectedTypes.has('all')
+  const activeLabels = LEAD_TYPE_OPTIONS.filter(o => o.key !== 'all' && selectedTypes.has(o.key)).map(o => o.label)
+  const buttonLabel = isAll || activeLabels.length === 0 ? 'Filter by type' : activeLabels.join(', ')
+
+  return (
+    <div ref={dropRef} className="relative">
+      <button
+        onClick={() => setOpen(p => !p)}
+        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1f2937] border border-[#374151] text-sm text-gray-300 hover:text-white hover:border-[#4b5563] transition-colors"
+      >
+        <span className="max-w-[260px] truncate">{buttonLabel}</span>
+        <svg className="w-4 h-4 text-gray-400 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+          <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1.5 w-52 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl z-50 py-1">
+          {LEAD_TYPE_OPTIONS.map(opt => (
+            <label
+              key={opt.key}
+              className="flex items-center gap-2.5 px-3 py-2 hover:bg-[#374151] cursor-pointer"
+              onClick={e => e.stopPropagation()}
+            >
+              <input
+                type="checkbox"
+                checked={opt.key === 'all' ? isAll : selectedTypes.has(opt.key)}
+                onChange={() => onToggle(opt.key)}
+                className="rounded border-gray-600 bg-[#111827] text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+              />
+              <span className="text-sm text-gray-300">{opt.label}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Per-type lead tables ───────────────────────────────────────────────────────
+
+function CompetitorJobsLeadTable({ leads, onUpdateStatus, onUpdateNotes, onUpdateClient }) {
+  if (leads.length === 0) return <p className="text-sm text-gray-500 italic py-4 px-1">No leads yet.</p>
+  return (
+    <TableWrapper>
+      <thead>
+        <tr>
+          <Th className="w-[20%]">Role Title</Th>
+          <Th className="w-[13%]">Competitor</Th>
+          <Th className="w-[11%]">Location</Th>
+          <Th className="w-[14%]">Likely Client</Th>
+          <Th className="w-[9%]">Date Posted</Th>
+          <Th className="w-[4%]">Link</Th>
+          <Th className="w-[10%]">Claim Date</Th>
+          <Th className="w-[10%]">Status</Th>
+          <Th className="w-[9%]">Notes</Th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-[#374151]">
+        {leads.map((lead, i) => {
+          const d = parseDetail(lead.signal_detail)
+          const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+          return (
+            <tr key={lead.id} className={`${rowBg} hover:bg-[#263045] transition-colors`}>
+              <TdTruncate className="text-sm text-white font-medium" title={d.job_title || ''}>
+                {!!d.past_client && <PastClientStar />}
+                {d.job_title || '—'}
+              </TdTruncate>
+              <TdTruncate className="text-sm text-gray-200" title={d.competitor_firm || ''}>
+                {d.competitor_firm || lead.company_name || '—'}
+              </TdTruncate>
+              <TdTruncate className="text-sm text-gray-400" title={d.job_location || ''}>
+                {d.job_location || '—'}
+              </TdTruncate>
+              <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                <LeadClientCell lead={lead} onSave={onUpdateClient} />
+              </td>
+              <TdTruncate className="text-sm text-gray-400">
+                {formatDate(d.posting_date)}
+              </TdTruncate>
+              <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                <ExternalLinkIcon href={d.job_url} />
+              </td>
+              <TdTruncate className="text-sm text-gray-400">{formatDate(lead.claimed_at)}</TdTruncate>
+              <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                <LeadStatusSelect lead={lead} onUpdate={onUpdateStatus} />
+              </td>
+              <td className="px-3 py-3">
+                <LeadNoteCell lead={lead} onSave={onUpdateNotes} />
+              </td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </TableWrapper>
+  )
+}
+
+function StaleRolesLeadTable({ leads, onUpdateStatus, onUpdateNotes }) {
+  if (leads.length === 0) return <p className="text-sm text-gray-500 italic py-4 px-1">No leads yet.</p>
+  return (
+    <TableWrapper>
+      <thead>
+        <tr>
+          <Th className="w-[22%]">Role Title</Th>
+          <Th className="w-[18%]">Company</Th>
+          <Th className="w-[13%]">Location</Th>
+          <Th className="w-[7%]">Days Open</Th>
+          <Th className="w-[4%]">Link</Th>
+          <Th className="w-[10%]">Claim Date</Th>
+          <Th className="w-[12%]">Status</Th>
+          <Th className="w-[14%]">Notes</Th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-[#374151]">
+        {leads.map((lead, i) => {
+          const d = parseDetail(lead.signal_detail)
+          const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+          const daysOpen = d.days_posted || 0
+          const dayCls = daysOpen >= 45 ? 'bg-red-900 text-red-300' : daysOpen >= 30 ? 'bg-orange-900 text-orange-300' : 'bg-gray-700 text-gray-300'
+          return (
+            <tr key={lead.id} className={`${rowBg} hover:bg-[#263045] transition-colors`}>
+              <TdTruncate className="text-sm text-white font-medium" title={d.job_title || ''}>
+                {!!d.past_client && <PastClientStar />}
+                {d.job_title || '—'}
+              </TdTruncate>
+              <TdTruncate className="text-sm text-gray-200 font-semibold" title={d.company_name || lead.company_name || ''}>
+                {d.company_name || lead.company_name || '—'}
+              </TdTruncate>
+              <TdTruncate className="text-sm text-gray-400" title={d.job_location || ''}>
+                {d.job_location || '—'}
+              </TdTruncate>
+              <td className="px-3 py-3">
+                {daysOpen > 0
+                  ? <span className={`inline-block px-2 py-0.5 rounded text-xs font-mono font-semibold ${dayCls}`}>{daysOpen}d</span>
+                  : <span className="text-xs text-gray-600">—</span>
+                }
+              </td>
+              <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                <ExternalLinkIcon href={d.job_url || d.source_url} />
+              </td>
+              <TdTruncate className="text-sm text-gray-400">{formatDate(lead.claimed_at)}</TdTruncate>
+              <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                <LeadStatusSelect lead={lead} onUpdate={onUpdateStatus} />
+              </td>
+              <td className="px-3 py-3">
+                <LeadNoteCell lead={lead} onSave={onUpdateNotes} />
+              </td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </TableWrapper>
+  )
+}
+
+function FundingLeadTable({ leads, onUpdateStatus, onUpdateNotes }) {
+  if (leads.length === 0) return <p className="text-sm text-gray-500 italic py-4 px-1">No leads yet.</p>
+  return (
+    <TableWrapper>
+      <thead>
+        <tr>
+          <Th className="w-[10%]">Type</Th>
+          <Th className="w-[18%]">Company</Th>
+          <Th className="w-[9%]">Amount</Th>
+          <Th className="w-[17%]">Summary</Th>
+          <Th className="w-[8%]">Date</Th>
+          <Th className="w-[5%]">Queue</Th>
+          <Th className="w-[10%]">Claim Date</Th>
+          <Th className="w-[11%]">Status</Th>
+          <Th className="w-[12%]">Notes</Th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-[#374151]">
+        {leads.map((lead, i) => {
+          const d = parseDetail(lead.signal_detail)
+          const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+          const typeLabel = lead.signal_type === 'ma_transaction'
+            ? (MA_TRANSACTION_TYPE_CONFIG[d.transaction_type]?.label || 'M&A')
+            : lead.signal_type === 'funding_new_award'
+              ? (FUNDING_TYPE_CONFIG[d.funding_type]?.label || 'Funding')
+              : lead.signal_type === 'funding_renewal' ? 'Renewal'
+              : (SIGNAL_TYPE_CONFIG[lead.signal_type]?.label || lead.signal_type)
+          const typeColor = lead.signal_type === 'ma_transaction'
+            ? (MA_TRANSACTION_TYPE_CONFIG[d.transaction_type]?.color || 'bg-orange-600')
+            : 'bg-green-700'
+          const summary = d.summary || d.deal_summary || d.funding_summary || lead.signal_summary || ''
+          const dateVal = d.date || d.filing_date || d.date_announced || null
+          const amountRaw = d.amount || d.deal_value || d.funding_amount || null
+          return (
+            <tr key={lead.id} className={`${rowBg} hover:bg-[#263045] transition-colors`}>
+              <TdTruncate>
+                <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold text-white whitespace-nowrap ${typeColor}`}>
+                  {typeLabel}
+                </span>
+              </TdTruncate>
+              <TdTruncate className="text-sm text-gray-100 font-semibold" title={d.company_name || lead.company_name || ''}>
+                {!!d.past_client && <PastClientStar />}
+                {d.company_name || lead.company_name || '—'}
+              </TdTruncate>
+              <TdTruncate className="text-sm font-mono text-green-400">
+                {formatAmount(amountRaw)}
+              </TdTruncate>
+              <TdTruncate title={summary}>
+                <span className="text-xs text-gray-300">{truncate(summary, 80)}</span>
+              </TdTruncate>
+              <TdTruncate className="text-sm text-gray-400">{formatDate(dateVal)}</TdTruncate>
+              <td className="px-3 py-3 text-center">
+                {d.priority_score
+                  ? <span className="text-xs font-mono text-gray-300">{d.priority_score}</span>
+                  : <span className="text-xs text-gray-600">—</span>
+                }
+              </td>
+              <TdTruncate className="text-sm text-gray-400">{formatDate(lead.claimed_at)}</TdTruncate>
+              <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                <LeadStatusSelect lead={lead} onUpdate={onUpdateStatus} />
+              </td>
+              <td className="px-3 py-3">
+                <LeadNoteCell lead={lead} onSave={onUpdateNotes} />
+              </td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </TableWrapper>
+  )
+}
+
+function ClinicalLeadDetailCell({ lead }) {
+  const d = parseDetail(lead.signal_detail)
+  if (lead.signal_type === 'clinical_trial_phase_transition') {
+    return (
+      <span className="text-sm text-white font-medium">
+        {formatPhaseLabel(d.phase_from)} → {formatPhaseLabel(d.phase_to)}
+      </span>
+    )
+  }
+  if (lead.signal_type === 'clinical_trial_new_ind') {
+    return <span className="text-sm text-gray-400">{d.ind_number || 'N/A'}</span>
+  }
+  return <span className="text-sm text-gray-400">{truncate(d.summary || '', 40) || '—'}</span>
+}
+
+function ClinicalLeadTable({ leads, onUpdateStatus, onUpdateNotes }) {
+  if (leads.length === 0) return <p className="text-sm text-gray-500 italic py-4 px-1">No leads yet.</p>
+  return (
+    <TableWrapper>
+      <thead>
+        <tr>
+          <Th className="w-[8%]">Type</Th>
+          <Th className="w-[15%]">Company</Th>
+          <Th className="w-[12%]">Detail</Th>
+          <Th className="w-[15%]">Summary</Th>
+          <Th className="w-[7%]">Source</Th>
+          <Th className="w-[8%]">Date</Th>
+          <Th className="w-[4%]">Link</Th>
+          <Th className="w-[5%]">Queue</Th>
+          <Th className="w-[9%]">Claim Date</Th>
+          <Th className="w-[9%]">Status</Th>
+          <Th className="w-[8%]">Notes</Th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-[#374151]">
+        {leads.map((lead, i) => {
+          const d = parseDetail(lead.signal_detail)
+          const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+          const companyName = d.company_name || d.sponsor || lead.company_name || '—'
+          const dateVal = d.transition_date || d.date || null
+          const summary = d.study_title || d.summary || lead.signal_summary || ''
+          return (
+            <tr key={lead.id} className={`${rowBg} hover:bg-[#263045] transition-colors`}>
+              <TdTruncate>
+                <SignalTypeBadge signalType={lead.signal_type} />
+              </TdTruncate>
+              <TdTruncate className="text-sm font-semibold text-white" title={companyName}>
+                {!!d.past_client && <PastClientStar />}
+                {companyName}
+              </TdTruncate>
+              <td className="px-3 py-3">
+                <ClinicalLeadDetailCell lead={lead} />
+              </td>
+              <TdTruncate title={summary}>
+                <span className="text-xs text-gray-400 leading-snug">{truncate(summary, 60)}</span>
+              </TdTruncate>
+              <td className="px-3 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                {d.nct_id ? (
+                  <a
+                    href={`https://clinicaltrials.gov/study/${d.nct_id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-400 hover:text-blue-300 font-mono"
+                  >
+                    {d.nct_id}
+                  </a>
+                ) : <span className="text-xs text-gray-600">—</span>}
+              </td>
+              <TdTruncate className="text-sm text-gray-400">{formatDate(dateVal)}</TdTruncate>
+              <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                <ExternalLinkIcon href={d.source_url} />
+              </td>
+              <td className="px-3 py-3 text-center">
+                {d.priority_score
+                  ? <span className="text-xs font-mono text-gray-300">{d.priority_score}</span>
+                  : <span className="text-xs text-gray-600">—</span>
+                }
+              </td>
+              <TdTruncate className="text-sm text-gray-400">{formatDate(lead.claimed_at)}</TdTruncate>
+              <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                <LeadStatusSelect lead={lead} onUpdate={onUpdateStatus} />
+              </td>
+              <td className="px-3 py-3">
+                <LeadNoteCell lead={lead} onSave={onUpdateNotes} />
+              </td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </TableWrapper>
+  )
+}
+
+// ── Main LeadsTab ─────────────────────────────────────────────────────────────
+
+function LeadsTab({ leads, repName, showAllLeads, onToggleShowAll, onUpdateStatus, onUpdateNotes, onUpdateClient }) {
+  const [selectedTypes, setSelectedTypes] = useState(new Set(['all']))
+
   if (!repName) {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center">
@@ -992,19 +1439,69 @@ function LeadsTab({ leads, repName, showAllLeads, onToggleShowAll, onUpdateStatu
 
   const myCount = leads.filter(l => l.claimed_by === repName).length
   const displayLeads = showAllLeads ? leads : leads.filter(l => l.claimed_by === repName)
+  const toggleLabel = showAllLeads ? `Show my leads (${myCount})` : `Show all leads (${leads.length})`
 
-  const toggleLabel = showAllLeads
-    ? `Show my leads (${myCount})`
-    : `Show all leads (${leads.length})`
+  const toggleType = (key) => {
+    setSelectedTypes(prev => {
+      if (key === 'all') return new Set(['all'])
+      const next = new Set(prev)
+      next.delete('all')
+      if (next.has(key)) {
+        next.delete(key)
+        if (next.size === 0) return new Set(['all'])
+      } else {
+        next.add(key)
+      }
+      return next
+    })
+  }
 
-  if (displayLeads.length === 0) {
-    return (
-      <div className="flex flex-col gap-4">
-        <div className="flex justify-end">
-          <button onClick={onToggleShowAll} className="text-xs text-blue-400 hover:text-blue-300 font-medium px-2 py-1 rounded bg-blue-900/30 hover:bg-blue-900/50 transition-colors">
-            {toggleLabel}
-          </button>
+  const isAll = selectedTypes.has('all')
+
+  const categorized = {
+    clinical:   displayLeads.filter(l => LEAD_SIGNAL_TYPES.clinical.includes(l.signal_type)),
+    funding:    displayLeads.filter(l => LEAD_SIGNAL_TYPES.funding.includes(l.signal_type)),
+    competitor: displayLeads.filter(l => LEAD_SIGNAL_TYPES.competitor.includes(l.signal_type)),
+    stale:      displayLeads.filter(l => LEAD_SIGNAL_TYPES.stale.includes(l.signal_type)),
+  }
+
+  const visibleTypes = isAll
+    ? ['clinical', 'funding', 'competitor', 'stale']
+    : [...selectedTypes].filter(k => k !== 'all')
+
+  return (
+    <div className="flex flex-col gap-6">
+      {/* Controls row */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <LeadTypeFilterDropdown selectedTypes={selectedTypes} onToggle={toggleType} />
+        <button
+          onClick={onToggleShowAll}
+          className="text-xs text-blue-400 hover:text-blue-300 font-medium px-2 py-1 rounded bg-blue-900/30 hover:bg-blue-900/50 transition-colors"
+        >
+          {toggleLabel}
+        </button>
+      </div>
+
+      {/* Anchor buttons — only in All Leads view */}
+      {isAll && (
+        <div className="flex gap-2 flex-wrap">
+          {(['clinical', 'funding', 'competitor', 'stale']).map(key => (
+            <button
+              key={key}
+              onClick={() => document.getElementById(`leads-section-${key}`)?.scrollIntoView({ behavior: 'smooth' })}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1f2937] border border-[#374151] text-xs font-medium text-gray-300 hover:text-white hover:border-[#4b5563] transition-colors"
+            >
+              {LEADS_SECTION_META[key]}
+              <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full text-xs font-bold bg-white/10 text-gray-400">
+                {categorized[key].length}
+              </span>
+            </button>
+          ))}
         </div>
+      )}
+
+      {/* Empty state */}
+      {displayLeads.length === 0 && (
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <div className="w-14 h-14 rounded-full bg-[#1f2937] flex items-center justify-center mb-4">
             <span className="text-gray-500 text-2xl font-mono">—</span>
@@ -1014,70 +1511,26 @@ function LeadsTab({ leads, repName, showAllLeads, onToggleShowAll, onUpdateStatu
           </p>
           <p className="text-gray-500 text-sm">Claim signals from the other tabs to track them here.</p>
         </div>
-      </div>
-    )
-  }
+      )}
 
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex justify-end">
-        <button onClick={onToggleShowAll} className="text-xs text-blue-400 hover:text-blue-300 font-medium px-2 py-1 rounded bg-blue-900/30 hover:bg-blue-900/50 transition-colors">
-          {toggleLabel}
-        </button>
-      </div>
-      <div className="rounded-lg border border-[#374151] overflow-hidden">
-        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
-          <thead>
-            <tr>
-              <Th className="w-[16%]">Company</Th>
-              <Th className="w-[12%]">Signal Type</Th>
-              <Th className="w-[22%]">Summary</Th>
-              <Th className="w-[10%]">Claimed By</Th>
-              <Th className="w-[10%]">Claimed At</Th>
-              <Th className="w-[12%]">Status</Th>
-              <Th className="w-[18%]">Notes</Th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[#374151]">
-            {displayLeads.map((lead, i) => {
-              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
-              return (
-                <tr key={lead.id} className={`${rowBg} hover:bg-[#263045] transition-colors`}>
-                  <TdTruncate className="text-sm font-semibold text-white" title={lead.company_name || ''}>
-                    {lead.company_name || '—'}
-                  </TdTruncate>
-                  <TdTruncate>
-                    <SignalTypeBadge signalType={lead.signal_type} />
-                  </TdTruncate>
-                  <TdTruncate title={lead.signal_summary || ''}>
-                    <span className="text-xs text-gray-300">{truncate(lead.signal_summary, 90) || '—'}</span>
-                  </TdTruncate>
-                  <TdTruncate className="text-sm text-gray-300" title={lead.claimed_by || ''}>
-                    {lead.claimed_by || '—'}
-                  </TdTruncate>
-                  <TdTruncate className="text-sm text-gray-400">
-                    {formatDate(lead.claimed_at)}
-                  </TdTruncate>
-                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
-                    <select
-                      value={lead.status || 'new'}
-                      onChange={e => onUpdateStatus(lead.id, e.target.value)}
-                      className="bg-[#111827] border border-[#374151] rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-blue-500 cursor-pointer"
-                    >
-                      {LEAD_STATUS_OPTIONS.map(opt => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="px-3 py-3">
-                    <LeadNoteCell lead={lead} onSave={onUpdateNotes} />
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+      {/* Per-type sections */}
+      {displayLeads.length > 0 && visibleTypes.map(typeKey => {
+        const sectionLeads = categorized[typeKey]
+        return (
+          <div key={typeKey} id={`leads-section-${typeKey}`} className="flex flex-col gap-3">
+            {isAll && (
+              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-[#374151] pb-2">
+                {LEADS_SECTION_META[typeKey]}
+                <span className="ml-2 text-gray-600 font-normal normal-case">({sectionLeads.length})</span>
+              </h3>
+            )}
+            {typeKey === 'competitor' && <CompetitorJobsLeadTable leads={sectionLeads} onUpdateStatus={onUpdateStatus} onUpdateNotes={onUpdateNotes} onUpdateClient={onUpdateClient} />}
+            {typeKey === 'stale'      && <StaleRolesLeadTable     leads={sectionLeads} onUpdateStatus={onUpdateStatus} onUpdateNotes={onUpdateNotes} />}
+            {typeKey === 'funding'    && <FundingLeadTable         leads={sectionLeads} onUpdateStatus={onUpdateStatus} onUpdateNotes={onUpdateNotes} />}
+            {typeKey === 'clinical'   && <ClinicalLeadTable        leads={sectionLeads} onUpdateStatus={onUpdateStatus} onUpdateNotes={onUpdateNotes} />}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -2443,6 +2896,7 @@ export default function Home() {
                   onToggleShowAll={() => setShowAllLeads(prev => !prev)}
                   onUpdateStatus={updateLeadStatus}
                   onUpdateNotes={updateLeadNotes}
+                  onUpdateClient={updateInferredClient}
                 />
               )}
               {activePage === 'buyers'     && <PastBuyersPage />}

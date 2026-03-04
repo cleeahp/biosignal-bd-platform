@@ -15,9 +15,24 @@ async function handleGet(req, res) {
       .select('*')
       .order('claimed_at', { ascending: false })
     if (claimed_by) query = query.eq('claimed_by', claimed_by)
-    const { data, error } = await query
+    const { data: leadsData, error } = await query
     if (error) throw new Error(error.message)
-    return res.status(200).json({ leads: data || [] })
+
+    const leads = leadsData || []
+
+    // Batch-fetch signal_detail for all leads in one query
+    const signalIds = [...new Set(leads.map(l => l.signal_id).filter(Boolean))]
+    const signalDetailMap = {}
+    if (signalIds.length > 0) {
+      const { data: sigs } = await supabase
+        .from('signals')
+        .select('id, signal_detail')
+        .in('id', signalIds)
+      for (const s of (sigs || [])) signalDetailMap[s.id] = s.signal_detail
+    }
+
+    const enriched = leads.map(l => ({ ...l, signal_detail: signalDetailMap[l.signal_id] || null }))
+    return res.status(200).json({ leads: enriched })
   } catch (err) {
     console.error('Leads GET error:', err.message)
     return res.status(500).json({ error: err.message })
