@@ -2180,9 +2180,9 @@ function ContactsTable({ rows, columns, emptyMessage, showActions, onAction, loa
   const filtered = rows.filter(r => {
     if (!search) return true
     const s = search.toLowerCase()
-    return (r.full_name || '').toLowerCase().includes(s)
+    return (`${r.first_name || ''} ${r.last_name || ''}`).toLowerCase().includes(s)
       || (r.company || '').toLowerCase().includes(s)
-      || (r.role_title || '').toLowerCase().includes(s)
+      || (r.title || '').toLowerCase().includes(s)
       || (r.email || '').toLowerCase().includes(s)
   })
   return (
@@ -2218,11 +2218,11 @@ function ContactsTable({ rows, columns, emptyMessage, showActions, onAction, loa
                   <td className="px-3 py-2.5 text-sm text-white whitespace-nowrap">
                     <div className="flex items-center gap-2">
                       {row.is_current_buyer && <span className="inline-block w-2 h-2 rounded-full bg-green-500 shrink-0" title="Current buyer" />}
-                      {row.full_name}
+                      {row.first_name} {row.last_name}
                     </div>
                   </td>
                   <td className="px-3 py-2.5 text-sm text-gray-300 whitespace-nowrap">{row.company || '—'}</td>
-                  <td className="px-3 py-2.5 text-sm text-gray-300">{row.role_title || '—'}</td>
+                  <td className="px-3 py-2.5 text-sm text-gray-300">{row.title || '—'}</td>
                   <td className="px-3 py-2.5 text-sm">
                     {row.email ? <a href={`mailto:${row.email}`} className="text-blue-400 hover:text-blue-300 hover:underline">{row.email}</a> : <span className="text-gray-500">—</span>}
                   </td>

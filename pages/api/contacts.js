@@ -16,9 +16,9 @@ export default async function handler(req, res) {
     let query = supabase.from(table).select('*')
 
     if (table === 'past_buyers') {
-      query = query.order('is_current_buyer', { ascending: false }).order('full_name', { ascending: true })
+      query = query.order('is_current_buyer', { ascending: false }).order('last_name', { ascending: true })
     } else {
-      query = query.order('full_name', { ascending: true })
+      query = query.order('last_name', { ascending: true })
     }
 
     const { data, error } = await query
@@ -53,9 +53,10 @@ export default async function handler(req, res) {
 
     // Prepare record for destination table
     const insertData = {
-      full_name: contact.full_name,
+      first_name: contact.first_name,
+      last_name: contact.last_name,
       company: contact.company,
-      role_title: contact.role_title,
+      title: contact.title,
       email: contact.email,
       phone: contact.phone,
       source: contact.source,
