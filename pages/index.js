@@ -1601,6 +1601,13 @@ function NavIcon({ type, className = 'w-5 h-5' }) {
           <circle cx="12" cy="7" r="4"/>
         </svg>
       )
+    case 'book':
+      return (
+        <svg {...props}>
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+        </svg>
+      )
     case 'settings':
       return (
         <svg {...props}>
@@ -1624,6 +1631,7 @@ const MAIN_NAV = [
   { key: 'stale',      label: 'Stale Roles',       icon: 'clock',     countKey: 'stale' },
   { key: 'buyers',     label: 'Past Buyers',       icon: 'users' },
   { key: 'candidates', label: 'Past Candidates',   icon: 'user' },
+  { key: 'contacts',   label: 'Other Contacts',    icon: 'book' },
 ]
 
 function Sidebar({ activePage, setActivePage, tabCounts }) {
@@ -1704,6 +1712,7 @@ const PAGE_TITLES = {
   leads:      'My Leads',
   buyers:     'Past Buyers',
   candidates: 'Past Candidates',
+  contacts:   'Other Contacts',
   settings:   'Settings',
 }
 
@@ -2166,25 +2175,162 @@ function PlaceholderTable({ columns, emptyMessage }) {
   )
 }
 
+function ContactsTable({ rows, columns, emptyMessage, showActions, onAction, loading }) {
+  const [search, setSearch] = useState('')
+  const filtered = rows.filter(r => {
+    if (!search) return true
+    const s = search.toLowerCase()
+    return (r.full_name || '').toLowerCase().includes(s)
+      || (r.company || '').toLowerCase().includes(s)
+      || (r.role_title || '').toLowerCase().includes(s)
+      || (r.email || '').toLowerCase().includes(s)
+  })
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-3">
+        <input
+          type="text" placeholder="Search by name, company, title, or email…"
+          value={search} onChange={e => setSearch(e.target.value)}
+          className="flex-1 bg-[#111827] border border-[#374151] rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        />
+        <span className="text-xs text-gray-500 shrink-0">{filtered.length} of {rows.length}</span>
+      </div>
+      <div className="bg-[#1f2937] border border-[#374151] rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full divide-y divide-[#374151]">
+            <thead>
+              <tr>
+                {columns.map(col => (
+                  <th key={col} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">{col}</th>
+                ))}
+                {showActions && (
+                  <th className="px-3 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">Actions</th>
+                )}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#374151]">
+              {loading ? (
+                <tr><td colSpan={columns.length + (showActions ? 1 : 0)} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm">Loading…</p></td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={columns.length + (showActions ? 1 : 0)} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">{search ? 'No matches found.' : emptyMessage}</p></td></tr>
+              ) : filtered.map(row => (
+                <tr key={row.id} className="hover:bg-[#111827]/50 transition-colors">
+                  <td className="px-3 py-2.5 text-sm text-white whitespace-nowrap">
+                    <div className="flex items-center gap-2">
+                      {row.is_current_buyer && <span className="inline-block w-2 h-2 rounded-full bg-green-500 shrink-0" title="Current buyer" />}
+                      {row.full_name}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 text-sm text-gray-300 whitespace-nowrap">{row.company || '—'}</td>
+                  <td className="px-3 py-2.5 text-sm text-gray-300">{row.role_title || '—'}</td>
+                  <td className="px-3 py-2.5 text-sm">
+                    {row.email ? <a href={`mailto:${row.email}`} className="text-blue-400 hover:text-blue-300 hover:underline">{row.email}</a> : <span className="text-gray-500">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-sm">
+                    {row.phone ? <a href={`tel:${row.phone}`} className="text-blue-400 hover:text-blue-300 hover:underline">{row.phone}</a> : <span className="text-gray-500">—</span>}
+                  </td>
+                  {showActions && (
+                    <td className="px-3 py-2.5 text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <button onClick={() => onAction(row.id, 'past_buyers')} className="px-2 py-1 text-xs font-medium rounded bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 transition-colors">Buyer</button>
+                        <button onClick={() => onAction(row.id, 'past_candidates')} className="px-2 py-1 text-xs font-medium rounded bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 transition-colors">Candidate</button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PastBuyersPage() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch('/api/contacts?table=past_buyers')
+      .then(r => r.json())
+      .then(data => { setRows(Array.isArray(data) ? data : []); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [])
+
   return (
     <div className="flex flex-col gap-6">
-      <p className="text-gray-400 text-sm">Track contacts at companies that have previously purchased staffing services.</p>
-      <PlaceholderTable
-        columns={['Full Name', 'Role', 'Company', 'Location', 'LinkedIn Profile']}
-        emptyMessage="No past buyers added yet. Data will be populated soon."
+      <p className="text-gray-400 text-sm">Contacts at companies that have purchased staffing services. <span className="inline-flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-green-500" /> = current buyer (timesheet approver).</span></p>
+      <ContactsTable
+        rows={rows}
+        columns={['Name', 'Company', 'Role Title', 'Email', 'Phone']}
+        emptyMessage="No past buyers found."
+        loading={loading}
       />
     </div>
   )
 }
 
 function PastCandidatesPage() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch('/api/contacts?table=past_candidates')
+      .then(r => r.json())
+      .then(data => { setRows(Array.isArray(data) ? data : []); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [])
+
   return (
     <div className="flex flex-col gap-6">
-      <p className="text-gray-400 text-sm">Track candidates you have previously placed or engaged with.</p>
-      <PlaceholderTable
-        columns={['Full Name', 'Role', 'Company', 'Location', 'LinkedIn Profile']}
-        emptyMessage="No past candidates added yet. Data will be populated soon."
+      <p className="text-gray-400 text-sm">Candidates previously placed or engaged with through staffing services.</p>
+      <ContactsTable
+        rows={rows}
+        columns={['Name', 'Company', 'Role Title', 'Email', 'Phone']}
+        emptyMessage="No past candidates found."
+        loading={loading}
+      />
+    </div>
+  )
+}
+
+function OtherContactsPage() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch('/api/contacts?table=other_contacts')
+      .then(r => r.json())
+      .then(data => { setRows(Array.isArray(data) ? data : []); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [])
+
+  const handleMove = async (contactId, toTable) => {
+    try {
+      const res = await fetch('/api/contacts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: contactId, from_table: 'other_contacts', to_table: toTable }),
+      })
+      if (res.ok) {
+        setRows(prev => prev.filter(r => r.id !== contactId))
+      }
+    } catch (err) {
+      console.error('Failed to move contact:', err)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <p className="text-gray-400 text-sm">Contacts not yet classified as buyers or candidates. Use the action buttons to categorize them.</p>
+      <ContactsTable
+        rows={rows}
+        columns={['Name', 'Company', 'Role Title', 'Email', 'Phone']}
+        emptyMessage="No uncategorized contacts remaining."
+        showActions={true}
+        onAction={handleMove}
+        loading={loading}
       />
     </div>
   )
@@ -2901,6 +3047,7 @@ export default function Home() {
               )}
               {activePage === 'buyers'     && <PastBuyersPage />}
               {activePage === 'candidates' && <PastCandidatesPage />}
+              {activePage === 'contacts'   && <OtherContactsPage />}
               {activePage === 'settings'   && <SettingsPage />}
             </>
           )}
