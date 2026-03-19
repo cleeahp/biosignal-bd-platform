@@ -1,14 +1,14 @@
 /**
  * Refresh LinkedIn current title and company for all past buyers and past candidates.
  *
- * Uses LinkedIn's Voyager API (internal JSON endpoint) with proper auth headers.
- * Requires a valid li_at session cookie — the script derives the required csrf-token
- * (JSESSIONID) by loading the LinkedIn homepage once at startup.
+ * Uses LinkedIn's Voyager GraphQL API with proper auth headers.
+ * Requires a valid li_at session cookie — JSESSIONID (csrf-token) is obtained
+ * automatically by loading the LinkedIn homepage once at startup.
  *
  * Run:
  *   node scripts/refreshContactsLinkedIn.js
  *
- * Test a single contact first:
+ * Test a single contact from each table first:
  *   TEST_MODE=1 node scripts/refreshContactsLinkedIn.js
  *
  * Required env vars: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, LINKEDIN_LI_AT
@@ -21,9 +21,9 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY,
 )
 
-const TABLES       = ['past_buyers', 'past_candidates']
+const TABLES         = ['past_buyers', 'past_candidates']
 const REQUEST_BUDGET = 100
-const TEST_MODE    = process.env.TEST_MODE === '1'
+const TEST_MODE      = process.env.TEST_MODE === '1'
 
 // ── Delays mirroring LinkedInClient ──────────────────────────────────────────
 const SEARCH_DELAY_MIN = 20_000
@@ -32,6 +32,9 @@ const BREAK_DELAY_MIN  = 60_000
 const BREAK_DELAY_MAX  = 120_000
 
 const LINKEDIN_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+// GraphQL queryId confirmed working for people search (March 2026)
+const GRAPHQL_QUERY_ID = 'voyagerSearchDashClusters.b0928897b71bd00a5a7291755dcd64f0'
 
 function randomBetween(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min
@@ -44,11 +47,11 @@ function sleep(ms) {
 // ── Session init ──────────────────────────────────────────────────────────────
 
 /**
- * Load LinkedIn homepage to obtain JSESSIONID, which LinkedIn requires as
- * the csrf-token on all Voyager API calls.
+ * Load LinkedIn homepage to obtain JSESSIONID.
+ * LinkedIn requires JSESSIONID as the `csrf-token` header on all Voyager calls.
  *
  * @param {string} liAt
- * @returns {Promise<string|null>}
+ * @returns {Promise<string|null>}  e.g. "ajax:8517818438088302593"
  */
 async function getJsessionId(liAt) {
   try {
@@ -63,22 +66,22 @@ async function getJsessionId(liAt) {
       redirect: 'follow',
     })
 
-    // Node 18.14+ exposes getSetCookie(); fall back to comma-split of set-cookie header
+    // Node 18.14+ exposes getSetCookie(); fall back to comma-split on older versions
     const rawCookies = typeof resp.headers.getSetCookie === 'function'
       ? resp.headers.getSetCookie()
       : (resp.headers.get('set-cookie') || '').split(/,(?=[^ ])/)
 
     for (const cookie of rawCookies) {
-      // JSESSIONID is stored as:  JSESSIONID="ajax:8517818438088302593"; Path=/; ...
+      // JSESSIONID looks like:  JSESSIONID="ajax:8517818438088302593"; Path=/; ...
       const m = cookie.match(/JSESSIONID="?([^";,\s]+)"?/)
       if (m) {
         console.log('[Contacts] JSESSIONID obtained.')
-        return m[1]   // e.g. "ajax:8517818438088302593"
+        return m[1]
       }
     }
 
     console.warn('[Contacts] JSESSIONID not found in homepage Set-Cookie. li_at may be expired.')
-    console.warn('[Contacts] Set-Cookie preview:', rawCookies.slice(0, 3).join(' | ').slice(0, 300))
+    console.warn('[Contacts] Cookie preview:', rawCookies.slice(0, 3).join(' | ').slice(0, 300))
     return null
   } catch (err) {
     console.error('[Contacts] Homepage fetch failed:', err.message)
@@ -86,40 +89,36 @@ async function getJsessionId(liAt) {
   }
 }
 
-// ── Voyager API search ────────────────────────────────────────────────────────
+// ── Voyager GraphQL search ────────────────────────────────────────────────────
 
 /**
- * Search LinkedIn Voyager API for a person by name + company.
- * Returns {title, company} of the first name-matching profile, or null.
- * Returns {stop: true} on 429/999 bot-detection signals.
+ * Search LinkedIn via the Voyager GraphQL API for a person by name + company.
  *
- * @param {string} liAt
- * @param {string} jsessionId
- * @param {string} firstName
- * @param {string} lastName
- * @param {string} company
- * @param {number} reqNum   — for logging
+ * Endpoint: GET /voyager/api/graphql?includeWebMetadata=true&variables=...&queryId=...
+ * Variables are passed as LinkedIn's custom tuple syntax, NOT URL-encoded.
+ *
+ * Response: normalized JSON with `included` array of EntityResultViewModel objects.
+ * Each has:
+ *   title.text            — person's full name
+ *   primarySubtitle.text  — LinkedIn headline, typically "Title at Company"
+ *   secondarySubtitle.text — location (not used)
+ *
  * @returns {Promise<{title:string,company:string}|{stop:true}|null>}
  */
 async function searchPersonVoyager(liAt, jsessionId, firstName, lastName, company, reqNum) {
   const keywords = [firstName, lastName, company].filter(Boolean).join(' ')
 
-  // Voyager API: filters must be passed as List(resultType->PEOPLE)
-  // URLSearchParams would encode -> as %3E which is correct (LinkedIn accepts both)
-  const params = new URLSearchParams({
-    keywords,
-    origin: 'GLOBAL_SEARCH_HEADER',
-    q:      'all',
-    start:  '0',
-    count:  '3',
-  })
-  const url = `https://www.linkedin.com/voyager/api/search/blended?${params.toString()}&filters=List(resultType-%3EPEOPLE)`
+  // Variables use LinkedIn's custom syntax — NOT standard URL encoding.
+  // Spaces in keywords are fine; the outer parens/colons must NOT be encoded.
+  const variables = `(start:0,count:3,origin:GLOBAL_SEARCH_HEADER,query:(keywords:${keywords},flagshipSearchIntent:SEARCH_SRP,queryParameters:List((key:resultType,value:List(PEOPLE))),includeFiltersInResponse:false))`
+
+  const url = `https://www.linkedin.com/voyager/api/graphql?includeWebMetadata=true&variables=${variables}&queryId=${GRAPHQL_QUERY_ID}`
 
   console.log(`[Contacts] Voyager search [${reqNum}/${REQUEST_BUDGET}]: ${firstName} ${lastName}`)
 
   try {
     const resp = await fetch(url, {
-      method:  'GET',
+      method: 'GET',
       headers: {
         'User-Agent':                LINKEDIN_UA,
         'Accept':                    'application/vnd.linkedin.normalized+json+2.1',
@@ -147,7 +146,8 @@ async function searchPersonVoyager(liAt, jsessionId, firstName, lastName, compan
       return { stop: true }
     }
     if (!resp.ok) {
-      console.log(`[Contacts] Voyager HTTP ${resp.status} for ${firstName} ${lastName}`)
+      const body = await resp.text().catch(() => '')
+      console.log(`[Contacts] Voyager HTTP ${resp.status} for ${firstName} ${lastName}: ${body.slice(0, 120)}`)
       return null
     }
 
@@ -156,11 +156,11 @@ async function searchPersonVoyager(liAt, jsessionId, firstName, lastName, compan
       data = await resp.json()
     } catch (e) {
       const preview = await resp.text().catch(() => '')
-      console.log(`[Contacts] JSON parse failed. Response preview: ${preview.slice(0, 200)}`)
+      console.log(`[Contacts] JSON parse failed. Preview: ${preview.slice(0, 200)}`)
       return null
     }
 
-    return parseVoyagerResult(data, firstName, lastName)
+    return parseGraphQLResult(data, firstName, lastName)
   } catch (err) {
     console.log(`[Contacts] Voyager request failed: ${err.message}`)
     return null
@@ -170,23 +170,21 @@ async function searchPersonVoyager(liAt, jsessionId, firstName, lastName, compan
 // ── Response parser ───────────────────────────────────────────────────────────
 
 /**
- * Parse a Voyager normalized+json response.
+ * Parse a Voyager GraphQL normalized response.
  *
- * The response's `included` array contains MiniProfile objects:
- *   { "$type": "...MiniProfile", "firstName": ..., "lastName": ..., "occupation": ... }
+ * Looks in `included` for EntityResultViewModel objects where title.text
+ * contains both the first and last name. Extracts title/company from
+ * primarySubtitle.text (e.g. "Vice President at ADC Therapeutics").
  *
- * `occupation` is LinkedIn's headline field — typically "Title at Company" or just a title.
- * We split on the first " at " to separate title from company.
- *
- * @param {object} data    Parsed Voyager JSON
+ * @param {object} data
  * @param {string} firstName
  * @param {string} lastName
  * @returns {{title:string, company:string}|null}
  */
-function parseVoyagerResult(data, firstName, lastName) {
+function parseGraphQLResult(data, firstName, lastName) {
   const included = data?.included
   if (!Array.isArray(included)) {
-    console.log('[Contacts] Voyager response has no "included" array — unexpected format')
+    console.log('[Contacts] Voyager response missing "included" array')
     return null
   }
 
@@ -194,28 +192,26 @@ function parseVoyagerResult(data, firstName, lastName) {
   const lastLower  = lastName.trim().toLowerCase()
 
   for (const item of included) {
-    const type = item['$type'] || ''
-    if (!type.includes('MiniProfile') && !type.includes('miniProfile')) continue
+    if (item['$type'] !== 'com.linkedin.voyager.dash.search.EntityResultViewModel') continue
 
-    const fn = (item.firstName || '').trim().toLowerCase()
-    const ln = (item.lastName  || '').trim().toLowerCase()
+    const nameText = (item.title?.text || '').toLowerCase()
+    if (!nameText.includes(firstLower) || !nameText.includes(lastLower)) continue
 
-    if (fn !== firstLower || ln !== lastLower) continue
-
-    const occupation = (item.occupation || '').trim()
-    if (!occupation) return { title: '', company: '' }
+    // primarySubtitle.text is the LinkedIn headline: "Title at Company" or just a headline
+    const headline = (item.primarySubtitle?.text || '').trim()
+    if (!headline) return { title: '', company: '' }
 
     // Split "Senior Director at Genentech" → title="Senior Director", company="Genentech"
-    const atIdx = occupation.toLowerCase().indexOf(' at ')
+    const atIdx = headline.toLowerCase().indexOf(' at ')
     if (atIdx !== -1) {
       return {
-        title:   occupation.slice(0, atIdx).trim(),
-        company: occupation.slice(atIdx + 4).trim(),
+        title:   headline.slice(0, atIdx).trim(),
+        company: headline.slice(atIdx + 4).trim(),
       }
     }
 
-    // No " at " — headline is just a title with no company
-    return { title: occupation, company: '' }
+    // Headline has no " at " separator — it's a custom tagline with no company
+    return { title: headline, company: '' }
   }
 
   return null
@@ -230,13 +226,13 @@ async function main() {
     process.exit(1)
   }
 
-  if (TEST_MODE) console.log('[Contacts] TEST_MODE=1 — will process one contact only')
+  if (TEST_MODE) console.log('[Contacts] TEST_MODE=1 — will process one contact per table')
 
   // Get JSESSIONID (required csrf-token for Voyager API)
   console.log('[Contacts] Obtaining LinkedIn session token...')
   const jsessionId = await getJsessionId(liAt)
   if (!jsessionId) {
-    console.error('[Contacts] Cannot proceed without JSESSIONID. Verify LINKEDIN_LI_AT is a valid, non-expired li_at cookie.')
+    console.error('[Contacts] Cannot proceed without JSESSIONID. Verify LINKEDIN_LI_AT is valid and non-expired.')
     process.exit(1)
   }
 
@@ -272,7 +268,7 @@ async function main() {
       totalChecked++
       reqCount++
 
-      // Human-like delay (skip before first request)
+      // Human-like delay (skip before first request; skip in TEST_MODE)
       if (reqCount > 1 && !TEST_MODE) {
         if (reqCount % 10 === 0) {
           const ms = randomBetween(BREAK_DELAY_MIN, BREAK_DELAY_MAX)
