@@ -1631,7 +1631,6 @@ const MAIN_NAV = [
   { key: 'stale',      label: 'Stale Roles',       icon: 'clock',     countKey: 'stale' },
   { key: 'buyers',     label: 'Past Buyers',       icon: 'users' },
   { key: 'candidates', label: 'Past Candidates',   icon: 'user' },
-  { key: 'contacts',   label: 'Other Contacts',    icon: 'book' },
 ]
 
 function Sidebar({ activePage, setActivePage, tabCounts }) {
@@ -1712,7 +1711,6 @@ const PAGE_TITLES = {
   leads:      'My Leads',
   buyers:     'Past Buyers',
   candidates: 'Past Candidates',
-  contacts:   'Other Contacts',
   settings:   'Settings',
 }
 
@@ -2329,46 +2327,6 @@ function PastCandidatesPage() {
   )
 }
 
-function OtherContactsPage() {
-  const [rows, setRows] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    fetch('/api/contacts?table=other_contacts')
-      .then(r => r.json())
-      .then(data => { setRows(Array.isArray(data) ? data : []); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
-
-  const handleMove = async (contactId, toTable) => {
-    try {
-      const res = await fetch('/api/contacts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: contactId, from_table: 'other_contacts', to_table: toTable }),
-      })
-      if (res.ok) {
-        setRows(prev => prev.filter(r => r.id !== contactId))
-      }
-    } catch (err) {
-      console.error('Failed to move contact:', err)
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-6">
-      <p className="text-gray-400 text-sm">Contacts not yet classified as buyers or candidates. Use the action buttons to categorize them.</p>
-      <ContactsTable
-        rows={rows}
-        columns={['Name', 'Company', 'Role Title', 'Email', 'Phone']}
-        emptyMessage="No uncategorized contacts remaining."
-        showActions={true}
-        onAction={handleMove}
-        loading={loading}
-      />
-    </div>
-  )
-}
 
 function SettingsPage() {
   const [rules, setRules] = useState([])
@@ -3081,7 +3039,6 @@ export default function Home() {
               )}
               {activePage === 'buyers'     && <PastBuyersPage />}
               {activePage === 'candidates' && <PastCandidatesPage />}
-              {activePage === 'contacts'   && <OtherContactsPage />}
               {activePage === 'settings'   && <SettingsPage />}
             </>
           )}
