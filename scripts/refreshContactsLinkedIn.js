@@ -24,7 +24,12 @@ const supabase = createClient(
 const TABLES    = ['past_buyers', 'past_candidates']
 const TEST_MODE = process.env.TEST_MODE === '1'
 
-const LINKEDIN_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+const LINKEDIN_UA    = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+const REQUEST_DELAY  = 2_000   // ms between requests
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms))
+}
 
 // GraphQL queryId confirmed working for people search (March 2026)
 const GRAPHQL_QUERY_ID = 'voyagerSearchDashClusters.b0928897b71bd00a5a7291755dcd64f0'
@@ -60,7 +65,7 @@ async function getJsessionId(liAt) {
       // JSESSIONID looks like:  JSESSIONID="ajax:8517818438088302593"; Path=/; ...
       const m = cookie.match(/JSESSIONID="?([^";,\s]+)"?/)
       if (m) {
-        console.log('[Contacts] JSESSIONID obtained.')
+        console.log(`[Contacts] JSESSIONID obtained: ${m[1].slice(0, 20)}...`)
         return m[1]
       }
     }
@@ -167,11 +172,14 @@ async function searchPersonVoyager(liAt, jsessionId, firstName, lastName, compan
  * @returns {{title:string, company:string}|null}
  */
 function parseGraphQLResult(data, firstName, lastName) {
-  const included = data?.included
-  if (!Array.isArray(included)) {
-    console.log('[Contacts] Voyager response missing "included" array')
-    return null
-  }
+  if (!data || typeof data !== 'object') return { malformed: true }
+
+  const included = data.included
+  if (!Array.isArray(included)) return { malformed: true }
+
+  // Empty elements = LinkedIn returned zero result clusters (silent rate-limit indicator)
+  const elements = data?.data?.searchDashClustersByAll?.elements
+  if (Array.isArray(elements) && elements.length === 0) return { empty: true }
 
   const firstLower = firstName.trim().toLowerCase()
   const lastLower  = lastName.trim().toLowerCase()
@@ -223,19 +231,20 @@ async function main() {
 
   // Get JSESSIONID (required csrf-token for Voyager API)
   console.log('[Contacts] Obtaining LinkedIn session token...')
-  const jsessionId = await getJsessionId(liAt)
+  let jsessionId = await getJsessionId(liAt)
   if (!jsessionId) {
     console.error('[Contacts] Cannot proceed without JSESSIONID. Verify LINKEDIN_LI_AT is valid and non-expired.')
     process.exit(1)
   }
 
-  let totalChecked   = 0
-  let totalFound     = 0
-  let totalNotFound  = 0
-  let titleChanges   = 0
-  let companyChanges = 0
-  let reqCount       = 0
-  let stopped        = false
+  let totalChecked      = 0
+  let totalFound        = 0
+  let totalNotFound     = 0
+  let titleChanges      = 0
+  let companyChanges    = 0
+  let reqCount          = 0
+  let stopped           = false
+  let consecutiveEmpty  = 0
 
   outer:
   for (const table of TABLES) {
@@ -261,6 +270,17 @@ async function main() {
       totalChecked++
       reqCount++
 
+      // Re-bootstrap JSESSIONID every 100 requests to handle token expiry mid-run
+      if (reqCount > 1 && (reqCount - 1) % 100 === 0) {
+        console.log(`[Contacts] Re-bootstrapping JSESSIONID at request ${reqCount}...`)
+        const refreshed = await getJsessionId(liAt)
+        if (refreshed) {
+          jsessionId = refreshed
+        } else {
+          console.warn('[Contacts] Re-bootstrap failed — continuing with existing token')
+        }
+      }
+
       const result = await searchPersonVoyager(
         liAt, jsessionId,
         contact.first_name || '',
@@ -269,9 +289,33 @@ async function main() {
         reqCount,
       )
 
+      // 2-second delay between requests to avoid triggering rate limits
+      if (!TEST_MODE) await sleep(REQUEST_DELAY)
+
       if (result?.stop) { stopped = true; break outer }
 
       const now = new Date().toISOString()
+
+      if (result?.malformed) {
+        console.log(`[Contacts] WARNING: Malformed response for ${fullName}`)
+        consecutiveEmpty++
+        if (consecutiveEmpty >= 5) console.log('[Contacts] WARNING: 5 consecutive empty results — LinkedIn may be rate limiting. Consider stopping.')
+        totalNotFound++
+        await supabase.from(table).update({ linkedin_last_checked: now }).eq('id', contact.id)
+        continue
+      }
+
+      if (result?.empty) {
+        console.log(`[Contacts] WARNING: Empty results for ${fullName} — possible rate limit`)
+        consecutiveEmpty++
+        if (consecutiveEmpty >= 5) console.log('[Contacts] WARNING: 5 consecutive empty results — LinkedIn may be rate limiting. Consider stopping.')
+        totalNotFound++
+        await supabase.from(table).update({ linkedin_last_checked: now }).eq('id', contact.id)
+        continue
+      }
+
+      // Valid response received — reset consecutive empty counter
+      consecutiveEmpty = 0
 
       if (!result || (!result.title && !result.company)) {
         console.log(`[Contacts] NOT FOUND: ${fullName}`)
