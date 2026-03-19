@@ -21,28 +21,13 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY,
 )
 
-const TABLES         = ['past_buyers', 'past_candidates']
-const REQUEST_BUDGET = 100
-const TEST_MODE      = process.env.TEST_MODE === '1'
-
-// ── Delays mirroring LinkedInClient ──────────────────────────────────────────
-const SEARCH_DELAY_MIN = 20_000
-const SEARCH_DELAY_MAX = 45_000
-const BREAK_DELAY_MIN  = 60_000
-const BREAK_DELAY_MAX  = 120_000
+const TABLES    = ['past_buyers', 'past_candidates']
+const TEST_MODE = process.env.TEST_MODE === '1'
 
 const LINKEDIN_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 // GraphQL queryId confirmed working for people search (March 2026)
 const GRAPHQL_QUERY_ID = 'voyagerSearchDashClusters.b0928897b71bd00a5a7291755dcd64f0'
-
-function randomBetween(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms))
-}
 
 // ── Session init ──────────────────────────────────────────────────────────────
 
@@ -114,7 +99,7 @@ async function searchPersonVoyager(liAt, jsessionId, firstName, lastName, compan
 
   const url = `https://www.linkedin.com/voyager/api/graphql?includeWebMetadata=true&variables=${variables}&queryId=${GRAPHQL_QUERY_ID}`
 
-  console.log(`[Contacts] Voyager search [${reqNum}/${REQUEST_BUDGET}]: ${firstName} ${lastName}`)
+  console.log(`[Contacts] Voyager search [${reqNum}]: ${firstName} ${lastName}`)
 
   try {
     const resp = await fetch(url, {
@@ -228,6 +213,14 @@ async function main() {
 
   if (TEST_MODE) console.log('[Contacts] TEST_MODE=1 — will process one contact per table')
 
+  // Determine budget from actual contact count
+  let requestBudget = 0
+  for (const table of TABLES) {
+    const { count, error } = await supabase.from(table).select('*', { count: 'exact', head: true })
+    if (!error) requestBudget += (count || 0)
+  }
+  console.log(`[Contacts] Total contacts: ${requestBudget} — setting LinkedIn budget to ${requestBudget}`)
+
   // Get JSESSIONID (required csrf-token for Voyager API)
   console.log('[Contacts] Obtaining LinkedIn session token...')
   const jsessionId = await getJsessionId(liAt)
@@ -259,7 +252,7 @@ async function main() {
     console.log(`\n[Contacts] Processing ${batch.length} contacts from ${table}${TEST_MODE ? ' (TEST_MODE)' : ''}`)
 
     for (const contact of batch) {
-      if (stopped || reqCount >= REQUEST_BUDGET) {
+      if (stopped || reqCount >= requestBudget) {
         console.log('[Contacts] Budget exhausted or stopped — halting')
         break outer
       }
@@ -267,17 +260,6 @@ async function main() {
       const fullName = `${contact.first_name || ''} ${contact.last_name || ''}`.trim()
       totalChecked++
       reqCount++
-
-      // Human-like delay (skip before first request; skip in TEST_MODE)
-      if (reqCount > 1 && !TEST_MODE) {
-        if (reqCount % 10 === 0) {
-          const ms = randomBetween(BREAK_DELAY_MIN, BREAK_DELAY_MAX)
-          console.log(`[Contacts] Extended break after ${reqCount} requests (${Math.round(ms / 1000)}s)...`)
-          await sleep(ms)
-        } else {
-          await sleep(randomBetween(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
-        }
-      }
 
       const result = await searchPersonVoyager(
         liAt, jsessionId,
@@ -340,7 +322,7 @@ async function main() {
   Not found:              ${totalNotFound}
   Title changes:          ${titleChanges}
   Company changes:        ${companyChanges}
-  LinkedIn requests used: ${reqCount}
+  LinkedIn requests used: ${reqCount} / ${requestBudget}
 `)
 }
 
