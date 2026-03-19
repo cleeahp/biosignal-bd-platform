@@ -2175,7 +2175,7 @@ function PlaceholderTable({ columns, emptyMessage }) {
   )
 }
 
-function ContactsTable({ rows, columns, emptyMessage, showActions, onAction, loading }) {
+function ContactsTable({ rows, columns, emptyMessage, showActions, onAction, loading, showLinkedIn }) {
   const [search, setSearch] = useState('')
   const filtered = rows.filter(r => {
     if (!search) return true
@@ -2203,6 +2203,13 @@ function ContactsTable({ rows, columns, emptyMessage, showActions, onAction, loa
                 {columns.map(col => (
                   <th key={col} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">{col}</th>
                 ))}
+                {showLinkedIn && (
+                  <>
+                    <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">LinkedIn Title</th>
+                    <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">LinkedIn Company</th>
+                    <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">Last Checked</th>
+                  </>
+                )}
                 {showActions && (
                   <th className="px-3 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">Actions</th>
                 )}
@@ -2210,9 +2217,9 @@ function ContactsTable({ rows, columns, emptyMessage, showActions, onAction, loa
             </thead>
             <tbody className="divide-y divide-[#374151]">
               {loading ? (
-                <tr><td colSpan={columns.length + (showActions ? 1 : 0)} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm">Loading…</p></td></tr>
+                <tr><td colSpan={columns.length + (showActions ? 1 : 0) + (showLinkedIn ? 3 : 0)} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm">Loading…</p></td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={columns.length + (showActions ? 1 : 0)} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">{search ? 'No matches found.' : emptyMessage}</p></td></tr>
+                <tr><td colSpan={columns.length + (showActions ? 1 : 0) + (showLinkedIn ? 3 : 0)} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">{search ? 'No matches found.' : emptyMessage}</p></td></tr>
               ) : filtered.map(row => (
                 <tr key={row.id} className="hover:bg-[#111827]/50 transition-colors">
                   <td className="px-3 py-2.5 text-sm text-white whitespace-nowrap">
@@ -2229,6 +2236,31 @@ function ContactsTable({ rows, columns, emptyMessage, showActions, onAction, loa
                   <td className="px-3 py-2.5 text-sm">
                     {row.phone ? <a href={`tel:${row.phone}`} className="text-blue-400 hover:text-blue-300 hover:underline">{row.phone}</a> : <span className="text-gray-500">—</span>}
                   </td>
+                  {showLinkedIn && (
+                    <>
+                      <td className="px-3 py-2.5 text-sm whitespace-nowrap">
+                        {row.linkedin_current_title
+                          ? <span className="flex items-center gap-1.5">
+                              <span className="text-gray-300">{row.linkedin_current_title}</span>
+                              {row.title_changed && <span className="px-1.5 py-0.5 text-xs font-medium rounded bg-amber-500/20 text-amber-400">changed</span>}
+                            </span>
+                          : <span className="text-gray-500">—</span>}
+                      </td>
+                      <td className="px-3 py-2.5 text-sm whitespace-nowrap">
+                        {row.linkedin_current_company
+                          ? <span className="flex items-center gap-1.5">
+                              <span className="text-gray-300">{row.linkedin_current_company}</span>
+                              {row.company_changed && <span className="px-1.5 py-0.5 text-xs font-medium rounded bg-amber-500/20 text-amber-400">changed</span>}
+                            </span>
+                          : <span className="text-gray-500">—</span>}
+                      </td>
+                      <td className="px-3 py-2.5 text-sm text-gray-500 whitespace-nowrap">
+                        {row.linkedin_last_checked
+                          ? new Date(row.linkedin_last_checked).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                          : 'Never'}
+                      </td>
+                    </>
+                  )}
                   {showActions && (
                     <td className="px-3 py-2.5 text-center">
                       <div className="flex items-center justify-center gap-1">
@@ -2266,6 +2298,7 @@ function PastBuyersPage() {
         columns={['Name', 'Company', 'Role Title', 'Email', 'Phone']}
         emptyMessage="No past buyers found."
         loading={loading}
+        showLinkedIn
       />
     </div>
   )
@@ -2290,6 +2323,7 @@ function PastCandidatesPage() {
         columns={['Name', 'Company', 'Role Title', 'Email', 'Phone']}
         emptyMessage="No past candidates found."
         loading={loading}
+        showLinkedIn
       />
     </div>
   )
