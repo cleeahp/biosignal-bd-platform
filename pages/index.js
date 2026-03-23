@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -2344,7 +2344,7 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
               const fullName = `${row.first_name || ''} ${row.last_name || ''}`.trim()
               const isExpanded = expandedIds.has(row.id)
               return (
-                <React.Fragment key={row.id}>
+                <Fragment key={row.id}>
                   <tr onClick={() => toggleRow(row.id)} className="cursor-pointer hover:bg-[#111827]/50 transition-colors">
                     <td className="px-3 py-2.5" title={fullName} style={{ overflow: 'hidden' }}>
                       <div className="flex items-center gap-2" style={{ overflow: 'hidden' }}>
@@ -2408,7 +2408,7 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
                       </td>
                     </tr>
                   )}
-                </React.Fragment>
+                </Fragment>
               )
             })}
           </tbody>
