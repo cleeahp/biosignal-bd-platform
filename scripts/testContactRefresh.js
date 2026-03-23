@@ -285,30 +285,62 @@ async function fetchProfileHtml(liAt, jsessionId, publicIdentifier, headline) {
   const profileUrl = `https://www.linkedin.com/in/${publicIdentifier}/`
   console.log('URL:', profileUrl)
 
-  // Manual redirect loop (LinkedIn sends many redirects; 'follow' exceeds limit)
+  const browserHeaders = {
+    'User-Agent':                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept':                    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language':           'en-US,en;q=0.5',
+    'Accept-Encoding':           'gzip, deflate, br',
+    'Connection':                'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest':            'document',
+    'Sec-Fetch-Mode':            'navigate',
+    'Sec-Fetch-Site':            'none',
+    'Sec-Fetch-User':            '?1',
+    'Cache-Control':             'max-age=0',
+    'Cookie':                    `li_at=${liAt}; JSESSIONID="${jsessionId}"`,
+  }
+
+  // Manual redirect loop — print each hop, cap at 10
   let currentUrl = profileUrl
   let resp
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < 10; i++) {
+    console.log(`\nHop ${i + 1}: GET ${currentUrl}`)
     resp = await fetch(currentUrl, {
-      headers: {
-        'User-Agent':      LINKEDIN_UA,
-        'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'csrf-token':      jsessionId,
-        'Cookie':          `li_at=${liAt}; JSESSIONID="${jsessionId}"`,
-        'Referer':         'https://www.linkedin.com/feed/',
-      },
+      headers: browserHeaders,
       signal:   AbortSignal.timeout(30_000),
       redirect: 'manual',
     })
-    console.log(`HTTP ${resp.status} — ${currentUrl}`)
+    console.log(`  → HTTP ${resp.status}`)
     if (resp.status >= 300 && resp.status < 400) {
       const loc = resp.headers.get('location')
-      if (!loc) { console.log('Redirect with no Location header — stopping.'); break }
+      console.log(`  → Location: ${loc || '(none)'}`)
+      if (!loc) { console.log('  Redirect with no Location — stopping.'); break }
       currentUrl = loc.startsWith('http') ? loc : `https://www.linkedin.com${loc}`
+      // Accumulate Set-Cookie from each hop so session cookies carry forward
+      const setCookies = typeof resp.headers.getSetCookie === 'function'
+        ? resp.headers.getSetCookie()
+        : (resp.headers.get('set-cookie') || '').split(/,(?=[^ ])/)
+      const extra = []
+      for (const c of setCookies) {
+        const kv = c.split(';')[0].trim()
+        if (kv && !browserHeaders.Cookie.includes(kv.split('=')[0])) extra.push(kv)
+      }
+      if (extra.length) {
+        browserHeaders.Cookie += '; ' + extra.join('; ')
+        console.log(`  Accumulated cookies: ${extra.join(', ')}`)
+      }
       continue
     }
     break
+  }
+
+  console.log(`\nFinal URL: ${currentUrl}  (HTTP ${resp.status})`)
+
+  if (resp.status !== 200) {
+    console.log('Non-200 final status — printing first 1000 chars of body:')
+    const body = await resp.text()
+    console.log(body.slice(0, 1000))
+    return
   }
 
   const html = await resp.text()
