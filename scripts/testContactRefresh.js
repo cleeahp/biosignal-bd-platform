@@ -285,19 +285,31 @@ async function fetchProfileHtml(liAt, jsessionId, publicIdentifier, headline) {
   const profileUrl = `https://www.linkedin.com/in/${publicIdentifier}/`
   console.log('URL:', profileUrl)
 
-  const resp = await fetch(profileUrl, {
-    headers: {
-      'User-Agent':      LINKEDIN_UA,
-      'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'csrf-token':      jsessionId,
-      'Cookie':          `li_at=${liAt}; JSESSIONID="${jsessionId}"`,
-      'Referer':         'https://www.linkedin.com/feed/',
-    },
-    signal:   AbortSignal.timeout(30_000),
-    redirect: 'follow',
-  })
-  console.log(`HTTP ${resp.status}`)
+  // Manual redirect loop (LinkedIn sends many redirects; 'follow' exceeds limit)
+  let currentUrl = profileUrl
+  let resp
+  for (let i = 0; i < 15; i++) {
+    resp = await fetch(currentUrl, {
+      headers: {
+        'User-Agent':      LINKEDIN_UA,
+        'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'csrf-token':      jsessionId,
+        'Cookie':          `li_at=${liAt}; JSESSIONID="${jsessionId}"`,
+        'Referer':         'https://www.linkedin.com/feed/',
+      },
+      signal:   AbortSignal.timeout(30_000),
+      redirect: 'manual',
+    })
+    console.log(`HTTP ${resp.status} — ${currentUrl}`)
+    if (resp.status >= 300 && resp.status < 400) {
+      const loc = resp.headers.get('location')
+      if (!loc) { console.log('Redirect with no Location header — stopping.'); break }
+      currentUrl = loc.startsWith('http') ? loc : `https://www.linkedin.com${loc}`
+      continue
+    }
+    break
+  }
 
   const html = await resp.text()
   const outFile = resolve('scripts/temp_jennifer_profile.html')
