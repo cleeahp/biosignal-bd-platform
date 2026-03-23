@@ -11,7 +11,12 @@
  *   2. Voyager GraphQL people search
  *   3. Dash profile fetch (q=memberIdentity)
  *   4. Experience card fetch (profileCards)
+ *   5. Profile page HTML — extract company name from <p> elements
  */
+
+import { writeFileSync } from 'fs'
+import { resolve }       from 'path'
+import * as cheerio      from 'cheerio'
 
 const LINKEDIN_UA      = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const GRAPHQL_QUERY_ID = 'voyagerSearchDashClusters.b0928897b71bd00a5a7291755dcd64f0'
@@ -272,6 +277,101 @@ async function fetchExperienceCard(liAt, jsessionId, profileUrn, publicIdentifie
   }
 }
 
+// ── Step 5: Profile page HTML — company name extraction ───────────────────────
+
+async function fetchProfileHtml(liAt, jsessionId, publicIdentifier, headline) {
+  section(`STEP 5 — Profile page HTML: /in/${publicIdentifier}/`)
+
+  const profileUrl = `https://www.linkedin.com/in/${publicIdentifier}/`
+  console.log('URL:', profileUrl)
+
+  const resp = await fetch(profileUrl, {
+    headers: {
+      'User-Agent':      LINKEDIN_UA,
+      'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'csrf-token':      jsessionId,
+      'Cookie':          `li_at=${liAt}; JSESSIONID="${jsessionId}"`,
+      'Referer':         'https://www.linkedin.com/feed/',
+    },
+    signal:   AbortSignal.timeout(30_000),
+    redirect: 'follow',
+  })
+  console.log(`HTTP ${resp.status}`)
+
+  const html = await resp.text()
+  const outFile = resolve('scripts/temp_jennifer_profile.html')
+  writeFileSync(outFile, html, 'utf8')
+  console.log(`\nSaved ${html.length} bytes to ${outFile}`)
+
+  // ── Method 1: cheerio — find all <p> elements, look for " · " ──────────────
+  console.log('\n── Method 1: cheerio <p> elements containing " · " ─────────────')
+  const $ = cheerio.load(html)
+  const dotMatches = []
+  $('p').each((_, el) => {
+    const text = $(el).text().trim()
+    if (text.includes(' · ')) {
+      const company = text.split(' · ')[0].trim()
+      dotMatches.push({ company, fullText: text })
+    }
+  })
+  if (dotMatches.length) {
+    for (const m of dotMatches) {
+      console.log(`  Company candidate: "${m.company}"`)
+      console.log(`  Full text:         "${m.fullText}"`)
+      console.log()
+    }
+  } else {
+    console.log('  No <p> elements with " · " found.')
+  }
+
+  // ── Method 2: regex on raw HTML ───────────────────────────────────────────
+  console.log('── Method 2: regex >([^<]+) · [^<]+<\\/p> ───────────────────────')
+  const re2 = />([^<]+) · [^<]+<\/p>/g
+  let m2
+  const re2Matches = []
+  while ((m2 = re2.exec(html)) !== null) {
+    re2Matches.push(m2[1].trim())
+  }
+  if (re2Matches.length) {
+    re2Matches.forEach(c => console.log(`  Company candidate: "${c}"`))
+  } else {
+    console.log('  No matches.')
+  }
+
+  // ── Method 3: headline context → next <p> ─────────────────────────────────
+  console.log('\n── Method 3: headline context → next <p> ────────────────────────')
+  if (headline) {
+    // Escape special regex chars in headline
+    const escaped = headline.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const re3 = new RegExp(`${escaped}[\\s\\S]{0,500}?<p[^>]*>([^<]+)<\\/p>`, 'i')
+    const m3 = re3.exec(html)
+    if (m3) {
+      console.log(`  Company candidate (after headline): "${m3[1].trim()}"`)
+      console.log(`  Context: ...${html.slice(Math.max(0, m3.index - 50), m3.index + m3[0].length + 50)}...`)
+    } else {
+      console.log(`  No match for headline "${headline}" → next <p>.`)
+    }
+  } else {
+    console.log('  No headline available — skipping.')
+  }
+
+  // ── Method 4: cheerio — all <p> near a heading/section with "Experience" ──
+  console.log('\n── Method 4: all <p> in first 3000 chars of <body> ─────────────')
+  const bodyStart = html.indexOf('<body')
+  const snippet   = bodyStart >= 0 ? html.slice(bodyStart, bodyStart + 3000) : html.slice(0, 3000)
+  const re4 = /<p[^>]*>([^<]{3,100})<\/p>/g
+  let m4
+  const snippet4 = []
+  while ((m4 = re4.exec(snippet)) !== null) snippet4.push(m4[1].trim())
+  if (snippet4.length) {
+    console.log('  <p> texts near body start:')
+    snippet4.forEach(t => console.log(`    "${t}"`))
+  } else {
+    console.log('  No short <p> texts found near body start.')
+  }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -315,6 +415,12 @@ async function main() {
 
   // Step 4: Experience card
   await fetchExperienceCard(liAt, jsessionId, profileResult.profileUrn, searchResult.publicIdentifier)
+
+  await sleep(2000)
+
+  // Step 5: Profile page HTML — company name extraction
+  const headline = searchResult.item?.primarySubtitle?.text || null
+  await fetchProfileHtml(liAt, jsessionId, searchResult.publicIdentifier, headline)
 
   console.log('\n\nDone.')
 }
