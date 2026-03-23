@@ -279,141 +279,90 @@ async function fetchExperienceCard(liAt, jsessionId, profileUrn, publicIdentifie
 
 // ── Step 5: Profile page HTML — company name extraction ───────────────────────
 
-async function fetchProfileHtml(liAt, jsessionId, publicIdentifier, headline) {
-  section(`STEP 5 — Profile page HTML: /in/${publicIdentifier}/`)
-
-  const profileUrl = `https://www.linkedin.com/in/${publicIdentifier}/`
-  console.log('URL:', profileUrl)
-
-  const browserHeaders = {
-    'User-Agent':                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept':                    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language':           'en-US,en;q=0.5',
+// Exact headers from lib/linkedinClient.js get() — no Voyager/JSESSIONID/Sec-Fetch headers
+function linkedinClientHeaders(liAt) {
+  return {
+    'User-Agent':                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept':                    'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language':           'en-US,en;q=0.9',
     'Accept-Encoding':           'gzip, deflate, br',
+    'Referer':                   'https://www.linkedin.com/',
+    'DNT':                       '1',
     'Connection':                'keep-alive',
     'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest':            'document',
-    'Sec-Fetch-Mode':            'navigate',
-    'Sec-Fetch-Site':            'none',
-    'Sec-Fetch-User':            '?1',
-    'Cache-Control':             'max-age=0',
-    'Cookie':                    `li_at=${liAt}; JSESSIONID="${jsessionId}"`,
+    'Cookie':                    `li_at=${liAt}`,
   }
+}
 
-  // Manual redirect loop — print each hop, cap at 10
-  let currentUrl = profileUrl
-  let resp
-  for (let i = 0; i < 10; i++) {
-    console.log(`\nHop ${i + 1}: GET ${currentUrl}`)
-    resp = await fetch(currentUrl, {
-      headers: browserHeaders,
-      signal:   AbortSignal.timeout(30_000),
-      redirect: 'manual',
-    })
-    console.log(`  → HTTP ${resp.status}`)
-    if (resp.status >= 300 && resp.status < 400) {
-      const loc = resp.headers.get('location')
-      console.log(`  → Location: ${loc || '(none)'}`)
-      if (!loc) { console.log('  Redirect with no Location — stopping.'); break }
-      currentUrl = loc.startsWith('http') ? loc : `https://www.linkedin.com${loc}`
-      // Accumulate Set-Cookie from each hop so session cookies carry forward
-      const setCookies = typeof resp.headers.getSetCookie === 'function'
-        ? resp.headers.getSetCookie()
-        : (resp.headers.get('set-cookie') || '').split(/,(?=[^ ])/)
-      const extra = []
-      for (const c of setCookies) {
-        const kv = c.split(';')[0].trim()
-        if (kv && !browserHeaders.Cookie.includes(kv.split('=')[0])) extra.push(kv)
-      }
-      if (extra.length) {
-        browserHeaders.Cookie += '; ' + extra.join('; ')
-        console.log(`  Accumulated cookies: ${extra.join(', ')}`)
-      }
-      continue
-    }
-    break
-  }
-
-  console.log(`\nFinal URL: ${currentUrl}  (HTTP ${resp.status})`)
-
-  if (resp.status !== 200) {
-    console.log('Non-200 final status — printing first 1000 chars of body:')
-    const body = await resp.text()
-    console.log(body.slice(0, 1000))
-    return
-  }
-
-  const html = await resp.text()
-  const outFile = resolve('scripts/temp_jennifer_profile.html')
-  writeFileSync(outFile, html, 'utf8')
-  console.log(`\nSaved ${html.length} bytes to ${outFile}`)
-
-  // ── Method 1: cheerio — find all <p> elements, look for " · " ──────────────
-  console.log('\n── Method 1: cheerio <p> elements containing " · " ─────────────')
+function parseDotMatches(html, label) {
+  console.log(`\n── cheerio <p> containing " · " (${label}) ──────────────────────`)
   const $ = cheerio.load(html)
-  const dotMatches = []
+  let found = 0
   $('p').each((_, el) => {
     const text = $(el).text().trim()
     if (text.includes(' · ')) {
-      const company = text.split(' · ')[0].trim()
-      dotMatches.push({ company, fullText: text })
+      console.log(`  Full text: "${text}"`)
+      console.log(`  → Before first · : "${text.split(' · ')[0].trim()}"`)
+      found++
     }
   })
-  if (dotMatches.length) {
-    for (const m of dotMatches) {
-      console.log(`  Company candidate: "${m.company}"`)
-      console.log(`  Full text:         "${m.fullText}"`)
-      console.log()
-    }
-  } else {
-    console.log('  No <p> elements with " · " found.')
+  if (!found) console.log('  No <p> elements with " · " found.')
+
+  console.log(`\n── regex />([^<]{2,60}) · ([^<]{2,60})< / (${label}) ───────────`)
+  const re = />([^<]{2,60}) · ([^<]{2,60})</g
+  let m
+  let reFound = 0
+  while ((m = re.exec(html)) !== null) {
+    console.log(`  Match: "${m[1].trim()}" · "${m[2].trim()}"`)
+    reFound++
+  }
+  if (!reFound) console.log('  No regex matches.')
+}
+
+async function tryFetchHtml(url, liAt, label) {
+  console.log(`\n${'─'.repeat(70)}`)
+  console.log(`${label}`)
+  console.log(`URL: ${url}`)
+
+  let resp
+  try {
+    resp = await fetch(url, {
+      headers:  linkedinClientHeaders(liAt),
+      signal:   AbortSignal.timeout(20_000),
+      redirect: 'follow',
+    })
+  } catch (err) {
+    console.log(`ERROR: ${err.message}`)
+    return
   }
 
-  // ── Method 2: regex on raw HTML ───────────────────────────────────────────
-  console.log('── Method 2: regex >([^<]+) · [^<]+<\\/p> ───────────────────────')
-  const re2 = />([^<]+) · [^<]+<\/p>/g
-  let m2
-  const re2Matches = []
-  while ((m2 = re2.exec(html)) !== null) {
-    re2Matches.push(m2[1].trim())
-  }
-  if (re2Matches.length) {
-    re2Matches.forEach(c => console.log(`  Company candidate: "${c}"`))
-  } else {
-    console.log('  No matches.')
-  }
+  console.log(`HTTP ${resp.status}`)
+  const html = await resp.text()
+  console.log(`Body length: ${html.length} chars`)
+  console.log(`\nFirst 2000 chars:\n${html.slice(0, 2000)}`)
 
-  // ── Method 3: headline context → next <p> ─────────────────────────────────
-  console.log('\n── Method 3: headline context → next <p> ────────────────────────')
-  if (headline) {
-    // Escape special regex chars in headline
-    const escaped = headline.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const re3 = new RegExp(`${escaped}[\\s\\S]{0,500}?<p[^>]*>([^<]+)<\\/p>`, 'i')
-    const m3 = re3.exec(html)
-    if (m3) {
-      console.log(`  Company candidate (after headline): "${m3[1].trim()}"`)
-      console.log(`  Context: ...${html.slice(Math.max(0, m3.index - 50), m3.index + m3[0].length + 50)}...`)
-    } else {
-      console.log(`  No match for headline "${headline}" → next <p>.`)
-    }
-  } else {
-    console.log('  No headline available — skipping.')
+  if (resp.status === 200) {
+    parseDotMatches(html, label)
+    const outFile = resolve('scripts/temp_jennifer_profile.html')
+    writeFileSync(outFile, html, 'utf8')
+    console.log(`\nSaved full HTML to ${outFile}`)
   }
+}
 
-  // ── Method 4: cheerio — all <p> near a heading/section with "Experience" ──
-  console.log('\n── Method 4: all <p> in first 3000 chars of <body> ─────────────')
-  const bodyStart = html.indexOf('<body')
-  const snippet   = bodyStart >= 0 ? html.slice(bodyStart, bodyStart + 3000) : html.slice(0, 3000)
-  const re4 = /<p[^>]*>([^<]{3,100})<\/p>/g
-  let m4
-  const snippet4 = []
-  while ((m4 = re4.exec(snippet)) !== null) snippet4.push(m4[1].trim())
-  if (snippet4.length) {
-    console.log('  <p> texts near body start:')
-    snippet4.forEach(t => console.log(`    "${t}"`))
-  } else {
-    console.log('  No short <p> texts found near body start.')
-  }
+async function fetchProfileHtml(liAt, publicIdentifier) {
+  section(`STEP 5 — Profile page HTML fetch (linkedinClient headers)`)
+
+  await tryFetchHtml(
+    `https://www.linkedin.com/in/${publicIdentifier}/`,
+    liAt,
+    '5a: authenticated /in/ URL'
+  )
+
+  await tryFetchHtml(
+    `https://www.linkedin.com/pub/jennifer-herring/a/b/c`,
+    liAt,
+    '5b: public directory /pub/ URL (no auth needed)'
+  )
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -463,8 +412,7 @@ async function main() {
   await sleep(2000)
 
   // Step 5: Profile page HTML — company name extraction
-  const headline = searchResult.item?.primarySubtitle?.text || null
-  await fetchProfileHtml(liAt, jsessionId, searchResult.publicIdentifier, headline)
+  await fetchProfileHtml(liAt, searchResult.publicIdentifier)
 
   console.log('\n\nDone.')
 }
