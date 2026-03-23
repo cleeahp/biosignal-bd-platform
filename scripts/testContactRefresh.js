@@ -76,8 +76,14 @@ async function voyagerGet(liAt, jsessionId, url, referer) {
   const resp = await fetch(url, {
     headers: voyagerHeaders(liAt, jsessionId, referer),
     signal:  AbortSignal.timeout(20_000),
+    redirect: 'manual',
   })
   console.log(`HTTP ${resp.status}`)
+  if (resp.status >= 300 && resp.status < 400) {
+    const loc = resp.headers.get('location')
+    console.log(`  Redirect location: ${loc || '(none)'}`)
+    return { status: resp.status, data: null, raw: null, redirectTo: loc }
+  }
   const text = await resp.text()
   try {
     return { status: resp.status, data: JSON.parse(text) }
@@ -182,40 +188,81 @@ async function fetchDashProfile(liAt, jsessionId, publicIdentifier) {
   }
 }
 
-// ── Step 4: Experience card ───────────────────────────────────────────────────
+// ── Step 4: Experience card (tries multiple endpoint formats) ─────────────────
 
 async function fetchExperienceCard(liAt, jsessionId, profileUrn, publicIdentifier) {
-  section('STEP 4 — Experience card: /dash/profileCards?q=expandedProfileCard&sectionType=experience')
+  section('STEP 4 — Experience card (trying multiple endpoint formats)')
 
-  // profileUrn needs to be URI-encoded when used as a query param
-  const encodedUrn = encodeURIComponent(profileUrn)
-  const url = `https://www.linkedin.com/voyager/api/identity/dash/profileCards?q=expandedProfileCard&profileUrn=${encodedUrn}&sectionType=experience&locale=en_US`
-  const ref = `https://www.linkedin.com/in/${publicIdentifier}/`
+  const ref     = `https://www.linkedin.com/in/${publicIdentifier}/`
+  const enc1    = encodeURIComponent(profileUrn)
+  const enc2    = encodeURIComponent(encodeURIComponent(profileUrn))
 
-  console.log('URL:', url)
+  const attempts = [
+    {
+      label: '4a: profileCards single-encoded URN',
+      url:   `https://www.linkedin.com/voyager/api/identity/dash/profileCards?q=expandedProfileCard&profileUrn=${enc1}&sectionType=experience&locale=en_US`,
+    },
+    {
+      label: '4b: profileCards double-encoded URN',
+      url:   `https://www.linkedin.com/voyager/api/identity/dash/profileCards?q=expandedProfileCard&profileUrn=${enc2}&sectionType=experience&locale=en_US`,
+    },
+    {
+      label: '4c: identity/profiles/{id}/positions (classic non-dash)',
+      url:   `https://www.linkedin.com/voyager/api/identity/profiles/${publicIdentifier}/positions`,
+    },
+    {
+      label: '4d: dash/profiles with ProfilePositionGroup decoration',
+      url:   `https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=${publicIdentifier}&decorationId=com.linkedin.voyager.dash.deco.identity.profile.ProfilePositionGroup`,
+    },
+  ]
 
-  const { status, data, raw } = await voyagerGet(liAt, jsessionId, url, ref)
+  for (const attempt of attempts) {
+    console.log(`\n── ${attempt.label} ${'─'.repeat(Math.max(0, 60 - attempt.label.length))}`)
+    console.log('URL:', attempt.url)
 
-  if (!data) {
-    console.log('Non-JSON response:', raw?.slice(0, 500))
-    return
-  }
+    let result
+    try {
+      result = await voyagerGet(liAt, jsessionId, attempt.url, ref)
+    } catch (err) {
+      console.log(`  ERROR: ${err.message}`)
+      continue
+    }
 
-  console.log('\nFull response:')
-  console.log(JSON.stringify(data, null, 2))
+    const { status, data, raw, redirectTo } = result
 
-  // Summarise any position objects found
-  const included = Array.isArray(data.included) ? data.included : []
-  const positions = included.filter(i =>
-    i['$type'] && i['$type'].toLowerCase().includes('position')
-  )
-  if (positions.length) {
-    console.log(`\n── ${positions.length} position object(s) found ───────────────────`)
-    positions.forEach((p, i) => {
-      console.log(`  [${i}] title=${p.title || p.localizedTitle} | company=${p.companyName || p.localizedCompanyName} | $type=${p['$type']}`)
-    })
-  } else {
-    console.log('\nNo position objects found in included array (check $types above).')
+    if (status >= 300 && status < 400) {
+      console.log(`  Skipping — redirect to: ${redirectTo || '(unknown)'}`)
+      continue
+    }
+
+    if (!data) {
+      console.log(`  Non-JSON response (${status}):`, raw?.slice(0, 300))
+      continue
+    }
+
+    console.log('\nFull response:')
+    console.log(JSON.stringify(data, null, 2))
+
+    // Summarise any position objects found
+    const included  = Array.isArray(data.included) ? data.included : []
+    const positions = included.filter(i =>
+      i['$type'] && i['$type'].toLowerCase().includes('position')
+    )
+    if (positions.length) {
+      console.log(`\n── ${positions.length} position object(s) ─────────────────────────`)
+      positions.forEach((p, idx) => {
+        console.log(`  [${idx}] title=${p.title || p.localizedTitle} | company=${p.companyName || p.localizedCompanyName} | $type=${p['$type']}`)
+      })
+    } else {
+      console.log('\nNo position objects in included (check $types above).')
+    }
+
+    // Log all unique $types seen so we know what to look for
+    const types = [...new Set(included.map(i => i['$type']).filter(Boolean))]
+    console.log('\n$types in included:', types)
+
+    // Don't try further formats once we get a real JSON response
+    break
   }
 }
 
