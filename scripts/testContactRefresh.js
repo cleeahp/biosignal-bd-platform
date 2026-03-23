@@ -115,8 +115,14 @@ async function searchContact(liAt, jsessionId, name, company) {
     return null
   }
 
-  console.log('\nFull response:')
-  console.log(JSON.stringify(data, null, 2))
+  const fullJson = JSON.stringify(data, null, 2)
+  const outFile  = resolve('scripts/temp_full_search_response.json')
+  writeFileSync(outFile, fullJson, 'utf8')
+  console.log(`\nSaved ${fullJson.length} chars to ${outFile}`)
+  console.log('\n====== FULL RAW SEARCH RESPONSE (from file) ======')
+  console.log(fullJson)
+  console.log('====== END FULL RAW SEARCH RESPONSE ======')
+
 
   // Extract the first EntityResultViewModel that name-matches
   const included   = Array.isArray(data.included) ? data.included : []
