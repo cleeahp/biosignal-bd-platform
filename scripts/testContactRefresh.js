@@ -188,81 +188,87 @@ async function fetchDashProfile(liAt, jsessionId, publicIdentifier) {
   }
 }
 
-// ── Step 4: Experience card (tries multiple endpoint formats) ─────────────────
+// ── Step 4: Experience endpoints (try ALL, print each result) ────────────────
+
+function collectTypes(obj, seen = new Set()) {
+  if (!obj || typeof obj !== 'object') return seen
+  if (obj['$type']) seen.add(obj['$type'])
+  for (const v of Object.values(obj)) {
+    if (Array.isArray(v)) v.forEach(el => collectTypes(el, seen))
+    else if (v && typeof v === 'object') collectTypes(v, seen)
+  }
+  return seen
+}
 
 async function fetchExperienceCard(liAt, jsessionId, profileUrn, publicIdentifier) {
-  section('STEP 4 — Experience card (trying multiple endpoint formats)')
+  section('STEP 4 — Experience endpoints (ALL attempted, no early exit)')
 
-  const ref     = `https://www.linkedin.com/in/${publicIdentifier}/`
-  const enc1    = encodeURIComponent(profileUrn)
-  const enc2    = encodeURIComponent(encodeURIComponent(profileUrn))
+  const ref  = `https://www.linkedin.com/in/${publicIdentifier}/`
+  const enc1 = encodeURIComponent(profileUrn)
+  const enc2 = encodeURIComponent(encodeURIComponent(profileUrn))
 
   const attempts = [
     {
-      label: '4a: profileCards single-encoded URN',
-      url:   `https://www.linkedin.com/voyager/api/identity/dash/profileCards?q=expandedProfileCard&profileUrn=${enc1}&sectionType=experience&locale=en_US`,
+      label: '4a: dash/profiles — ProfilePositionGroup decoration',
+      url:   `https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=${publicIdentifier}&decorationId=com.linkedin.voyager.dash.deco.identity.profile.ProfilePositionGroup`,
     },
     {
-      label: '4b: profileCards double-encoded URN',
-      url:   `https://www.linkedin.com/voyager/api/identity/dash/profileCards?q=expandedProfileCard&profileUrn=${enc2}&sectionType=experience&locale=en_US`,
-    },
-    {
-      label: '4c: identity/profiles/{id}/positions (classic non-dash)',
+      label: '4b: identity/profiles/{id}/positions (classic non-dash)',
       url:   `https://www.linkedin.com/voyager/api/identity/profiles/${publicIdentifier}/positions`,
     },
     {
-      label: '4d: dash/profiles with ProfilePositionGroup decoration',
-      url:   `https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=${publicIdentifier}&decorationId=com.linkedin.voyager.dash.deco.identity.profile.ProfilePositionGroup`,
+      label: '4c: dash/profiles/{urn}/positions — single-encoded URN path segment',
+      url:   `https://www.linkedin.com/voyager/api/identity/dash/profiles/${enc1}/positions`,
+    },
+    {
+      label: '4d: profileCards — sectionType=EXPERIENCE (uppercase)',
+      url:   `https://www.linkedin.com/voyager/api/identity/dash/profileCards?q=expandedProfileCard&profileUrn=${enc1}&sectionType=EXPERIENCE`,
+    },
+    {
+      label: '4e: dash/members/{urn}/profileSections?sectionType=experience',
+      url:   `https://www.linkedin.com/voyager/api/identity/dash/members/${enc1}/profileSections?sectionType=experience`,
+    },
+    {
+      label: '4f: profileCards — sectionType=experience lowercase (single-encoded, no locale)',
+      url:   `https://www.linkedin.com/voyager/api/identity/dash/profileCards?q=expandedProfileCard&profileUrn=${enc1}&sectionType=experience`,
+    },
+    {
+      label: '4g: profileCards — double-encoded URN, sectionType=experience',
+      url:   `https://www.linkedin.com/voyager/api/identity/dash/profileCards?q=expandedProfileCard&profileUrn=${enc2}&sectionType=experience`,
     },
   ]
 
   for (const attempt of attempts) {
-    console.log(`\n── ${attempt.label} ${'─'.repeat(Math.max(0, 60 - attempt.label.length))}`)
-    console.log('URL:', attempt.url)
+    console.log(`\n${'─'.repeat(70)}`)
+    console.log(`${attempt.label}`)
+    console.log(`URL: ${attempt.url}`)
 
     let result
     try {
       result = await voyagerGet(liAt, jsessionId, attempt.url, ref)
     } catch (err) {
-      console.log(`  ERROR: ${err.message}`)
+      console.log(`ERROR: ${err.message}`)
       continue
     }
 
     const { status, data, raw, redirectTo } = result
+    console.log(`HTTP status: ${status}`)
 
     if (status >= 300 && status < 400) {
-      console.log(`  Skipping — redirect to: ${redirectTo || '(unknown)'}`)
+      console.log(`Redirect → ${redirectTo || '(no Location header)'}`)
       continue
     }
 
     if (!data) {
-      console.log(`  Non-JSON response (${status}):`, raw?.slice(0, 300))
+      console.log(`Non-JSON body: ${(raw || '').slice(0, 500)}`)
       continue
     }
 
-    console.log('\nFull response:')
+    console.log('\nFull JSON response:')
     console.log(JSON.stringify(data, null, 2))
 
-    // Summarise any position objects found
-    const included  = Array.isArray(data.included) ? data.included : []
-    const positions = included.filter(i =>
-      i['$type'] && i['$type'].toLowerCase().includes('position')
-    )
-    if (positions.length) {
-      console.log(`\n── ${positions.length} position object(s) ─────────────────────────`)
-      positions.forEach((p, idx) => {
-        console.log(`  [${idx}] title=${p.title || p.localizedTitle} | company=${p.companyName || p.localizedCompanyName} | $type=${p['$type']}`)
-      })
-    } else {
-      console.log('\nNo position objects in included (check $types above).')
-    }
-
-    // Log all unique $types seen so we know what to look for
-    const types = [...new Set(included.map(i => i['$type']).filter(Boolean))]
-    console.log('\n$types in included:', types)
-
-    // Don't try further formats once we get a real JSON response
-    break
+    const allTypes = [...collectTypes(data)].sort()
+    console.log('\nAll $types in response:', allTypes.length ? allTypes.join('\n  ') : '(none)')
   }
 }
 
