@@ -1,0 +1,30 @@
+name: Refresh Contact LinkedIn Companies
+
+on:
+  workflow_dispatch:
+
+env:
+  NODE_TLS_REJECT_UNAUTHORIZED: "0"
+
+jobs:
+  refresh-companies:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run contact company refresh
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          LINKEDIN_LI_AT: ${{ secrets.LINKEDIN_LI_AT }}
+        run: node scripts/refreshContactCompanies.js

@@ -2299,7 +2299,7 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
       || (r.email || '').toLowerCase().includes(s)
   })
 
-  const COL_SPAN = 8
+  const COL_SPAN = 7
 
   return (
     <div className="flex flex-col gap-3">
@@ -2314,13 +2314,12 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
       <div className="bg-[#1f2937] border border-[#374151] rounded-xl overflow-hidden" style={{ width: '100%', overflowX: 'hidden' }}>
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <colgroup>
-            <col style={{ width: '18%' }} />
+            <col style={{ width: '20%' }} />
             <col style={{ width: '22%' }} />
-            <col style={{ width: '18%' }} />
+            <col style={{ width: '20%' }} />
             <col style={{ width: '14%' }} />
-            <col style={{ width: '16%' }} />
-            <col style={{ width: '16%' }} />
-            <col style={{ width: '10%' }} />
+            <col style={{ width: '18%' }} />
+            <col style={{ width: '12%' }} />
             <col style={{ width: '28px' }} />
           </colgroup>
           <thead>
@@ -2329,7 +2328,6 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">Current Role</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">Current Company</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">Location</th>
-              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">LinkedIn Title</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">LinkedIn Company</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">Last Checked</th>
               <th className="py-3 bg-[#1a2234]"></th>
@@ -2355,14 +2353,6 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
                     <td className="px-3 py-2.5 text-xs text-gray-300" title={row.title || ''} style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.title || '—'}</td>
                     <td className="px-3 py-2.5 text-xs text-gray-300" title={row.company || ''} style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.company || '—'}</td>
                     <td className="px-3 py-2.5 text-xs text-gray-300" title={row.location || ''} style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.location || '—'}</td>
-                    <td className="px-3 py-2.5" title={row.linkedin_current_title || ''} style={{ overflow: 'hidden' }}>
-                      {row.linkedin_current_title
-                        ? <span className="flex items-center gap-1" style={{ overflow: 'hidden' }}>
-                            <span className="text-xs text-gray-300" style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.linkedin_current_title}</span>
-                            {row.title_changed && <span className="px-1 py-0.5 text-xs font-medium rounded bg-amber-500/20 text-amber-400 shrink-0">↑</span>}
-                          </span>
-                        : <span className="text-xs text-gray-500">—</span>}
-                    </td>
                     <td className="px-3 py-2.5" title={row.linkedin_current_company || ''} style={{ overflow: 'hidden' }}>
                       {row.linkedin_current_company
                         ? <span className="flex items-center gap-1" style={{ overflow: 'hidden' }}>
