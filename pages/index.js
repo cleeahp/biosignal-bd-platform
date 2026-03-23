@@ -2279,6 +2279,17 @@ function ContactsTable({ rows, columns, emptyMessage, showActions, onAction, loa
 
 function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
   const [search, setSearch] = useState('')
+  const [expandedIds, setExpandedIds] = useState(new Set())
+
+  const toggleRow = (id) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   const filtered = rows.filter(r => {
     if (!search) return true
     const s = search.toLowerCase()
@@ -2287,6 +2298,9 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
       || (r.title || '').toLowerCase().includes(s)
       || (r.email || '').toLowerCase().includes(s)
   })
+
+  const COL_SPAN = 8
+
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-3">
@@ -2300,15 +2314,14 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
       <div className="bg-[#1f2937] border border-[#374151] rounded-xl overflow-hidden" style={{ width: '100%', overflowX: 'hidden' }}>
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <colgroup>
-            <col style={{ width: '15%' }} />
             <col style={{ width: '18%' }} />
-            <col style={{ width: '15%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '15%' }} />
-            <col style={{ width: '8%' }} />
+            <col style={{ width: '22%' }} />
+            <col style={{ width: '18%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '16%' }} />
+            <col style={{ width: '16%' }} />
             <col style={{ width: '10%' }} />
-            <col style={{ width: '10%' }} />
-            <col style={{ width: '7%' }} />
+            <col style={{ width: '28px' }} />
           </colgroup>
           <thead>
             <tr>
@@ -2316,67 +2329,86 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">Current Role</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">Current Company</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">Location</th>
-              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">Email</th>
-              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">LinkedIn</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">LinkedIn Title</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">LinkedIn Company</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">Last Checked</th>
+              <th className="py-3 bg-[#1a2234]"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#374151]">
             {loading ? (
-              <tr><td colSpan={9} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm">Loading…</p></td></tr>
+              <tr><td colSpan={COL_SPAN} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm">Loading…</p></td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={9} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">{search ? 'No matches found.' : emptyMessage}</p></td></tr>
+              <tr><td colSpan={COL_SPAN} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">{search ? 'No matches found.' : emptyMessage}</p></td></tr>
             ) : filtered.map(row => {
               const fullName = `${row.first_name || ''} ${row.last_name || ''}`.trim()
+              const isExpanded = expandedIds.has(row.id)
               return (
-                <tr key={row.id} className="hover:bg-[#111827]/50 transition-colors">
-                  <td className="px-3 py-2.5" title={fullName} style={{ overflow: 'hidden' }}>
-                    <div className="flex items-center gap-2" style={{ overflow: 'hidden' }}>
-                      {showBuyerDot && row.is_current_buyer && <span className="inline-block w-2 h-2 rounded-full bg-green-500 shrink-0" title="Current buyer" />}
-                      <span className="text-sm text-white" style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{fullName || '—'}</span>
-                    </div>
-                  </td>
-                  <td className="px-3 py-2.5 text-sm text-gray-300" title={row.title || ''} style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.title || '—'}</td>
-                  <td className="px-3 py-2.5 text-sm text-gray-300" title={row.company || ''} style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.company || '—'}</td>
-                  <td className="px-3 py-2.5 text-sm text-gray-300" title={row.location || ''} style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.location || '—'}</td>
-                  <td className="px-3 py-2.5 text-sm" title={row.email || ''} style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
-                    {row.email
-                      ? <a href={`mailto:${row.email}`} className="text-blue-400 hover:text-blue-300 hover:underline" style={{ display: 'block', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.email}</a>
-                      : <span className="text-gray-500">—</span>}
-                  </td>
-                  <td className="px-3 py-2.5 text-sm text-center">
-                    {row.linkedin_url
-                      ? <a href={row.linkedin_url} target="_blank" rel="noreferrer" title={row.linkedin_url} className="text-blue-400 hover:text-blue-300 inline-flex items-center justify-center">
-                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
-                          </svg>
-                        </a>
-                      : <span className="text-gray-500">—</span>}
-                  </td>
-                  <td className="px-3 py-2.5" title={row.linkedin_current_title || ''} style={{ overflow: 'hidden' }}>
-                    {row.linkedin_current_title
-                      ? <span className="flex items-center gap-1.5" style={{ overflow: 'hidden' }}>
-                          <span className="text-sm text-gray-300" style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.linkedin_current_title}</span>
-                          {row.title_changed && <span className="px-1.5 py-0.5 text-xs font-medium rounded bg-amber-500/20 text-amber-400 shrink-0">changed</span>}
-                        </span>
-                      : <span className="text-sm text-gray-500">—</span>}
-                  </td>
-                  <td className="px-3 py-2.5" title={row.linkedin_current_company || ''} style={{ overflow: 'hidden' }}>
-                    {row.linkedin_current_company
-                      ? <span className="flex items-center gap-1.5" style={{ overflow: 'hidden' }}>
-                          <span className="text-sm text-gray-300" style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.linkedin_current_company}</span>
-                          {row.company_changed && <span className="px-1.5 py-0.5 text-xs font-medium rounded bg-amber-500/20 text-amber-400 shrink-0">changed</span>}
-                        </span>
-                      : <span className="text-sm text-gray-500">—</span>}
-                  </td>
-                  <td className="px-3 py-2.5 text-sm text-gray-500" style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
-                    {row.linkedin_last_checked
-                      ? new Date(row.linkedin_last_checked).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-                      : 'Never'}
-                  </td>
-                </tr>
+                <React.Fragment key={row.id}>
+                  <tr onClick={() => toggleRow(row.id)} className="cursor-pointer hover:bg-[#111827]/50 transition-colors">
+                    <td className="px-3 py-2.5" title={fullName} style={{ overflow: 'hidden' }}>
+                      <div className="flex items-center gap-2" style={{ overflow: 'hidden' }}>
+                        {showBuyerDot && row.is_current_buyer && <span className="inline-block w-2 h-2 rounded-full bg-green-500 shrink-0" title="Current buyer" />}
+                        <span className="text-xs text-white" style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{fullName || '—'}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2.5 text-xs text-gray-300" title={row.title || ''} style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.title || '—'}</td>
+                    <td className="px-3 py-2.5 text-xs text-gray-300" title={row.company || ''} style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.company || '—'}</td>
+                    <td className="px-3 py-2.5 text-xs text-gray-300" title={row.location || ''} style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.location || '—'}</td>
+                    <td className="px-3 py-2.5" title={row.linkedin_current_title || ''} style={{ overflow: 'hidden' }}>
+                      {row.linkedin_current_title
+                        ? <span className="flex items-center gap-1" style={{ overflow: 'hidden' }}>
+                            <span className="text-xs text-gray-300" style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.linkedin_current_title}</span>
+                            {row.title_changed && <span className="px-1 py-0.5 text-xs font-medium rounded bg-amber-500/20 text-amber-400 shrink-0">↑</span>}
+                          </span>
+                        : <span className="text-xs text-gray-500">—</span>}
+                    </td>
+                    <td className="px-3 py-2.5" title={row.linkedin_current_company || ''} style={{ overflow: 'hidden' }}>
+                      {row.linkedin_current_company
+                        ? <span className="flex items-center gap-1" style={{ overflow: 'hidden' }}>
+                            <span className="text-xs text-gray-300" style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{row.linkedin_current_company}</span>
+                            {row.company_changed && <span className="px-1 py-0.5 text-xs font-medium rounded bg-amber-500/20 text-amber-400 shrink-0">↑</span>}
+                          </span>
+                        : <span className="text-xs text-gray-500">—</span>}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs text-gray-500" style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+                      {row.linkedin_last_checked
+                        ? new Date(row.linkedin_last_checked).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                        : 'Never'}
+                    </td>
+                    <td className="pr-3 py-2.5 text-right" style={{ color: '#6b7280' }}>
+                      <svg style={{ width: 12, height: 12, display: 'inline', transition: 'transform 0.15s', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr key={`${row.id}-exp`}>
+                      <td colSpan={COL_SPAN} className="bg-[#263045] px-6 py-4 border-b border-[#374151]">
+                        <div className="flex flex-wrap gap-x-8 gap-y-3">
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Email</span>
+                            {row.email
+                              ? <a href={`mailto:${row.email}`} onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline">{row.email}</a>
+                              : <span className="text-sm text-gray-500">—</span>}
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">LinkedIn</span>
+                            {row.linkedin_url
+                              ? <a href={row.linkedin_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline">{row.linkedin_url.replace(/[?#].*/, '')}</a>
+                              : <span className="text-sm text-gray-500">—</span>}
+                          </div>
+                          {row.phone && (
+                            <div className="flex flex-col gap-1">
+                              <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Phone</span>
+                              <a href={`tel:${row.phone}`} onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline">{row.phone}</a>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               )
             })}
           </tbody>
