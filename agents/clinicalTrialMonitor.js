@@ -29,7 +29,7 @@ const SIGNAL_TYPES = {
 const PHASE_TRANSITION_NUMS = new Set([2, 3]);
 
 // How many days back to look for recently updated studies
-const LOOKBACK_DAYS = 14;
+const LOOKBACK_DAYS = 30;
 
 // Academic/government name patterns. Even when leadSponsorClass === 'INDUSTRY',
 // some studies list academic medical centres that slip through. Reject any sponsor
