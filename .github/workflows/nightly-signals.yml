@@ -1,0 +1,24 @@
+name: Nightly Signal Agents
+
+on:
+  schedule:
+    - cron: '0 1 * * *'   # 1:00 AM UTC every day
+  workflow_dispatch:        # Manual trigger
+
+jobs:
+  run-signal-agents:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Trigger orchestrator
+        run: |
+          curl -X POST https://biosignal-bd-platform.vercel.app/api/agents/orchestrator \
+            -H "Authorization: Bearer ${{ secrets.AGENT_SECRET_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --max-time 300 \
+            --silent --show-error \
+            | tee /dev/stderr
