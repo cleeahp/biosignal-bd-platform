@@ -320,32 +320,48 @@ async function finaliseAgentRun(runId, status, signalsFound, errorMessage = null
  * @returns {Promise<object[]>} Array of project objects
  */
 async function fetchNihGrants(sixMonthsAgo, today, currentYear) {
-  const body = {
-    criteria: {
-      fiscal_years: [currentYear, currentYear - 1],
-      activity_codes: ['R43', 'R44', 'R41', 'R42', 'U43', 'U44'],
-      award_notice_date: { from_date: sixMonthsAgo, to_date: today },
-      org_types: ['SMALL BUSINESS'],
-    },
-    limit: 50,
-    offset: 0,
-    sort_field: 'award_notice_date',
-    sort_order: 'desc',
-  };
+  const NIH_PAGE_SIZE = 500;
+  const NIH_MAX_PAGES = 10;
+  const allProjects = [];
+  let offset = 0;
+  let page = 0;
 
-  const response = await fetch(NIH_REPORTER_API, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
+  while (page < NIH_MAX_PAGES) {
+    const body = {
+      criteria: {
+        fiscal_years: [currentYear, currentYear - 1],
+        activity_codes: ['R43', 'R44', 'R41', 'R42', 'U43', 'U44'],
+        award_notice_date: { from_date: sixMonthsAgo, to_date: today },
+        org_types: ['SMALL BUSINESS'],
+      },
+      limit: NIH_PAGE_SIZE,
+      offset,
+      sort_field: 'award_notice_date',
+      sort_order: 'desc',
+    };
 
-  if (!response.ok) {
-    throw new Error(`NIH Reporter API error: ${response.status} ${response.statusText}`);
+    const response = await fetch(NIH_REPORTER_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      throw new Error(`NIH Reporter API error: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    const results = data.results || [];
+    page++;
+    console.log(`[fundingMaAgent] NIH page ${page}: ${results.length} results`);
+    for (const r of results) allProjects.push(r);
+
+    if (results.length < NIH_PAGE_SIZE) break;
+    offset += NIH_PAGE_SIZE;
   }
 
-  const data = await response.json();
-  return data.results || [];
+  return allProjects;
 }
 
 /**
@@ -473,13 +489,14 @@ async function processNihGrants(sixMonthsAgo, today, currentYear, pastClientsMap
  * @param {string} enddt - YYYY-MM-DD
  * @returns {Promise<object[]>} Array of EDGAR filing hits
  */
-async function fetchEdgarFilings(query, startdt, enddt, forms = '8-K') {
+async function fetchEdgarFilings(query, startdt, enddt, forms = '8-K', from = 0) {
   const params = new URLSearchParams({
     q: query,
     dateRange: 'custom',
     startdt,
     enddt,
     forms,
+    from: String(from),
   });
 
   const url = `${SEC_EDGAR_SEARCH}?${params.toString()}`;
@@ -1411,19 +1428,29 @@ async function processMaFilings(sixMonthsAgo, today, pastClientsMap = new Map(),
   ];
 
   for (const query of queries) {
-    await sleep(SEC_RATE_LIMIT_MS);
+    const EDGAR_PAGE_SIZE = 100;
+    const EDGAR_MAX_PAGES = 20;
+    let edgarPage = 0;
+    const allHits = [];
 
-    let hits;
-    try {
-      hits = await fetchEdgarFilings(query, sixMonthsAgo, today, '8-K');
-    } catch (err) {
-      console.error('[fundingMaAgent] M&A EDGAR fetch failed:', err.message);
-      continue;
+    while (edgarPage < EDGAR_MAX_PAGES) {
+      await sleep(SEC_RATE_LIMIT_MS);
+      let hits;
+      try {
+        hits = await fetchEdgarFilings(query, sixMonthsAgo, today, '8-K', edgarPage * EDGAR_PAGE_SIZE);
+      } catch (err) {
+        console.error('[fundingMaAgent] M&A EDGAR fetch failed:', err.message);
+        break;
+      }
+      edgarPage++;
+      console.log(`[fundingMaAgent] EDGAR page ${edgarPage}: ${hits.length} hits`);
+      for (const h of hits) allHits.push(h);
+      if (hits.length < EDGAR_PAGE_SIZE) break;
     }
 
-    console.log(`[fundingMaAgent] M&A: "${query}" → ${hits.length} hits`);
+    console.log(`[fundingMaAgent] M&A: "${query}" → ${allHits.length} total hits`);
 
-    for (const hit of hits) {
+    for (const hit of allHits) {
       const entityName = extractEntityName(hit);
       const fileDate = hit._source?.file_date || today;
       const filingText = hit._source?.period_of_report || '';
@@ -1647,28 +1674,63 @@ function extractCompanyFromBioSpaceTitle(title) {
 async function processBioSpaceDeals(today, pastClientsMap = new Map(), excludedCompanies = new Set(), dismissalRules = new Map()) {
   let signalsInserted = 0;
   const BASE_SCORE = 28;
-  const SOURCE_URL = 'https://www.biospace.com/deals/';
+  const BASE_URL = 'https://www.biospace.com';
+  const BIOSPACE_MAX_PAGES = 20;
+  const cutoff = daysAgo(LOOKBACK_DAYS);
 
-  let html;
-  try {
-    const resp = await fetch(SOURCE_URL, {
-      headers: { 'User-Agent': BIOSPACE_BOT_UA },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (!resp.ok) {
-      console.error(`[fundingMaAgent] BioSpace /deals/ HTTP ${resp.status}`);
-      return 0;
+  const allArticles = [];
+  const seenUrls = new Set();
+  let prevPageCount = Infinity;
+
+  for (let pageNum = 1; pageNum <= BIOSPACE_MAX_PAGES; pageNum++) {
+    const pageUrl = pageNum === 1 ? `${BASE_URL}/deals/` : `${BASE_URL}/deals/?page=${pageNum}`;
+    let html;
+    try {
+      const resp = await fetch(pageUrl, {
+        headers: { 'User-Agent': BIOSPACE_BOT_UA },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      if (!resp.ok) {
+        console.error(`[fundingMaAgent] BioSpace /deals/ page ${pageNum} HTTP ${resp.status}`);
+        break;
+      }
+      html = await resp.text();
+    } catch (err) {
+      console.error(`[fundingMaAgent] BioSpace /deals/ page ${pageNum} fetch error:`, err.message);
+      break;
     }
-    html = await resp.text();
-  } catch (err) {
-    console.error('[fundingMaAgent] BioSpace /deals/ fetch error:', err.message);
-    return 0;
+
+    const pageArticles = parseBioSpaceArticles(html, BASE_URL);
+    const newArticles = pageArticles.filter(a => !seenUrls.has(a.url));
+    console.log(`[fundingMaAgent] BioSpace deals page ${pageNum}: ${newArticles.length} articles`);
+
+    if (newArticles.length === 0 || newArticles.length < prevPageCount) {
+      for (const a of newArticles) { seenUrls.add(a.url); allArticles.push(a); }
+      if (newArticles.length === 0) break;
+      // Fewer articles than previous page — likely end of pagination; process what we got then stop
+      prevPageCount = newArticles.length;
+      break;
+    }
+
+    for (const a of newArticles) { seenUrls.add(a.url); allArticles.push(a); }
+    prevPageCount = newArticles.length;
+
+    // Stop paginating if all articles on this page appear older than the lookback cutoff
+    // (BioSpace articles are newest-first; if none pass the filter, we've gone past the window)
+    const anyRecent = newArticles.some(a => {
+      const dateMatch = a.url.match(/\/(20\d\d)\/(\d\d?)\/(\d\d?)\//)
+      if (dateMatch) return new Date(`${dateMatch[1]}-${dateMatch[2].padStart(2,'0')}-${dateMatch[3].padStart(2,'0')}`) >= cutoff
+      return true // no date in URL — assume recent
+    })
+    if (!anyRecent) {
+      console.log(`[fundingMaAgent] BioSpace /deals/ page ${pageNum}: all articles outside lookback window — stopping`)
+      break
+    }
   }
 
-  const articles = parseBioSpaceArticles(html, 'https://www.biospace.com');
-  console.log(`[fundingMaAgent] BioSpace /deals/: ${articles.length} articles parsed`);
+  console.log(`[fundingMaAgent] BioSpace /deals/: ${allArticles.length} total articles across all pages`);
 
-  for (const { title, url } of articles) {
+  for (const { title, url } of allArticles) {
     const dealType = detectBioSpaceDealType(title);
     if (!dealType || dealType === 'ma') continue; // M&A handled by EDGAR source
 
@@ -1750,28 +1812,62 @@ async function processBioSpaceDeals(today, pastClientsMap = new Map(), excludedC
 async function processBioSpaceFunding(today, pastClientsMap = new Map(), excludedCompanies = new Set(), dismissalRules = new Map()) {
   let signalsInserted = 0;
   const BASE_SCORE = 28;
-  const SOURCE_URL = 'https://www.biospace.com/funding/';
+  const BASE_URL = 'https://www.biospace.com';
+  const BIOSPACE_MAX_PAGES = 20;
+  const cutoff = daysAgo(LOOKBACK_DAYS);
 
-  let html;
-  try {
-    const resp = await fetch(SOURCE_URL, {
-      headers: { 'User-Agent': BIOSPACE_BOT_UA },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (!resp.ok) {
-      console.error(`[fundingMaAgent] BioSpace /funding/ HTTP ${resp.status}`);
-      return 0;
+  const allArticles = [];
+  const seenUrls = new Set();
+  let prevPageCount = Infinity;
+
+  for (let pageNum = 1; pageNum <= BIOSPACE_MAX_PAGES; pageNum++) {
+    const pageUrl = pageNum === 1 ? `${BASE_URL}/funding/` : `${BASE_URL}/funding/?page=${pageNum}`;
+    let html;
+    try {
+      const resp = await fetch(pageUrl, {
+        headers: { 'User-Agent': BIOSPACE_BOT_UA },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      if (!resp.ok) {
+        console.error(`[fundingMaAgent] BioSpace /funding/ page ${pageNum} HTTP ${resp.status}`);
+        break;
+      }
+      html = await resp.text();
+    } catch (err) {
+      console.error(`[fundingMaAgent] BioSpace /funding/ page ${pageNum} fetch error:`, err.message);
+      break;
     }
-    html = await resp.text();
-  } catch (err) {
-    console.error('[fundingMaAgent] BioSpace /funding/ fetch error:', err.message);
-    return 0;
+
+    const pageArticles = parseBioSpaceArticles(html, BASE_URL);
+    const newArticles = pageArticles.filter(a => !seenUrls.has(a.url));
+    console.log(`[fundingMaAgent] BioSpace funding page ${pageNum}: ${newArticles.length} articles`);
+
+    if (newArticles.length === 0 || newArticles.length < prevPageCount) {
+      for (const a of newArticles) { seenUrls.add(a.url); allArticles.push(a); }
+      if (newArticles.length === 0) break;
+      // Fewer articles than previous page — likely end of pagination; process what we got then stop
+      prevPageCount = newArticles.length;
+      break;
+    }
+
+    for (const a of newArticles) { seenUrls.add(a.url); allArticles.push(a); }
+    prevPageCount = newArticles.length;
+
+    // Stop paginating if all articles on this page appear older than the lookback cutoff
+    const anyRecent = newArticles.some(a => {
+      const dateMatch = a.url.match(/\/(20\d\d)\/(\d\d?)\/(\d\d?)\//)
+      if (dateMatch) return new Date(`${dateMatch[1]}-${dateMatch[2].padStart(2,'0')}-${dateMatch[3].padStart(2,'0')}`) >= cutoff
+      return true // no date in URL — assume recent
+    })
+    if (!anyRecent) {
+      console.log(`[fundingMaAgent] BioSpace /funding/ page ${pageNum}: all articles outside lookback window — stopping`)
+      break
+    }
   }
 
-  const articles = parseBioSpaceArticles(html, 'https://www.biospace.com');
-  console.log(`[fundingMaAgent] BioSpace /funding/: ${articles.length} articles parsed`);
+  console.log(`[fundingMaAgent] BioSpace /funding/: ${allArticles.length} total articles across all pages`);
 
-  for (const { title, url } of articles) {
+  for (const { title, url } of allArticles) {
     const dealType = detectBioSpaceDealType(title);
     if (!dealType || dealType === 'ma') continue;
 

@@ -15,8 +15,8 @@ import { loadDismissalRules, checkDismissalExclusion } from '../lib/dismissalRul
 
 const CT_API_BASE = 'https://clinicaltrials.gov/api/v2/studies';
 const CT_STUDY_BASE = 'https://clinicaltrials.gov/study';
-const MAX_PAGES = 2;
 const PAGE_SIZE = 100;
+const MAX_PAGES_SAFETY = 50; // Safety cap: 50 pages × 100 = 5,000 studies
 
 // Signal type definitions with base priority scores
 const SIGNAL_TYPES = {
@@ -147,7 +147,8 @@ async function fetchStudiesPage(url) {
 }
 
 /**
- * Fetch up to MAX_PAGES pages of studies from ClinicalTrials.gov.
+ * Fetch all pages of studies from ClinicalTrials.gov.
+ * Paginates until CT.gov returns no nextPageToken or the safety cap is reached.
  * Aborts pagination on any fetch error.
  *
  * @param {string} lastUpdateGte - YYYY-MM-DD
@@ -158,7 +159,7 @@ async function fetchAllStudies(lastUpdateGte) {
   let pageToken = null;
   let pagesFetched = 0;
 
-  while (pagesFetched < MAX_PAGES) {
+  while (pagesFetched < MAX_PAGES_SAFETY) {
     const url = buildQueryUrl(lastUpdateGte, pageToken);
     let data;
 
@@ -175,12 +176,17 @@ async function fetchAllStudies(lastUpdateGte) {
     }
 
     pagesFetched++;
+    console.log(`[clinicalTrialMonitor] Fetched page ${pagesFetched}, ${studies.length} studies so far...`);
 
-    if (data.nextPageToken && pagesFetched < MAX_PAGES) {
+    if (data.nextPageToken) {
       pageToken = data.nextPageToken;
     } else {
       break;
     }
+  }
+
+  if (pagesFetched >= MAX_PAGES_SAFETY) {
+    console.warn(`[clinicalTrialMonitor] Safety cap reached (${MAX_PAGES_SAFETY} pages / ${studies.length} studies).`);
   }
 
   return studies;
