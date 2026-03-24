@@ -1141,7 +1141,14 @@ function LeadTypeFilterDropdown({ selectedTypes, onToggle }) {
 // ── Per-type lead tables ───────────────────────────────────────────────────────
 
 function CompetitorJobsLeadTable({ leads, onUpdateStatus, onUpdateNotes, onUpdateClient }) {
+  const [sortDir, setSortDir] = useState('desc')
   if (leads.length === 0) return <p className="text-sm text-gray-500 italic py-4 px-1">No leads yet.</p>
+  const sorted = [...leads].sort((a, b) => {
+    const da = parseDetail(a.signal_detail), db = parseDetail(b.signal_detail)
+    const ta = new Date(da.posting_date || a.first_detected_at || 0).getTime()
+    const tb = new Date(db.posting_date || b.first_detected_at || 0).getTime()
+    return sortDir === 'desc' ? tb - ta : ta - tb
+  })
   return (
     <TableWrapper>
       <thead>
@@ -1150,7 +1157,10 @@ function CompetitorJobsLeadTable({ leads, onUpdateStatus, onUpdateNotes, onUpdat
           <Th className="w-[13%]">Competitor</Th>
           <Th className="w-[11%]">Location</Th>
           <Th className="w-[14%]">Likely Client</Th>
-          <Th className="w-[9%]">Date Posted</Th>
+          <th
+            className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[9%] cursor-pointer select-none hover:text-gray-200"
+            onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
+          >Date Posted {sortDir === 'desc' ? '↓' : '↑'}</th>
           <Th className="w-[4%]">Link</Th>
           <Th className="w-[10%]">Claim Date</Th>
           <Th className="w-[10%]">Status</Th>
@@ -1158,7 +1168,7 @@ function CompetitorJobsLeadTable({ leads, onUpdateStatus, onUpdateNotes, onUpdat
         </tr>
       </thead>
       <tbody className="divide-y divide-[#374151]">
-        {leads.map((lead, i) => {
+        {sorted.map((lead, i) => {
           const d = parseDetail(lead.signal_detail)
           const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
           return (
@@ -1256,7 +1266,14 @@ function StaleRolesLeadTable({ leads, onUpdateStatus, onUpdateNotes }) {
 }
 
 function FundingLeadTable({ leads, onUpdateStatus, onUpdateNotes }) {
+  const [sortDir, setSortDir] = useState('desc')
   if (leads.length === 0) return <p className="text-sm text-gray-500 italic py-4 px-1">No leads yet.</p>
+  const sorted = [...leads].sort((a, b) => {
+    const da = parseDetail(a.signal_detail), db = parseDetail(b.signal_detail)
+    const ta = new Date(da.date || da.filing_date || da.date_announced || a.first_detected_at || 0).getTime()
+    const tb = new Date(db.date || db.filing_date || db.date_announced || b.first_detected_at || 0).getTime()
+    return sortDir === 'desc' ? tb - ta : ta - tb
+  })
   return (
     <TableWrapper>
       <thead>
@@ -1265,7 +1282,10 @@ function FundingLeadTable({ leads, onUpdateStatus, onUpdateNotes }) {
           <Th className="w-[18%]">Company</Th>
           <Th className="w-[9%]">Amount</Th>
           <Th className="w-[17%]">Summary</Th>
-          <Th className="w-[8%]">Date</Th>
+          <th
+            className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[8%] cursor-pointer select-none hover:text-gray-200"
+            onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
+          >Date {sortDir === 'desc' ? '↓' : '↑'}</th>
           <Th className="w-[5%]">Queue</Th>
           <Th className="w-[10%]">Claim Date</Th>
           <Th className="w-[11%]">Status</Th>
@@ -1273,7 +1293,7 @@ function FundingLeadTable({ leads, onUpdateStatus, onUpdateNotes }) {
         </tr>
       </thead>
       <tbody className="divide-y divide-[#374151]">
-        {leads.map((lead, i) => {
+        {sorted.map((lead, i) => {
           const d = parseDetail(lead.signal_detail)
           const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
           const typeLabel = lead.signal_type === 'ma_transaction'
@@ -1343,7 +1363,14 @@ function ClinicalLeadDetailCell({ lead }) {
 }
 
 function ClinicalLeadTable({ leads, onUpdateStatus, onUpdateNotes }) {
+  const [sortDir, setSortDir] = useState('desc')
   if (leads.length === 0) return <p className="text-sm text-gray-500 italic py-4 px-1">No leads yet.</p>
+  const sorted = [...leads].sort((a, b) => {
+    const da = parseDetail(a.signal_detail), db = parseDetail(b.signal_detail)
+    const ta = new Date(da.transition_date || da.date || a.first_detected_at || 0).getTime()
+    const tb = new Date(db.transition_date || db.date || b.first_detected_at || 0).getTime()
+    return sortDir === 'desc' ? tb - ta : ta - tb
+  })
   return (
     <TableWrapper>
       <thead>
@@ -1353,7 +1380,10 @@ function ClinicalLeadTable({ leads, onUpdateStatus, onUpdateNotes }) {
           <Th className="w-[12%]">Detail</Th>
           <Th className="w-[15%]">Summary</Th>
           <Th className="w-[7%]">Source</Th>
-          <Th className="w-[8%]">Date</Th>
+          <th
+            className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[8%] cursor-pointer select-none hover:text-gray-200"
+            onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
+          >Date {sortDir === 'desc' ? '↓' : '↑'}</th>
           <Th className="w-[4%]">Link</Th>
           <Th className="w-[5%]">Queue</Th>
           <Th className="w-[9%]">Claim Date</Th>
@@ -1362,7 +1392,7 @@ function ClinicalLeadTable({ leads, onUpdateStatus, onUpdateNotes }) {
         </tr>
       </thead>
       <tbody className="divide-y divide-[#374151]">
-        {leads.map((lead, i) => {
+        {sorted.map((lead, i) => {
           const d = parseDetail(lead.signal_detail)
           const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
           const companyName = d.company_name || d.sponsor || lead.company_name || '—'
@@ -2277,9 +2307,11 @@ function ContactsTable({ rows, columns, emptyMessage, showActions, onAction, loa
   )
 }
 
-function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
+function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot, table, onDeleteRow }) {
   const [search, setSearch] = useState('')
   const [expandedIds, setExpandedIds] = useState(new Set())
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [deleteError, setDeleteError] = useState(null)
 
   const toggleRow = (id) => {
     setExpandedIds(prev => {
@@ -2288,6 +2320,21 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
       else next.add(id)
       return next
     })
+  }
+
+  const handleDelete = async (row) => {
+    const res = await fetch('/api/contacts', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: row.id, table }),
+    })
+    if (res.ok) {
+      setConfirmDeleteId(null)
+      if (onDeleteRow) onDeleteRow(row.id)
+    } else {
+      const err = await res.json().catch(() => ({}))
+      setDeleteError(err.error || 'Delete failed')
+    }
   }
 
   const filtered = rows.filter(r => {
@@ -2299,7 +2346,7 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
       || (r.email || '').toLowerCase().includes(s)
   })
 
-  const COL_SPAN = 7
+  const COL_SPAN = 8
 
   return (
     <div className="flex flex-col gap-3">
@@ -2314,13 +2361,14 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
       <div className="bg-[#1f2937] border border-[#374151] rounded-xl overflow-hidden" style={{ width: '100%', overflowX: 'hidden' }}>
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <colgroup>
+            <col style={{ width: '18%' }} />
             <col style={{ width: '20%' }} />
-            <col style={{ width: '22%' }} />
-            <col style={{ width: '20%' }} />
-            <col style={{ width: '14%' }} />
             <col style={{ width: '18%' }} />
             <col style={{ width: '12%' }} />
+            <col style={{ width: '16%' }} />
+            <col style={{ width: '10%' }} />
             <col style={{ width: '28px' }} />
+            <col style={{ width: '32px' }} />
           </colgroup>
           <thead>
             <tr>
@@ -2331,6 +2379,7 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">LinkedIn Company</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">Last Checked</th>
               <th className="py-3 bg-[#1a2234]"></th>
+              <th className="py-3 bg-[#1a2234] text-xs font-semibold uppercase tracking-wider text-gray-600 text-center">Del</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#374151]">
@@ -2371,7 +2420,38 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot }) {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
                       </svg>
                     </td>
+                    <td className="py-2.5 text-center" onClick={e => e.stopPropagation()}>
+                      <button
+                        onClick={() => { setConfirmDeleteId(row.id); setDeleteError(null) }}
+                        title="Delete contact"
+                        style={{ color: '#7f1d1d', lineHeight: 1 }}
+                        onMouseEnter={e => e.currentTarget.style.color = '#f87171'}
+                        onMouseLeave={e => e.currentTarget.style.color = '#7f1d1d'}
+                      >
+                        <svg style={{ width: 13, height: 13, display: 'inline' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
+                    </td>
                   </tr>
+                  {confirmDeleteId === row.id && (
+                    <tr key={`${row.id}-del`}>
+                      <td colSpan={COL_SPAN} className="px-6 py-3 border-b border-red-900/40" style={{ background: 'rgba(127,29,29,0.18)' }}>
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <span className="text-sm text-red-300">Delete <strong className="text-red-200">{fullName}</strong>? This cannot be undone.</span>
+                          <button
+                            onClick={() => handleDelete(row)}
+                            className="px-3 py-1 text-xs font-semibold bg-red-700 hover:bg-red-600 text-white rounded transition-colors"
+                          >Confirm</button>
+                          <button
+                            onClick={() => { setConfirmDeleteId(null); setDeleteError(null) }}
+                            className="px-3 py-1 text-xs bg-[#374151] hover:bg-[#4b5563] text-gray-300 rounded transition-colors"
+                          >Cancel</button>
+                          {deleteError && <span className="text-xs text-red-400">{deleteError}</span>}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                   {isExpanded && (
                     <tr key={`${row.id}-exp`}>
                       <td colSpan={COL_SPAN} className="bg-[#263045] px-6 py-4 border-b border-[#374151]">
@@ -2427,6 +2507,8 @@ function PastBuyersPage() {
         emptyMessage="No past buyers found."
         loading={loading}
         showBuyerDot
+        table="past_buyers"
+        onDeleteRow={id => setRows(prev => prev.filter(r => r.id !== id))}
       />
     </div>
   )
@@ -2450,6 +2532,8 @@ function PastCandidatesPage() {
         rows={rows}
         emptyMessage="No past candidates found."
         loading={loading}
+        table="past_candidates"
+        onDeleteRow={id => setRows(prev => prev.filter(r => r.id !== id))}
       />
     </div>
   )
