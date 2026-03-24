@@ -3,6 +3,9 @@ import { matchesRoleKeywords, EXCLUDED_ROLE_PATTERNS } from '../lib/roleKeywords
 import { createLinkedInClient, shuffleArray } from '../lib/linkedinClient.js'
 import { loadDismissalRules, checkDismissalExclusion } from '../lib/dismissalRules.js'
 
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+const randomDelay = (min, max) => sleep(Math.floor(Math.random() * (max - min + 1)) + min)
+
 // Strip query-string tracking params so the same LinkedIn job with different
 // refId/trackingId values is recognised as the same posting.
 function normalizeJobUrl(url) {
@@ -269,6 +272,7 @@ export async function run() {
     ]
     let firmsChecked = 0
     let firmIndex = 0
+    let consecutiveEmpty = 0
 
     // ── Step 4: LinkedIn search for each firm — no career page fetching ──────
     for (const firm of firmsToCheck) {
@@ -287,6 +291,16 @@ export async function run() {
       if (linkedin.botDetected) {
         console.log('[CompetitorJobs] Bot detected — stopping for today')
         break
+      }
+
+      if (liJobs.length === 0) {
+        consecutiveEmpty++
+        if (consecutiveEmpty >= 5) {
+          console.log('[CompetitorJobs] Rate limited — stopping to avoid detection')
+          break
+        }
+      } else {
+        consecutiveEmpty = 0
       }
 
       let liInserted = 0

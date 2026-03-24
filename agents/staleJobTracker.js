@@ -5,6 +5,9 @@ import { loadPastClients, matchPastClient } from '../lib/pastClientScoring.js'
 import { loadExcludedCompanies, isExcludedCompany } from '../lib/companyExclusion.js'
 import { loadDismissalRules, checkDismissalExclusion } from '../lib/dismissalRules.js'
 
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+const randomDelay = (min, max) => sleep(Math.floor(Math.random() * (max - min + 1)) + min)
+
 // Strip query-string tracking params so the same LinkedIn job with different
 // refId/trackingId values is recognised as the same posting.
 function normalizeJobUrl(url) {
@@ -238,8 +241,10 @@ export async function run() {
   console.log(`[StaleJobs] Loaded ${[...dismissalRules.values()].flat().length} active dismissal rules.`)
 
   // Build one targeted query per past client: "{short name}" pharmaceutical
-  const targetedQueries = [...pastClientsMap.values()].map((client) =>
-    `"${shortCompanyName(client.name)}" pharmaceutical`
+  const targetedQueries = shuffleArray(
+    [...pastClientsMap.values()].map((client) =>
+      `"${shortCompanyName(client.name)}" pharmaceutical`
+    )
   )
 
   let signalsFound = 0
@@ -281,6 +286,7 @@ export async function run() {
     console.log(`[StaleJobs] Running ${targetedQueries.length} targeted past client queries first...`)
     let pastClientSignals = 0
     let pastClientQueriesDone = 0
+    let consecutiveEmpty = 0
 
     for (const query of targetedQueries) {
       if (liSignals >= MAX_LI_SIGNALS) break
@@ -294,6 +300,16 @@ export async function run() {
       if (linkedin.botDetected) {
         console.log('[StaleJobs] Bot detected — stopping for today')
         break
+      }
+
+      if (results.length === 0) {
+        consecutiveEmpty++
+        if (consecutiveEmpty >= 5) {
+          console.log('[StaleJobs] Rate limited — stopping to avoid detection')
+          break
+        }
+      } else {
+        consecutiveEmpty = 0
       }
 
       let queryCount = 0
@@ -381,6 +397,7 @@ export async function run() {
 
     // ── Generic role queries (shuffled, run after targeted) ──────────────────
     const queries = shuffleArray(LINKEDIN_STALE_QUERIES)
+    consecutiveEmpty = 0
 
     for (const query of queries) {
       if (liSignals >= MAX_LI_SIGNALS) break
@@ -395,6 +412,16 @@ export async function run() {
       if (linkedin.botDetected) {
         console.log('[StaleJobs] Bot detected — stopping for today')
         break
+      }
+
+      if (results.length === 0) {
+        consecutiveEmpty++
+        if (consecutiveEmpty >= 5) {
+          console.log('[StaleJobs] Rate limited — stopping to avoid detection')
+          break
+        }
+      } else {
+        consecutiveEmpty = 0
       }
 
       let queryCount = 0

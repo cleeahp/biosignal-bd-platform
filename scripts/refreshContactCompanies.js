@@ -26,9 +26,9 @@ const TEST_MODE = process.env.TEST_MODE === '1'
 // Exact User-Agent from lib/linkedinClient.js
 const LINKEDIN_UA      = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const GRAPHQL_QUERY_ID = 'voyagerSearchDashClusters.b0928897b71bd00a5a7291755dcd64f0'
-const REQUEST_DELAY    = 2_000
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+const randomDelay = (min, max) => sleep(Math.floor(Math.random() * (max - min + 1)) + min)
 
 // ── Session init ───────────────────────────────────────────────────────────────
 
@@ -201,7 +201,7 @@ async function main() {
 
   if (TEST_MODE) console.log('[Companies] TEST_MODE=1 — will process one contact per table')
 
-  // Load all contacts from both tables
+  // Load all contacts from both tables, then shuffle for varied order each run
   const allContacts = []
   for (const table of TABLES) {
     const { data, error } = await supabase
@@ -211,6 +211,7 @@ async function main() {
     const batch = TEST_MODE ? data.slice(0, 1) : data
     for (const c of batch) allContacts.push({ ...c, _table: table })
   }
+  if (!TEST_MODE) allContacts.sort(() => Math.random() - 0.5)
 
   const budget = allContacts.length
   console.log(`[Companies] Total contacts: ${budget} — LinkedIn budget: ${budget}`)
@@ -223,7 +224,7 @@ async function main() {
   }
 
   let totalChecked = 0, foundHtml = 0, foundFallback = 0, notFound = 0
-  let companyChanges = 0, reqCount = 0, stopped = false
+  let companyChanges = 0, reqCount = 0, stopped = false, consecutiveEmpty = 0
 
   for (const contact of allContacts) {
     if (stopped || reqCount >= budget) {
@@ -251,10 +252,25 @@ async function main() {
       reqCount,
     )
 
-    await sleep(REQUEST_DELAY)
+    // Human-like delay; extended break every 50 requests
+    if (!TEST_MODE) {
+      if (reqCount % 50 === 0) {
+        console.log(`[Companies] Taking extended break at request ${reqCount}...`)
+        await randomDelay(30_000, 45_000)
+      } else {
+        await randomDelay(8_000, 15_000)
+      }
+    }
 
     if (result?.stop)     { stopped = true; break }
     if (result?.malformed || result?.empty || !result) {
+      if (result?.empty || result?.malformed) {
+        consecutiveEmpty = (consecutiveEmpty || 0) + 1
+        if (consecutiveEmpty >= 5) {
+          console.log('[Companies] Rate limited — stopping to avoid detection')
+          stopped = true; break
+        }
+      }
       console.log(`[Companies] NOT FOUND: ${fullName}`)
       notFound++
       await supabase.from(contact._table)
@@ -262,8 +278,10 @@ async function main() {
         .eq('id', contact.id)
       continue
     }
+    consecutiveEmpty = 0
 
     const { publicIdentifier, subtitleText } = result
+    consecutiveEmpty = 0
 
     // Try HTML parse first
     let linkedinCompany = null

@@ -24,12 +24,10 @@ const supabase = createClient(
 const TABLES    = ['past_buyers', 'past_candidates']
 const TEST_MODE = process.env.TEST_MODE === '1'
 
-const LINKEDIN_UA    = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-const REQUEST_DELAY  = 2_000   // ms between requests
+const LINKEDIN_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms))
-}
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+const randomDelay = (min, max) => sleep(Math.floor(Math.random() * (max - min + 1)) + min)
 
 // GraphQL queryId confirmed working for people search (March 2026)
 const GRAPHQL_QUERY_ID = 'voyagerSearchDashClusters.b0928897b71bd00a5a7291755dcd64f0'
@@ -257,10 +255,10 @@ async function main() {
       continue
     }
 
-    const batch = TEST_MODE ? contacts.slice(0, 1) : contacts
-    console.log(`\n[Contacts] Processing ${batch.length} contacts from ${table}${TEST_MODE ? ' (TEST_MODE)' : ''}`)
+    const shuffled = TEST_MODE ? contacts.slice(0, 1) : [...contacts].sort(() => Math.random() - 0.5)
+    console.log(`\n[Contacts] Processing ${shuffled.length} contacts from ${table}${TEST_MODE ? ' (TEST_MODE)' : ''}`)
 
-    for (const contact of batch) {
+    for (const contact of shuffled) {
       if (stopped || reqCount >= requestBudget) {
         console.log('[Contacts] Budget exhausted or stopped — halting')
         break outer
@@ -289,8 +287,15 @@ async function main() {
         reqCount,
       )
 
-      // 2-second delay between requests to avoid triggering rate limits
-      if (!TEST_MODE) await sleep(REQUEST_DELAY)
+      // Human-like delay between requests; extended break every 50 requests
+      if (!TEST_MODE) {
+        if (reqCount % 50 === 0) {
+          console.log(`[Contacts] Taking extended break at request ${reqCount}...`)
+          await randomDelay(30_000, 45_000)
+        } else {
+          await randomDelay(8_000, 15_000)
+        }
+      }
 
       if (result?.stop) { stopped = true; break outer }
 
@@ -299,7 +304,10 @@ async function main() {
       if (result?.malformed) {
         console.log(`[Contacts] WARNING: Malformed response for ${fullName}`)
         consecutiveEmpty++
-        if (consecutiveEmpty >= 5) console.log('[Contacts] WARNING: 5 consecutive empty results — LinkedIn may be rate limiting. Consider stopping.')
+        if (consecutiveEmpty >= 5) {
+          console.log('[Contacts] Rate limited — stopping to avoid detection')
+          stopped = true; break outer
+        }
         totalNotFound++
         await supabase.from(table).update({ linkedin_last_checked: now }).eq('id', contact.id)
         continue
@@ -308,7 +316,10 @@ async function main() {
       if (result?.empty) {
         console.log(`[Contacts] WARNING: Empty results for ${fullName} — possible rate limit`)
         consecutiveEmpty++
-        if (consecutiveEmpty >= 5) console.log('[Contacts] WARNING: 5 consecutive empty results — LinkedIn may be rate limiting. Consider stopping.')
+        if (consecutiveEmpty >= 5) {
+          console.log('[Contacts] Rate limited — stopping to avoid detection')
+          stopped = true; break outer
+        }
         totalNotFound++
         await supabase.from(table).update({ linkedin_last_checked: now }).eq('id', contact.id)
         continue
