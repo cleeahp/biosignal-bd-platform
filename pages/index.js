@@ -645,7 +645,16 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
     source: signals.map(s => parseDetail(s.signal_detail).nct_id || ''),
   }), [signals])
 
-  const sorted = useMemo(() => sortSignals(signals), [signals])
+  const [sortDir, setSortDir] = useState('desc')
+  const sorted = useMemo(() => {
+    const arr = [...signals]
+    arr.sort((a, b) => {
+      const da = new Date(parseDetail(a.signal_detail).date_updated || a.updated_at || 0).getTime()
+      const db = new Date(parseDetail(b.signal_detail).date_updated || b.updated_at || 0).getTime()
+      return sortDir === 'desc' ? db - da : da - db
+    })
+    return arr
+  }, [signals, sortDir])
   const filtered = applyFilters(sorted, extractors)
 
   if (signals.length === 0) return <EmptyState message="No active clinical trial signals." />
@@ -660,7 +669,7 @@ function ClinicalTab({ signals, repName, expandedRows, onToggleRow, onClaim, onU
             <Th className="w-[16%]">Detail</Th>
             <Th className="w-[22%]">Summary</Th>
             <ColumnFilterDropdown colKey="source" label="Source" allValues={allValues.source} activeValues={filters.source} onApply={setFilter} className="w-[9%]" />
-            <Th className="w-[9%]">Date</Th>
+            <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[9%] cursor-pointer select-none hover:text-gray-200" onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}>Date {sortDir === 'desc' ? '↓' : '↑'}</th>
             <Th className="w-[6%]">Queue</Th>
             <Th className="w-[7%]">Claim</Th>
             <Th className="w-[3%]"></Th>
@@ -794,7 +803,16 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
     company: pillFiltered.map(s => extractors.company(s)),
   }), [pillFiltered, extractors])
 
-  const sorted = useMemo(() => sortSignals(pillFiltered), [pillFiltered])
+  const [sortDir, setSortDir] = useState('desc')
+  const sorted = useMemo(() => {
+    const arr = [...pillFiltered]
+    arr.sort((a, b) => {
+      const da = new Date(parseDetail(a.signal_detail).date_announced || a.first_detected_at || 0).getTime()
+      const db = new Date(parseDetail(b.signal_detail).date_announced || b.first_detected_at || 0).getTime()
+      return sortDir === 'desc' ? db - da : da - db
+    })
+    return arr
+  }, [pillFiltered, sortDir])
   const filtered = applyFilters(sorted, extractors)
 
   if (signals.length === 0) return <EmptyState message="No active funding or M&A signals." />
@@ -827,7 +845,7 @@ function FundingTab({ signals, repName, expandedRows, onToggleRow, onClaim, onUn
             <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[20%]" />
             <Th className="w-[10%]">Amount</Th>
             <Th className="w-[28%]">Summary</Th>
-            <Th className="w-[10%]">Date</Th>
+            <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[10%] cursor-pointer select-none hover:text-gray-200" onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}>Date {sortDir === 'desc' ? '↓' : '↑'}</th>
             <Th className="w-[6%]">Queue</Th>
             <Th className="w-[8%]">Claim</Th>
             <Th className="w-[3%]"></Th>
@@ -1936,7 +1954,17 @@ function CompetitorJobsPage({ signals, repName, expandedRows, onToggleRow, onCla
     client: signals.map(s => parseDetail(s.signal_detail).inferred_client || ''),
   }), [signals])
 
-  const filtered = applyFilters(signals, extractors)
+  const [sortDir, setSortDir] = useState('desc')
+  const sorted = useMemo(() => {
+    const arr = [...signals]
+    arr.sort((a, b) => {
+      const da = new Date(parseDetail(a.signal_detail).posting_date || a.first_detected_at || 0).getTime()
+      const db = new Date(parseDetail(b.signal_detail).posting_date || b.first_detected_at || 0).getTime()
+      return sortDir === 'desc' ? db - da : da - db
+    })
+    return arr
+  }, [signals, sortDir])
+  const filtered = applyFilters(sorted, extractors)
 
   if (signals.length === 0) return <EmptyState message="No competitor job postings found. Run agents to search for open roles." />
 
@@ -1950,7 +1978,7 @@ function CompetitorJobsPage({ signals, repName, expandedRows, onToggleRow, onCla
             <ColumnFilterDropdown colKey="competitor" label="Competitor" allValues={allValues.competitor} activeValues={filters.competitor} onApply={setFilter} className="w-[14%]" />
             <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[14%]" />
             <ColumnFilterDropdown colKey="client" label="Likely Client" allValues={allValues.client} activeValues={filters.client} onApply={setFilter} className="w-[14%]" />
-            <Th className="w-[10%]">Date Posted</Th>
+            <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[10%] cursor-pointer select-none hover:text-gray-200" onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}>Date Posted {sortDir === 'desc' ? '↓' : '↑'}</th>
             <Th className="w-[6%]">View</Th>
             <Th className="w-[8%]">Prompt</Th>
             <Th className="w-[7%]">Claim</Th>
