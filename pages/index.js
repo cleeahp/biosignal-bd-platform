@@ -1679,6 +1679,7 @@ const MAIN_NAV = [
   { key: 'stale',      label: 'Stale Roles',       icon: 'clock',     countKey: 'stale' },
   { key: 'buyers',     label: 'Past Buyers',       icon: 'users' },
   { key: 'candidates', label: 'Past Candidates',   icon: 'user' },
+  { key: 'contacts',   label: 'Other Contacts',    icon: 'user' },
 ]
 
 function Sidebar({ activePage, setActivePage, tabCounts }) {
@@ -2568,6 +2569,46 @@ function PastCandidatesPage() {
 }
 
 
+function OtherContactsPage() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  const loadContacts = () => {
+    setLoading(true)
+    fetch('/api/contacts?table=other_contacts')
+      .then(r => r.json())
+      .then(data => { setRows(Array.isArray(data) ? data : []); setLoading(false) })
+      .catch(() => setLoading(false))
+  }
+
+  useEffect(() => { loadContacts() }, [])
+
+  const handleMove = async (id, toTable) => {
+    const res = await fetch('/api/contacts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, from_table: 'other_contacts', to_table: toTable }),
+    })
+    if (res.ok) {
+      setRows(prev => prev.filter(r => r.id !== id))
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <p className="text-gray-400 text-sm">Uncategorized contacts. Use the action buttons to move them to Past Buyers or Past Candidates.</p>
+      <ContactsTable
+        rows={rows}
+        columns={['Name', 'Company', 'Title', 'Email', 'Phone']}
+        emptyMessage="No other contacts found."
+        loading={loading}
+        showActions
+        onAction={handleMove}
+      />
+    </div>
+  )
+}
+
 function SettingsPage() {
   const [rules, setRules] = useState([])
   const [rulesLoading, setRulesLoading] = useState(true)
@@ -3279,6 +3320,7 @@ export default function Home() {
               )}
               {activePage === 'buyers'     && <PastBuyersPage />}
               {activePage === 'candidates' && <PastCandidatesPage />}
+              {activePage === 'contacts'   && <OtherContactsPage />}
               {activePage === 'settings'   && <SettingsPage />}
             </>
           )}
