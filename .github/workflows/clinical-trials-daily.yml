@@ -1,0 +1,31 @@
+name: Daily Clinical Trials Scan
+
+on:
+  schedule:
+    - cron: '0 7 * * *'   # 2:00 AM EST (7:00 AM UTC) every day
+  workflow_dispatch:        # Manual trigger
+
+jobs:
+  scan-clinical-trials:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run clinical trials scan (daily)
+        env:
+          SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NODE_ENV:                  production
+        run: node scripts/clinicalTrialsScan.js --mode daily
