@@ -69,14 +69,6 @@ const FIELDS = [
   'OverallStatus',
   'LeadSponsorName',
   'Phase',
-  'LocationFacility',
-  'LocationCity',
-  'LocationState',
-  'LocationZip',
-  'LocationCountry',
-  'LocationContactName',
-  'LocationContactPhone',
-  'LocationContactEMail',
   'CentralContactName',
   'CentralContactPhone',
   'CentralContactEMail',
@@ -84,12 +76,17 @@ const FIELDS = [
   'IsFDARegulatedDevice',
 ].join(',')
 
+// Allowed phase values (raw CT.gov API strings). Combined phases are allowed
+// when they include Phase 2 or Phase 3.
+const ALLOWED_PHASES = new Set(['PHASE2', 'PHASE3'])
+
 function buildQueryUrl(lookbackDate, pageToken = null) {
   const params = new URLSearchParams({
     'filter.advanced': [
       `AREA[LastUpdatePostDate]RANGE[${lookbackDate},MAX]`,
       'AREA[LocationCountry]United States',
       'AREA[LeadSponsorClass]INDUSTRY',
+      'AREA[Phase](PHASE2 OR PHASE3)',
     ].join(' AND '),
     pageSize: String(PAGE_SIZE),
     fields: FIELDS,
@@ -129,6 +126,20 @@ async function fetchPage(url, attempt = 1) {
 
 // ── Data extraction ───────────────────────────────────────────────────────────
 
+/**
+ * Check whether a study's phase array contains at least one allowed phase.
+ * Allowed: PHASE2, PHASE3, or any combined phase that includes one of those
+ * (e.g. PHASE1 + PHASE2, PHASE2 + PHASE3).
+ * Rejected: pure PHASE1, PHASE4, EARLY_PHASE1, NA, empty/missing.
+ *
+ * @param {string[]} phases - raw phase array from CT.gov (e.g. ['PHASE2'])
+ * @returns {boolean}
+ */
+function isAllowedPhase(phases) {
+  if (!phases || phases.length === 0) return false
+  return phases.some((p) => ALLOWED_PHASES.has(p.toUpperCase()))
+}
+
 function extractTrial(study) {
   const proto = study.protocolSection || {}
   const id = proto.identificationModule || {}
@@ -141,10 +152,18 @@ function extractTrial(study) {
   const nctId = id.nctId
   if (!nctId) return null
 
+  // Post-fetch phase filter: reject anything that isn't Phase 2/3 or a
+  // combined phase containing 2 or 3
+  const phases = design.phases || []
+  if (!isAllowedPhase(phases)) {
+    const phaseLabel = phases.length > 0 ? phases.join(',') : 'NA'
+    console.log(`[ClinicalTrialsScan] SKIPPED (phase: ${phaseLabel}): ${nctId}`)
+    return null
+  }
+
   const leadSponsor = sponsor.leadSponsor || {}
 
   // Phase: join array into string like "Phase 2" or "Phase 1/Phase 2"
-  const phases = design.phases || []
   const phase = phases
     .map((p) => p.replace(/^PHASE/i, 'Phase '))
     .join('/')
@@ -152,25 +171,6 @@ function extractTrial(study) {
 
   // Last update date
   const lastUpdateRaw = status.lastUpdatePostDateStruct?.date || null
-
-  // Locations: extract all US locations into JSONB array
-  // CT.gov v2 nests contacts inside each location as a contacts[] array
-  const locationsList = Array.isArray(contacts.locations) ? contacts.locations : []
-  const usLocations = locationsList
-    .filter((loc) => loc.country === 'United States' || !loc.country)
-    .map((loc) => {
-      const locContacts = Array.isArray(loc.contacts) ? loc.contacts : []
-      const contact = locContacts[0] || {}
-      return {
-        facility: loc.facility || null,
-        city: loc.city || null,
-        state: loc.state || null,
-        zip: loc.zip || null,
-        contact_name: contact.name || null,
-        contact_phone: contact.phone || null,
-        contact_email: contact.email || null,
-      }
-    })
 
   // Central contacts
   const centralContactsList = Array.isArray(contacts.centralContacts) ? contacts.centralContacts : []
@@ -187,7 +187,6 @@ function extractTrial(study) {
     overall_status: status.overallStatus || null,
     lead_sponsor_name: leadSponsor.name || null,
     phase,
-    locations: usLocations.length > 0 ? usLocations : null,
     central_contacts: centralContacts.length > 0 ? centralContacts : null,
     is_fda_regulated_drug: oversight.isFdaRegulatedDrug ?? null,
     is_fda_regulated_device: oversight.isFdaRegulatedDevice ?? null,
@@ -251,6 +250,7 @@ async function main() {
   console.log(`[ClinicalTrialsScan] Mode: ${mode}, Lookback: ${LOOKBACK_DAYS} days (since ${lookbackDate})`)
 
   let totalFetched = 0
+  let phaseFiltered = 0
   let inserted = 0
   let updated = 0
   let skipped = 0
@@ -279,7 +279,7 @@ async function main() {
 
     for (const study of studies) {
       const trial = extractTrial(study)
-      if (!trial) continue
+      if (!trial) { phaseFiltered++; continue }
 
       const result = await upsertTrial(trial)
       switch (result) {
@@ -303,11 +303,12 @@ async function main() {
   }
 
   console.log(`\n[ClinicalTrialsScan] === COMPLETE ===`)
-  console.log(`[ClinicalTrialsScan] Total fetched: ${totalFetched}`)
-  console.log(`[ClinicalTrialsScan] Inserted:      ${inserted}`)
-  console.log(`[ClinicalTrialsScan] Updated:       ${updated}`)
-  console.log(`[ClinicalTrialsScan] Skipped:       ${skipped}`)
-  console.log(`[ClinicalTrialsScan] Errors:        ${errors}`)
+  console.log(`[ClinicalTrialsScan] Total fetched:   ${totalFetched}`)
+  console.log(`[ClinicalTrialsScan] Phase filtered: ${phaseFiltered}`)
+  console.log(`[ClinicalTrialsScan] Inserted:       ${inserted}`)
+  console.log(`[ClinicalTrialsScan] Updated:        ${updated}`)
+  console.log(`[ClinicalTrialsScan] Skipped:        ${skipped}`)
+  console.log(`[ClinicalTrialsScan] Errors:         ${errors}`)
 }
 
 main().catch((err) => {
