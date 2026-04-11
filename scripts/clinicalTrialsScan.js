@@ -373,15 +373,9 @@ async function matchSponsors(sponsorsToMatch, existingAltNames, directoryDomains
       }
     }
 
-    // No match — record so we don't reprocess
+    // No match — skip, will be re-checked on future runs
     const domainLabel = domain || 'none'
     console.log(`[ClinicalTrialsScan] NO MATCH: "${sponsor}" (domain: ${domainLabel})`)
-    rowsToInsert.push({
-      directory_name: sponsor,
-      alternate_name: sponsor,
-      matched_via: 'no_match',
-      domain: domain || null,
-    })
     noMatch++
   }
 
