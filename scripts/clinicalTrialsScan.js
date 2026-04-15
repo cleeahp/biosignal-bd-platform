@@ -246,87 +246,199 @@ async function upsertTrial(trial) {
   return 'updated'
 }
 
-// ── Company name matching via email domain ───────────────────────────────────
+// ── Company name matching (multi-layer) ──────────────────────────────────────
 
 const GENERIC_EMAIL_DOMAINS = new Set([
   'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com',
   'aol.com', 'icloud.com', 'protonmail.com', 'mail.com',
 ])
 
+const LEGAL_SUFFIXES_RE = /[,.]?\s*\b(Inc\.?|Corp\.?|Corporation|LLC\.?|Ltd\.?|Limited|L\.?P\.?|LP|Co\.?|GmbH|B\.?V\.?|S\.?A\.?|S\.?L\.?|KGaA|ApS|Srl|A\/S|PLC|AG|NV|SE|Pty)\s*$/i
+
+const SUBSIDIARY_RE = /\s*(?:a wholly owned subsidiary of|a subsidiary of|an affiliate of|formerly|part of|a division of|dba)\s+/i
+
+const STOP_WORDS = new Set(['the', 'and', 'of', 'for', 'in', 'by', 'at', 'to'])
+
 /**
- * Load all existing (alternate_name, directory_name) pairs from
- * companies_alternate_names into a Set for fast in-memory dedup.
- * Key format: "lowercase_alt_name\0lowercase_dir_name"
+ * Parse company_size strings like "10,001+ employees" → 10001 (lower bound).
+ * Returns 0 for null/empty/unparseable.
+ */
+function parseSize(sizeStr) {
+  if (!sizeStr) return 0
+  // Extract the first number (which is the lower bound)
+  const match = sizeStr.replace(/,/g, '').match(/(\d+)/)
+  return match ? parseInt(match[1], 10) : 0
+}
+
+/**
+ * Given an array of { name, size } entries, return the one with the largest
+ * parsed company_size. Ties broken by first occurrence.
+ */
+function pickLargest(entries) {
+  if (!entries || entries.length === 0) return null
+  if (entries.length === 1) return entries[0]
+  let best = entries[0]
+  let bestSize = parseSize(best.size)
+  for (let i = 1; i < entries.length; i++) {
+    const s = parseSize(entries[i].size)
+    if (s > bestSize) {
+      best = entries[i]
+      bestSize = s
+    }
+  }
+  return best
+}
+
+/**
+ * Clean a company name for comparison:
+ *   - Strip parenthetical content
+ *   - Strip subsidiary/formerly phrases and everything after
+ *   - Strip legal suffixes
+ *   - Trim trailing commas/whitespace
+ *   - Lowercase
+ */
+function cleanName(raw) {
+  if (!raw) return ''
+  let s = raw
+  // Remove parenthetical content
+  s = s.replace(/\s*\([^)]*\)/g, '')
+  // Strip subsidiary phrases and everything after them
+  const subIdx = s.search(SUBSIDIARY_RE)
+  if (subIdx !== -1) s = s.substring(0, subIdx)
+  // Strip legal suffixes (may need multiple passes)
+  for (let i = 0; i < 3; i++) {
+    const prev = s
+    s = s.replace(LEGAL_SUFFIXES_RE, '')
+    if (s === prev) break
+  }
+  // Trim trailing commas, periods, whitespace
+  s = s.replace(/[,.\s]+$/, '').trim()
+  return s.toLowerCase()
+}
+
+/**
+ * Extract the first 1-2 significant words from a cleaned name for prefix matching.
+ */
+function extractCoreWords(cleaned) {
+  if (!cleaned) return []
+  const words = cleaned.split(/\s+/).filter((w) => w.length > 0 && !STOP_WORDS.has(w))
+  return words.slice(0, 2)
+}
+
+/**
+ * Extract parent company name from subsidiary phrases.
+ * Returns null if no subsidiary pattern found.
+ */
+function extractParentName(raw) {
+  if (!raw) return null
+  const match = raw.match(SUBSIDIARY_RE)
+  if (!match) return null
+  const afterPhrase = raw.substring(match.index + match[0].length).trim()
+  if (!afterPhrase) return null
+  // Clean the parent name too (strip its own legal suffixes)
+  let parent = afterPhrase.replace(/\s*\([^)]*\)/g, '')
+  for (let i = 0; i < 3; i++) {
+    const prev = parent
+    parent = parent.replace(LEGAL_SUFFIXES_RE, '')
+    if (parent === prev) break
+  }
+  return parent.replace(/[,.\s]+$/, '').trim() || null
+}
+
+// ── Data loading ─────────────────────────────────────────────────────────────
+
+/**
+ * Load all existing alternate_name values from companies_alternate_names
+ * into a Set (lowercased) for skip-check. If a sponsor already exists
+ * (regardless of matched_via), skip all matching layers.
  */
 async function loadExistingAlternateNames() {
-  const pairs = new Set()
+  const names = new Set()
   const PAGE = 1000
   let offset = 0
 
   while (true) {
     const { data, error } = await supabase
       .from('companies_alternate_names')
-      .select('alternate_name, directory_name')
+      .select('alternate_name')
       .range(offset, offset + PAGE - 1)
 
     if (error) {
       console.error(`[ClinicalTrialsScan] Error loading alternate names: ${error.message}`)
-      return pairs
+      return names
     }
     if (!data || data.length === 0) break
 
     for (const row of data) {
-      pairs.add(`${row.alternate_name.trim().toLowerCase()}\0${row.directory_name.trim().toLowerCase()}`)
+      names.add(row.alternate_name.trim().toLowerCase())
     }
     offset += PAGE
   }
 
-  return pairs
+  return names
 }
 
 /**
- * Load all companies_directory rows that have a domain into a Map
- * keyed by lowercase domain → array of company names. Multiple companies
- * can share the same domain (e.g. "Novartis AG" and "Novartis Pharmaceuticals").
+ * Load ALL companies_directory rows into memory. Builds three indexes:
+ *   - domainMap:   lowercase domain → [{ name, size }]
+ *   - nameMap:     cleaned lowercase name → [{ name, size }]
+ *   - prefixIndex: first significant word → [{ name, cleanedName, size }]
  */
-async function loadDirectoryDomains() {
+async function loadDirectory() {
   const domainMap = new Map()
+  const nameMap = new Map()
+  const prefixIndex = new Map()
   const PAGE = 1000
   let offset = 0
+  let total = 0
 
   while (true) {
     const { data, error } = await supabase
       .from('companies_directory')
-      .select('name, domain')
-      .not('domain', 'is', null)
+      .select('name, domain, company_size')
       .range(offset, offset + PAGE - 1)
 
     if (error) {
-      console.error(`[ClinicalTrialsScan] Error loading directory domains: ${error.message}`)
-      return domainMap
+      console.error(`[ClinicalTrialsScan] Error loading directory: ${error.message}`)
+      break
     }
     if (!data || data.length === 0) break
 
     for (const row of data) {
+      total++
+      const entry = { name: row.name, size: row.company_size || null }
+
+      // Domain index
       if (row.domain) {
-        const key = row.domain.trim().toLowerCase()
-        if (!domainMap.has(key)) {
-          domainMap.set(key, [])
+        const domKey = row.domain.trim().toLowerCase()
+        if (!domainMap.has(domKey)) domainMap.set(domKey, [])
+        domainMap.get(domKey).push(entry)
+      }
+
+      // Cleaned name index
+      const cleaned = cleanName(row.name)
+      if (cleaned) {
+        if (!nameMap.has(cleaned)) nameMap.set(cleaned, [])
+        nameMap.get(cleaned).push(entry)
+
+        // Prefix index (first significant word)
+        const coreWords = extractCoreWords(cleaned)
+        if (coreWords.length > 0) {
+          const firstWord = coreWords[0]
+          if (!prefixIndex.has(firstWord)) prefixIndex.set(firstWord, [])
+          prefixIndex.get(firstWord).push({ ...entry, cleanedName: cleaned })
         }
-        domainMap.get(key).push(row.name)
       }
     }
     offset += PAGE
   }
 
-  return domainMap
+  console.log(`[ClinicalTrialsScan] Loaded ${total} directory companies → ${domainMap.size} domains, ${nameMap.size} cleaned names, ${prefixIndex.size} prefix words`)
+  return { domainMap, nameMap, prefixIndex }
 }
 
-/**
- * Extract the first non-generic email domain from a central_contacts JSONB array.
- * @param {Array|null} centralContacts
- * @returns {string|null}
- */
+// ── Matching layers ──────────────────────────────────────────────────────────
+
 function extractEmailDomain(centralContacts) {
   if (!Array.isArray(centralContacts)) return null
 
@@ -347,48 +459,175 @@ function extractEmailDomain(centralContacts) {
 }
 
 /**
- * Process all collected sponsor names against the directory.
- * Queues up rows to batch-insert into companies_alternate_names.
- *
- * @param {Map<string, { sponsor: string, centralContacts: Array|null }>} sponsorsToMatch
- * @param {Set<string>} existingAltPairs - "alt\0dir" pair keys already in DB
- * @param {Map<string, string[]>} directoryDomains - lowercase domain → array of directory company names
+ * Layer 1: Email domain match.
+ * Returns { dirName, domain } or null.
  */
-async function matchSponsors(sponsorsToMatch, existingAltPairs, directoryDomains) {
+function matchByDomain(centralContacts, domainMap) {
+  const domain = extractEmailDomain(centralContacts)
+  if (!domain) return null
+
+  const entries = domainMap.get(domain)
+  if (!entries || entries.length === 0) return null
+
+  const best = pickLargest(entries)
+  return { dirName: best.name, domain, layer: 'email_domain' }
+}
+
+/**
+ * Layer 2: Exact cleaned name match.
+ * Returns { dirName } or null.
+ */
+function matchByExactName(sponsorName, nameMap) {
+  const cleaned = cleanName(sponsorName)
+  if (!cleaned) return null
+
+  const entries = nameMap.get(cleaned)
+  if (!entries || entries.length === 0) return null
+
+  const best = pickLargest(entries)
+  return { dirName: best.name, domain: null, layer: 'exact_name' }
+}
+
+/**
+ * Layer 3: Core keyword prefix match.
+ * Returns { dirName } or null.
+ */
+function matchByKeyword(sponsorName, prefixIndex) {
+  const cleaned = cleanName(sponsorName)
+  if (!cleaned) return null
+
+  const coreWords = extractCoreWords(cleaned)
+  if (coreWords.length === 0) return null
+
+  const firstWord = coreWords[0]
+
+  // For short single-word names (<=4 chars), require exact word-boundary match
+  if (coreWords.length === 1 && firstWord.length <= 4) {
+    const candidates = prefixIndex.get(firstWord)
+    if (!candidates) return null
+    // Only match if the directory cleaned name is exactly this word
+    const exact = candidates.filter((c) => c.cleanedName === firstWord)
+    if (exact.length === 0) return null
+    const best = pickLargest(exact)
+    return { dirName: best.name, domain: null, layer: 'keyword' }
+  }
+
+  // Check if any directory company's cleaned name starts with the core words
+  const candidates = prefixIndex.get(firstWord)
+  if (!candidates || candidates.length === 0) return null
+
+  // If we have 2 core words, filter to entries whose cleaned name starts with both
+  const prefix = coreWords.join(' ')
+  const matches = candidates.filter((c) => c.cleanedName.startsWith(prefix))
+
+  if (matches.length > 0) {
+    const best = pickLargest(matches)
+    return { dirName: best.name, domain: null, layer: 'keyword' }
+  }
+
+  // Fall back to single first-word prefix if 2-word prefix had no matches
+  if (coreWords.length > 1) {
+    const singleMatches = candidates.filter((c) => c.cleanedName.startsWith(firstWord))
+    if (singleMatches.length > 0) {
+      const best = pickLargest(singleMatches)
+      return { dirName: best.name, domain: null, layer: 'keyword' }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Layer 4: Subsidiary/parent extraction.
+ * Extracts parent name and tries layers 2 and 3 on it.
+ * Returns { dirName, parentName } or null.
+ */
+function matchBySubsidiary(sponsorName, nameMap, prefixIndex) {
+  const parentRaw = extractParentName(sponsorName)
+  if (!parentRaw) return null
+
+  // Try exact name match on parent
+  const exactMatch = matchByExactName(parentRaw, nameMap)
+  if (exactMatch) return { dirName: exactMatch.dirName, domain: null, layer: 'subsidiary', parentName: parentRaw }
+
+  // Try keyword match on parent
+  const keywordMatch = matchByKeyword(parentRaw, prefixIndex)
+  if (keywordMatch) return { dirName: keywordMatch.dirName, domain: null, layer: 'subsidiary', parentName: parentRaw }
+
+  return null
+}
+
+/**
+ * Run all matching layers in priority order. Returns a match result or null.
+ */
+function matchSponsor(sponsor, centralContacts, directory) {
+  // Layer 1: Email domain
+  const domainMatch = matchByDomain(centralContacts, directory.domainMap)
+  if (domainMatch) return domainMatch
+
+  // Layer 2: Exact cleaned name
+  const exactMatch = matchByExactName(sponsor, directory.nameMap)
+  if (exactMatch) return exactMatch
+
+  // Layer 3: Core keyword prefix
+  const keywordMatch = matchByKeyword(sponsor, directory.prefixIndex)
+  if (keywordMatch) return keywordMatch
+
+  // Layer 4: Subsidiary/parent extraction
+  const subMatch = matchBySubsidiary(sponsor, directory.nameMap, directory.prefixIndex)
+  if (subMatch) return subMatch
+
+  // Layer 5: No match
+  return null
+}
+
+// ── Orchestrator ─────────────────────────────────────────────────────────────
+
+async function matchSponsors(sponsorsToMatch, existingAltNames, directory) {
   const rowsToInsert = []
-  let matched = 0
+  let matchedByLayer = { email_domain: 0, exact_name: 0, keyword: 0, subsidiary: 0 }
   let noMatch = 0
 
   for (const [sponsorKey, { sponsor, centralContacts }] of sponsorsToMatch) {
-    const domain = extractEmailDomain(centralContacts)
+    // Skip if this alternate_name already exists in DB (any matched_via)
+    if (existingAltNames.has(sponsorKey)) continue
 
-    if (domain) {
-      const directoryNames = directoryDomains.get(domain)
-      if (directoryNames && directoryNames.length > 0) {
-        // Filter out pairs that already exist in DB
-        const newNames = directoryNames.filter(
-          (dirName) => !existingAltPairs.has(`${sponsorKey}\0${dirName.trim().toLowerCase()}`)
-        )
-        if (newNames.length > 0) {
-          console.log(`[ClinicalTrialsScan] MATCHED: "${sponsor}" → ${newNames.length} companies via domain ${domain}`)
-          for (const dirName of newNames) {
-            rowsToInsert.push({
-              directory_name: dirName,
-              alternate_name: sponsor,
-              matched_via: 'email_domain',
-              domain,
-            })
-          }
-          matched++
-          continue
+    const result = matchSponsor(sponsor, centralContacts, directory)
+
+    if (result) {
+      console.log(`[ClinicalTrialsScan] MATCHED (${result.layer}): "${sponsor}" → "${result.dirName}"${result.domain ? ` via domain ${result.domain}` : ''}`)
+      rowsToInsert.push({
+        directory_name: result.dirName,
+        alternate_name: sponsor,
+        matched_via: result.layer,
+        domain: result.domain || null,
+      })
+
+      // Layer 4 also records the parent name as an alternate name
+      if (result.layer === 'subsidiary' && result.parentName) {
+        const parentKey = result.parentName.trim().toLowerCase()
+        if (!existingAltNames.has(parentKey)) {
+          rowsToInsert.push({
+            directory_name: result.dirName,
+            alternate_name: result.parentName,
+            matched_via: 'subsidiary',
+            domain: null,
+          })
         }
       }
-    }
 
-    // No match — skip, will be re-checked on future runs
-    const domainLabel = domain || 'none'
-    console.log(`[ClinicalTrialsScan] NO MATCH: "${sponsor}" (domain: ${domainLabel})`)
-    noMatch++
+      matchedByLayer[result.layer]++
+    } else {
+      // Layer 5: No match — insert self-referencing row to prevent reprocessing
+      console.log(`[ClinicalTrialsScan] NO MATCH: "${sponsor}"`)
+      rowsToInsert.push({
+        directory_name: sponsor,
+        alternate_name: sponsor,
+        matched_via: 'no_match',
+        domain: null,
+      })
+      noMatch++
+    }
   }
 
   // Batch insert
@@ -401,7 +640,6 @@ async function matchSponsors(sponsorsToMatch, existingAltPairs, directoryDomains
       const { error } = await supabase.from('companies_alternate_names').insert(batch)
 
       if (error) {
-        // Fall back to one-by-one for this batch
         for (const row of batch) {
           const { error: rowErr } = await supabase.from('companies_alternate_names').insert(row)
           if (rowErr) {
@@ -417,7 +655,8 @@ async function matchSponsors(sponsorsToMatch, existingAltPairs, directoryDomains
     }
   }
 
-  console.log(`[ClinicalTrialsScan] Name matching: ${matched} sponsors matched, ${noMatch} no match, ${rowsToInsert.length} new rows inserted`)
+  const totalMatched = matchedByLayer.email_domain + matchedByLayer.exact_name + matchedByLayer.keyword + matchedByLayer.subsidiary
+  console.log(`[ClinicalTrialsScan] Name matching: ${totalMatched} matched (domain: ${matchedByLayer.email_domain}, exact: ${matchedByLayer.exact_name}, keyword: ${matchedByLayer.keyword}, subsidiary: ${matchedByLayer.subsidiary}), ${noMatch} no match, ${rowsToInsert.length} rows inserted`)
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -428,11 +667,11 @@ async function main() {
 
   // Pre-load lookup data for company name matching
   console.log('[ClinicalTrialsScan] Loading company matching data...')
-  const [existingAltPairs, directoryDomains] = await Promise.all([
+  const [existingAltNames, directory] = await Promise.all([
     loadExistingAlternateNames(),
-    loadDirectoryDomains(),
+    loadDirectory(),
   ])
-  console.log(`[ClinicalTrialsScan] Loaded ${existingAltPairs.size} existing alternate name pairs, ${directoryDomains.size} unique directory domains`)
+  console.log(`[ClinicalTrialsScan] Loaded ${existingAltNames.size} existing alternate names`)
 
   let totalFetched = 0
   let phaseFiltered = 0
@@ -481,7 +720,7 @@ async function main() {
       // Collect sponsor for matching (only if insert/update succeeded and sponsor exists)
       if (trial.lead_sponsor_name && (result === 'inserted' || result === 'updated')) {
         const key = trial.lead_sponsor_name.trim().toLowerCase()
-        if (!sponsorsToMatch.has(key)) {
+        if (!existingAltNames.has(key) && !sponsorsToMatch.has(key)) {
           sponsorsToMatch.set(key, {
             sponsor: trial.lead_sponsor_name,
             centralContacts: trial.central_contacts,
@@ -515,7 +754,7 @@ async function main() {
   console.log(`[ClinicalTrialsScan] ${sponsorsToMatch.size} new sponsors to match`)
 
   if (sponsorsToMatch.size > 0) {
-    await matchSponsors(sponsorsToMatch, existingAltPairs, directoryDomains)
+    await matchSponsors(sponsorsToMatch, existingAltNames, directory)
   } else {
     console.log('[ClinicalTrialsScan] No new sponsors to match.')
   }
