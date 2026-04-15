@@ -189,6 +189,7 @@ function extractTrial(study) {
     overall_status: status.overallStatus || null,
     lead_sponsor_name: leadSponsor.name || null,
     phase,
+    source_url: `https://clinicaltrials.gov/study/${nctId}`,
     central_contacts: centralContacts.length > 0 ? centralContacts : null,
     is_fda_regulated_drug: oversight.isFdaRegulatedDrug ?? null,
     is_fda_regulated_device: oversight.isFdaRegulatedDevice ?? null,
