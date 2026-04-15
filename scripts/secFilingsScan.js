@@ -106,14 +106,19 @@ function splitDateRange(startDate, endDate) {
 
 const LEGAL_SUFFIXES_RE = /[,.]?\s*\b(Inc\.?|Corp\.?|Corporation|LLC\.?|Ltd\.?|Limited|L\.?P\.?|LP|Co\.?|GmbH|B\.?V\.?|S\.?A\.?|S\.?L\.?|KGaA|ApS|Srl|A\/S|PLC|AG|NV|SE|Pty)\s*$/i
 
+const COUNTRY_SUFFIX_RE = /\s*[/\\]\s*[A-Z]{2,3}\s*$/
+
+const STOP_WORDS = new Set(['the', 'and', 'of', 'for', 'in', 'by', 'at', 'to'])
+
 /**
- * Clean a company name for comparison: strip parentheticals, legal suffixes,
- * trailing punctuation, lowercase.
+ * Clean a company name for comparison: strip parentheticals, country suffixes,
+ * legal suffixes, trailing punctuation, lowercase.
  */
 function cleanName(raw) {
   if (!raw) return ''
   let s = raw
   s = s.replace(/\s*\([^)]*\)/g, '')
+  s = s.replace(COUNTRY_SUFFIX_RE, '')
   for (let i = 0; i < 3; i++) {
     const prev = s
     s = s.replace(LEGAL_SUFFIXES_RE, '')
@@ -124,33 +129,113 @@ function cleanName(raw) {
 }
 
 /**
- * Load known company names from companies_directory, clinical_trials
- * lead sponsors, and past_clients. Returns a Set of cleaned lowercase names.
+ * Extract the first 1-2 significant words from a cleaned name for prefix matching.
  */
-async function loadKnownCompanies() {
-  const names = new Set()
-  const PAGE = 1000
+function extractCoreWords(cleaned) {
+  if (!cleaned) return []
+  const words = cleaned.split(/\s+/).filter((w) => w.length > 0 && !STOP_WORDS.has(w))
+  return words.slice(0, 2)
+}
 
-  // Load companies_directory names
+/**
+ * Parse company_size strings like "10,001+ employees" → 10001 (lower bound).
+ * Returns 0 for null/empty/unparseable.
+ */
+function parseSize(sizeStr) {
+  if (!sizeStr) return 0
+  const match = sizeStr.replace(/,/g, '').match(/(\d+)/)
+  return match ? parseInt(match[1], 10) : 0
+}
+
+/**
+ * Given an array of { name, size } entries, return the one with the largest
+ * parsed company_size. Ties broken by first occurrence.
+ */
+function pickLargest(entries) {
+  if (!entries || entries.length === 0) return null
+  if (entries.length === 1) return entries[0]
+  let best = entries[0]
+  let bestSize = parseSize(best.size)
+  for (let i = 1; i < entries.length; i++) {
+    const s = parseSize(entries[i].size)
+    if (s > bestSize) {
+      best = entries[i]
+      bestSize = s
+    }
+  }
+  return best
+}
+
+// ── Data loading ────────────────────────────────────────────────────────────
+
+/**
+ * Load companies_directory into memory. Builds:
+ *   - knownNames: Set of cleaned names (for filtering)
+ *   - nameMap: cleaned name → [{name, size}] (for exact matching)
+ *   - dirPrefixIndex: first significant word → [{name, cleanedName, size}] (for keyword matching)
+ *   - sizeMap: exact directory name → company_size (for enrichment)
+ */
+async function loadDirectory() {
+  const knownNames = new Set()
+  const nameMap = new Map()
+  const dirPrefixIndex = new Map()
+  const sizeMap = new Map()
+  const PAGE = 1000
   let offset = 0
+  let total = 0
+
   while (true) {
     const { data, error } = await supabase
       .from('companies_directory')
-      .select('name')
+      .select('name, company_size')
       .range(offset, offset + PAGE - 1)
     if (error) { console.error(`[SECFilingsScan] Error loading companies_directory: ${error.message}`); break }
     if (!data || data.length === 0) break
+
     for (const row of data) {
+      total++
+      const entry = { name: row.name, size: row.company_size || null }
+
+      // Known names set (for filtering)
       const cleaned = cleanName(row.name)
-      if (cleaned) names.add(cleaned)
+      if (cleaned) {
+        knownNames.add(cleaned)
+
+        // Name map (for exact matching)
+        if (!nameMap.has(cleaned)) nameMap.set(cleaned, [])
+        nameMap.get(cleaned).push(entry)
+
+        // Prefix index (for keyword matching)
+        const coreWords = extractCoreWords(cleaned)
+        if (coreWords.length > 0) {
+          const firstWord = coreWords[0]
+          if (!dirPrefixIndex.has(firstWord)) dirPrefixIndex.set(firstWord, [])
+          dirPrefixIndex.get(firstWord).push({ ...entry, cleanedName: cleaned })
+        }
+      }
+
+      // Size map (exact name → company_size)
+      if (!sizeMap.has(row.name)) {
+        sizeMap.set(row.name, row.company_size || null)
+      }
     }
     offset += PAGE
   }
-  const dirCount = names.size
-  console.log(`[SECFilingsScan] Loaded ${dirCount} names from companies_directory`)
+
+  console.log(`[SECFilingsScan] Loaded ${total} directory companies → ${nameMap.size} cleaned names, ${dirPrefixIndex.size} prefix words`)
+  return { knownNames, nameMap, dirPrefixIndex, sizeMap }
+}
+
+/**
+ * Load additional known company names from clinical_trials and past_clients.
+ * Adds to the existing knownNames Set for filtering.
+ */
+async function loadAdditionalKnownNames(knownNames) {
+  const PAGE = 1000
+  const before = knownNames.size
 
   // Load clinical_trials lead sponsor names
-  offset = 0
+  let offset = 0
   while (true) {
     const { data, error } = await supabase
       .from('clinical_trials')
@@ -160,11 +245,11 @@ async function loadKnownCompanies() {
     if (!data || data.length === 0) break
     for (const row of data) {
       const cleaned = cleanName(row.lead_sponsor_name)
-      if (cleaned) names.add(cleaned)
+      if (cleaned) knownNames.add(cleaned)
     }
     offset += PAGE
   }
-  console.log(`[SECFilingsScan] Loaded ${names.size - dirCount} additional names from clinical_trials`)
+  console.log(`[SECFilingsScan] Loaded ${knownNames.size - before} additional names from clinical_trials`)
 
   // Load past_clients names
   const { data: clients, error: clientErr } = await supabase
@@ -174,23 +259,47 @@ async function loadKnownCompanies() {
   if (clientErr) {
     console.error(`[SECFilingsScan] Error loading past_clients: ${clientErr.message}`)
   } else if (clients) {
-    const before = names.size
+    const beforeClients = knownNames.size
     for (const row of clients) {
       const cleaned = cleanName(row.name)
-      if (cleaned) names.add(cleaned)
+      if (cleaned) knownNames.add(cleaned)
     }
-    console.log(`[SECFilingsScan] Loaded ${names.size - before} additional names from past_clients`)
+    console.log(`[SECFilingsScan] Loaded ${knownNames.size - beforeClients} additional names from past_clients`)
   }
 
-  console.log(`[SECFilingsScan] Total known companies: ${names.size}`)
+  console.log(`[SECFilingsScan] Total known companies: ${knownNames.size}`)
+}
+
+/**
+ * Load existing alternate names from companies_alternate_names into a Set
+ * (lowercased) for dedup when recording new matches.
+ */
+async function loadExistingAlternateNames() {
+  const names = new Set()
+  const PAGE = 1000
+  let offset = 0
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('companies_alternate_names')
+      .select('alternate_name')
+      .range(offset, offset + PAGE - 1)
+    if (error) { console.error(`[SECFilingsScan] Error loading alternate names: ${error.message}`); break }
+    if (!data || data.length === 0) break
+    for (const row of data) {
+      names.add(row.alternate_name.trim().toLowerCase())
+    }
+    offset += PAGE
+  }
+
   return names
 }
 
 /**
- * Build a prefix index for fast fuzzy matching.
- * Maps first word of each name → Set of full cleaned names.
+ * Build a prefix index for fast fuzzy matching against the known names Set.
+ * Used for the keep/discard filtering step (not the directory matching step).
  */
-function buildPrefixIndex(knownNames) {
+function buildFilterPrefixIndex(knownNames) {
   const index = new Map()
   for (const name of knownNames) {
     const firstWord = name.split(/\s+/)[0]
@@ -203,22 +312,19 @@ function buildPrefixIndex(knownNames) {
 }
 
 /**
- * Check if a filing's company name matches any known company.
+ * Check if a filing's company name matches any known company (for filtering).
  * Tries exact cleaned match first, then prefix match using the index.
  */
-function matchesKnownCompany(filingCompanyName, knownNames, prefixIndex) {
+function matchesKnownCompany(filingCompanyName, knownNames, filterPrefixIndex) {
   const cleaned = cleanName(filingCompanyName)
   if (!cleaned) return false
 
-  // Exact match
   if (knownNames.has(cleaned)) return true
 
-  // Prefix match using index: check if any known name starts with filing name
-  // or filing name starts with any known name
   const firstWord = cleaned.split(/\s+/)[0]
   if (!firstWord || firstWord.length < 4) return false
 
-  const candidates = prefixIndex.get(firstWord)
+  const candidates = filterPrefixIndex.get(firstWord)
   if (!candidates) return false
 
   for (const known of candidates) {
@@ -229,6 +335,86 @@ function matchesKnownCompany(filingCompanyName, knownNames, prefixIndex) {
   }
 
   return false
+}
+
+// ── Directory matching (for enrichment) ─────────────────────────────────────
+
+/**
+ * Layer 1: Exact cleaned name match against companies_directory.
+ * Returns { dirName, size, layer } or null.
+ */
+function matchByExactName(companyName, nameMap) {
+  const cleaned = cleanName(companyName)
+  if (!cleaned) return null
+
+  const entries = nameMap.get(cleaned)
+  if (!entries || entries.length === 0) return null
+
+  const best = pickLargest(entries)
+  return { dirName: best.name, size: best.size, layer: 'exact_name' }
+}
+
+/**
+ * Layer 2: Core keyword prefix match against companies_directory.
+ * Returns { dirName, size, layer } or null.
+ */
+function matchByKeyword(companyName, dirPrefixIndex) {
+  const cleaned = cleanName(companyName)
+  if (!cleaned) return null
+
+  const coreWords = extractCoreWords(cleaned)
+  if (coreWords.length === 0) return null
+
+  const firstWord = coreWords[0]
+
+  // For short single-word names (<=4 chars), require exact word-boundary match
+  if (coreWords.length === 1 && firstWord.length <= 4) {
+    const candidates = dirPrefixIndex.get(firstWord)
+    if (!candidates) return null
+    const exact = candidates.filter((c) => c.cleanedName === firstWord)
+    if (exact.length === 0) return null
+    const best = pickLargest(exact)
+    return { dirName: best.name, size: best.size, layer: 'keyword' }
+  }
+
+  const candidates = dirPrefixIndex.get(firstWord)
+  if (!candidates || candidates.length === 0) return null
+
+  // Try 2-word prefix match first
+  const prefix = coreWords.join(' ')
+  const matches = candidates.filter((c) => c.cleanedName.startsWith(prefix))
+
+  if (matches.length > 0) {
+    const best = pickLargest(matches)
+    return { dirName: best.name, size: best.size, layer: 'keyword' }
+  }
+
+  // Fall back to single first-word prefix
+  if (coreWords.length > 1) {
+    const singleMatches = candidates.filter((c) => c.cleanedName.startsWith(firstWord))
+    if (singleMatches.length > 0) {
+      const best = pickLargest(singleMatches)
+      return { dirName: best.name, size: best.size, layer: 'keyword' }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Match a filing's company_name against companies_directory.
+ * Returns { dirName, size, layer } or null.
+ */
+function matchFilingCompany(companyName, nameMap, dirPrefixIndex) {
+  // Layer 1: Exact name
+  const exact = matchByExactName(companyName, nameMap)
+  if (exact) return exact
+
+  // Layer 2: Keyword
+  const keyword = matchByKeyword(companyName, dirPrefixIndex)
+  if (keyword) return keyword
+
+  return null
 }
 
 // ── EDGAR API ───────────────────────────────────────────────────────────────
@@ -364,7 +550,7 @@ async function loadExistingAccessions(table) {
 
 // ── Scan a single date chunk ────────────────────────────────────────────────
 
-async function scanChunk(formType, extractFn, startDate, endDate, existingAccessions, knownNames, prefixIndex) {
+async function scanChunk(formType, extractFn, startDate, endDate, existingAccessions, knownNames, filterPrefixIndex, nameMap, dirPrefixIndex, sizeMap, existingAltNames, altNameRows) {
   let totalFetched = 0
   let matched = 0
   let filteredOut = 0
@@ -399,12 +585,34 @@ async function scanChunk(formType, extractFn, startDate, endDate, existingAccess
       }
 
       // Filter: only keep filings from known pharma/biotech companies
-      if (!matchesKnownCompany(filing.company_name, knownNames, prefixIndex)) {
+      if (!matchesKnownCompany(filing.company_name, knownNames, filterPrefixIndex)) {
         filteredOut++
         continue
       }
 
-      console.log(`[SECFilingsScan] Matched: ${filing.company_name} — kept`)
+      // Enrich: match against companies_directory for matched_name and company_size
+      const dirMatch = matchFilingCompany(filing.company_name, nameMap, dirPrefixIndex)
+      if (dirMatch) {
+        filing.matched_name = dirMatch.dirName
+        filing.company_size = dirMatch.size || (sizeMap.get(dirMatch.dirName) || null)
+
+        // Record in companies_alternate_names if new
+        const altKey = filing.company_name.trim().toLowerCase()
+        if (!existingAltNames.has(altKey)) {
+          existingAltNames.add(altKey)
+          altNameRows.push({
+            directory_name: dirMatch.dirName,
+            alternate_name: filing.company_name,
+            matched_via: dirMatch.layer,
+            domain: null,
+          })
+        }
+      } else {
+        filing.matched_name = null
+        filing.company_size = null
+      }
+
+      console.log(`[SECFilingsScan] Matched: ${filing.company_name}${dirMatch ? ` → ${dirMatch.dirName} (${dirMatch.layer})` : ''} — kept`)
       existingAccessions.add(filing.accession_number)
       rowsToInsert.push(filing)
       matched++
@@ -421,7 +629,7 @@ async function scanChunk(formType, extractFn, startDate, endDate, existingAccess
 
 // ── Scan a form type across all date chunks ─────────────────────────────────
 
-async function scanFormType(formType, table, extractFn, startDate, endDate, existingAccessions, knownNames, prefixIndex) {
+async function scanFormType(formType, table, extractFn, startDate, endDate, existingAccessions, knownNames, filterPrefixIndex, nameMap, dirPrefixIndex, sizeMap, existingAltNames, altNameRows) {
   console.log(`\n[SECFilingsScan] === Scanning ${formType} filings ===`)
   console.log(`[SECFilingsScan] Date range: ${startDate} to ${endDate}`)
   console.log(`[SECFilingsScan] ${existingAccessions.size} existing ${formType} accession numbers loaded`)
@@ -443,7 +651,7 @@ async function scanFormType(formType, table, extractFn, startDate, endDate, exis
 
   for (const chunk of chunks) {
     console.log(`\n[SECFilingsScan] Chunk: ${chunk.startDate} to ${chunk.endDate}`)
-    const result = await scanChunk(formType, extractFn, chunk.startDate, chunk.endDate, existingAccessions, knownNames, prefixIndex)
+    const result = await scanChunk(formType, extractFn, chunk.startDate, chunk.endDate, existingAccessions, knownNames, filterPrefixIndex, nameMap, dirPrefixIndex, sizeMap, existingAltNames, altNameRows)
 
     totalFetched += result.totalFetched
     totalMatched += result.matched
@@ -500,26 +708,67 @@ async function main() {
   const startDate = formatDate(daysAgo(LOOKBACK_DAYS))
   console.log(`[SECFilingsScan] Mode: ${mode}, Lookback: ${LOOKBACK_DAYS} days (${startDate} to ${endDate})`)
 
-  // Load known company names and existing accessions in parallel
-  const [knownNames, existing8K, existingS1] = await Promise.all([
-    loadKnownCompanies(),
+  // Load all data in parallel
+  console.log('[SECFilingsScan] Loading company data and existing accessions...')
+  const [directory, existing8K, existingS1, existingAltNames] = await Promise.all([
+    loadDirectory(),
     loadExistingAccessions('eight_k_filings'),
     loadExistingAccessions('s1_filings'),
+    loadExistingAlternateNames(),
   ])
 
-  const prefixIndex = buildPrefixIndex(knownNames)
+  const { knownNames, nameMap, dirPrefixIndex, sizeMap } = directory
+
+  // Load additional known names from clinical_trials and past_clients
+  await loadAdditionalKnownNames(knownNames)
+
+  // Build filter prefix index (for keep/discard decision)
+  const filterPrefixIndex = buildFilterPrefixIndex(knownNames)
+  console.log(`[SECFilingsScan] ${existingAltNames.size} existing alternate names loaded`)
+
+  // Shared list of new alternate name rows to insert at the end
+  const altNameRows = []
 
   // Scan 8-K filings
-  const results8K = await scanFormType('8-K', 'eight_k_filings', extract8KFiling, startDate, endDate, existing8K, knownNames, prefixIndex)
+  const results8K = await scanFormType('8-K', 'eight_k_filings', extract8KFiling, startDate, endDate, existing8K, knownNames, filterPrefixIndex, nameMap, dirPrefixIndex, sizeMap, existingAltNames, altNameRows)
 
   await sleep(RATE_LIMIT_MS)
 
   // Scan S-1 filings
-  const resultsS1 = await scanFormType('S-1', 's1_filings', extractS1Filing, startDate, endDate, existingS1, knownNames, prefixIndex)
+  const resultsS1 = await scanFormType('S-1', 's1_filings', extractS1Filing, startDate, endDate, existingS1, knownNames, filterPrefixIndex, nameMap, dirPrefixIndex, sizeMap, existingAltNames, altNameRows)
+
+  // Insert new alternate name rows
+  if (altNameRows.length > 0) {
+    console.log(`\n[SECFilingsScan] Inserting ${altNameRows.length} new alternate name rows...`)
+    const BATCH = 500
+    let altInserted = 0
+    let altErrors = 0
+
+    for (let i = 0; i < altNameRows.length; i += BATCH) {
+      const batch = altNameRows.slice(i, i + BATCH)
+      const { error } = await supabase.from('companies_alternate_names').insert(batch)
+
+      if (error) {
+        for (const row of batch) {
+          const { error: rowErr } = await supabase.from('companies_alternate_names').insert(row)
+          if (rowErr) {
+            console.error(`[SECFilingsScan] Alt name insert error for "${row.alternate_name}": ${rowErr.message}`)
+            altErrors++
+          } else {
+            altInserted++
+          }
+        }
+      } else {
+        altInserted += batch.length
+      }
+    }
+    console.log(`[SECFilingsScan] Alternate names: ${altInserted} inserted, ${altErrors} errors`)
+  }
 
   console.log(`\n[SECFilingsScan] === ALL DONE ===`)
   console.log(`[SECFilingsScan] 8-K: ${results8K.totalFetched} fetched, ${results8K.matched} matched, ${results8K.filteredOut} filtered, ${results8K.inserted} inserted`)
   console.log(`[SECFilingsScan] S-1: ${resultsS1.totalFetched} fetched, ${resultsS1.matched} matched, ${resultsS1.filteredOut} filtered, ${resultsS1.inserted} inserted`)
+  console.log(`[SECFilingsScan] Alternate names: ${altNameRows.length} new`)
 }
 
 main().catch((err) => {
