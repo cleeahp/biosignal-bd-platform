@@ -23,7 +23,6 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
 const EDGAR_SEARCH_BASE = 'https://efts.sec.gov/LATEST/search-index'
-const EDGAR_SEARCH_FALLBACK = 'https://efts.sec.gov/LATEST/search-index'
 const PAGE_SIZE = 100
 const RATE_LIMIT_MS = 120 // slightly above 100ms for safety
 const RETRY_DELAY_MS = 10_000
@@ -80,8 +79,8 @@ function buildFilingUrl(cik, accession) {
 // ── EDGAR API ───────────────────────────────────────────────────────────────
 
 async function fetchEdgarPage(formType, startDate, endDate, from = 0, attempt = 1) {
+  // No q parameter — including q causes literal text search and returns 0 results
   const params = new URLSearchParams({
-    q: '*',
     forms: formType,
     dateRange: 'custom',
     startdt: startDate,
@@ -111,24 +110,6 @@ async function fetchEdgarPage(formType, startDate, endDate, from = 0, attempt = 
   }
 
   if (!response.ok) {
-    // Try fallback URL pattern without q=* on first failure
-    if (attempt === 1) {
-      console.warn(`[SECFilingsScan] Primary endpoint returned ${response.status}, trying fallback...`)
-      const fallbackParams = new URLSearchParams({
-        forms: formType,
-        startdt: startDate,
-        enddt: endDate,
-        from: String(from),
-        size: String(PAGE_SIZE),
-      })
-      const fallbackUrl = `${EDGAR_SEARCH_FALLBACK}?${fallbackParams.toString()}`
-      const fallbackResp = await fetch(fallbackUrl, {
-        headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-        signal: AbortSignal.timeout(30_000),
-      })
-      if (fallbackResp.ok) return fallbackResp.json()
-    }
-
     const body = await response.text().catch(() => '')
     throw new Error(`EDGAR API error ${response.status}: ${body.substring(0, 300)}`)
   }
@@ -139,28 +120,45 @@ async function fetchEdgarPage(formType, startDate, endDate, from = 0, attempt = 
 // ── Data extraction ─────────────────────────────────────────────────────────
 
 /**
- * Extract 8-K filing data from an EDGAR search hit.
- * The EDGAR full-text search returns hits with fields like:
- *   - entity_name, file_num, period_of_report, file_date, entity_id (CIK)
- *   - accession_no, display_names, display_date_filed, items (for 8-Ks)
- *   - tickers (if available)
+ * Parse company name and ticker from EDGAR display_names format.
+ * Example: "Tilray Brands, Inc.  (TLRY)  (CIK 0001731348)"
+ * Returns { companyName, ticker }
+ */
+function parseDisplayName(displayName) {
+  if (!displayName) return { companyName: null, ticker: null }
+
+  // Extract ticker: first parenthetical that isn't "(CIK ...)"
+  let ticker = null
+  const tickerMatch = displayName.match(/\(([A-Z]{1,5})\)/)
+  if (tickerMatch) ticker = tickerMatch[1]
+
+  // Extract company name: everything before the first parenthetical
+  const nameMatch = displayName.match(/^(.+?)\s*\(/)
+  const companyName = nameMatch ? nameMatch[1].trim() : displayName.replace(/\s*\(CIK\s+\d+\)\s*$/, '').trim()
+
+  return { companyName: companyName || null, ticker }
+}
+
+/**
+ * Extract 8-K filing data from an EDGAR search hit _source.
+ *
+ * Actual EDGAR response fields:
+ *   ciks: ["0001731348"]
+ *   display_names: ["Tilray Brands, Inc.  (TLRY)  (CIK 0001731348)"]
+ *   adsh: "0001140361-26-014638"
+ *   file_date: "2026-04-15"
+ *   items: ["3.02"]
  */
 function extract8KFiling(hit) {
-  const cik = hit.entity_id || hit.ciks?.[0] || ''
-  const accession = hit.accession_no || hit.adsh || ''
+  const cik = hit.ciks?.[0] || ''
+  const accession = hit.adsh || ''
   if (!accession) return null
 
-  const companyName = hit.entity_name || hit.display_names?.[0] || null
-  const ticker = hit.tickers?.[0] || hit.ticker || null
-  const filingDate = hit.file_date || hit.period_of_report || hit.display_date_filed || null
+  const { companyName, ticker } = parseDisplayName(hit.display_names?.[0])
+  const filingDate = hit.file_date || null
 
   // 8-K items (e.g., ["1.01", "9.01"])
-  let items = null
-  if (hit.items && Array.isArray(hit.items) && hit.items.length > 0) {
-    items = hit.items
-  } else if (hit.items && typeof hit.items === 'string') {
-    items = hit.items.split(',').map(s => s.trim()).filter(Boolean)
-  }
+  const items = Array.isArray(hit.items) && hit.items.length > 0 ? hit.items : null
 
   return {
     company_cik: String(cik).replace(/^0+/, '') || null,
@@ -174,12 +172,12 @@ function extract8KFiling(hit) {
 }
 
 function extractS1Filing(hit) {
-  const cik = hit.entity_id || hit.ciks?.[0] || ''
-  const accession = hit.accession_no || hit.adsh || ''
+  const cik = hit.ciks?.[0] || ''
+  const accession = hit.adsh || ''
   if (!accession) return null
 
-  const companyName = hit.entity_name || hit.display_names?.[0] || null
-  const filingDate = hit.file_date || hit.period_of_report || hit.display_date_filed || null
+  const { companyName } = parseDisplayName(hit.display_names?.[0])
+  const filingDate = hit.file_date || null
 
   return {
     company_cik: String(cik).replace(/^0+/, '') || null,
@@ -241,8 +239,8 @@ async function scanFormType(formType, table, extractFn, startDate, endDate, exis
     }
 
     // EDGAR search returns { hits: { hits: [...], total: { value: N } } }
-    const hits = data.hits?.hits || data.filings || data.results || []
-    const totalAvailable = data.hits?.total?.value || data.total || 0
+    const hits = data.hits?.hits || []
+    const totalAvailable = data.hits?.total?.value || 0
 
     if (hits.length === 0) {
       if (from === 0) {
