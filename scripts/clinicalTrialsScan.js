@@ -253,38 +253,40 @@ const GENERIC_EMAIL_DOMAINS = new Set([
 ])
 
 /**
- * Load all existing alternate_name values from companies_alternate_names
- * into a Set (lowercased) for fast in-memory dedup.
+ * Load all existing (alternate_name, directory_name) pairs from
+ * companies_alternate_names into a Set for fast in-memory dedup.
+ * Key format: "lowercase_alt_name\0lowercase_dir_name"
  */
 async function loadExistingAlternateNames() {
-  const names = new Set()
+  const pairs = new Set()
   const PAGE = 1000
   let offset = 0
 
   while (true) {
     const { data, error } = await supabase
       .from('companies_alternate_names')
-      .select('alternate_name')
+      .select('alternate_name, directory_name')
       .range(offset, offset + PAGE - 1)
 
     if (error) {
       console.error(`[ClinicalTrialsScan] Error loading alternate names: ${error.message}`)
-      return names
+      return pairs
     }
     if (!data || data.length === 0) break
 
     for (const row of data) {
-      names.add(row.alternate_name.trim().toLowerCase())
+      pairs.add(`${row.alternate_name.trim().toLowerCase()}\0${row.directory_name.trim().toLowerCase()}`)
     }
     offset += PAGE
   }
 
-  return names
+  return pairs
 }
 
 /**
  * Load all companies_directory rows that have a domain into a Map
- * keyed by lowercase domain → company name.
+ * keyed by lowercase domain → array of company names. Multiple companies
+ * can share the same domain (e.g. "Novartis AG" and "Novartis Pharmaceuticals").
  */
 async function loadDirectoryDomains() {
   const domainMap = new Map()
@@ -306,7 +308,11 @@ async function loadDirectoryDomains() {
 
     for (const row of data) {
       if (row.domain) {
-        domainMap.set(row.domain.trim().toLowerCase(), row.name)
+        const key = row.domain.trim().toLowerCase()
+        if (!domainMap.has(key)) {
+          domainMap.set(key, [])
+        }
+        domainMap.get(key).push(row.name)
       }
     }
     offset += PAGE
@@ -344,32 +350,37 @@ function extractEmailDomain(centralContacts) {
  * Queues up rows to batch-insert into companies_alternate_names.
  *
  * @param {Map<string, { sponsor: string, centralContacts: Array|null }>} sponsorsToMatch
- * @param {Set<string>} existingAltNames - lowercased alternate_name values already in DB
- * @param {Map<string, string>} directoryDomains - lowercase domain → directory company name
+ * @param {Set<string>} existingAltPairs - "alt\0dir" pair keys already in DB
+ * @param {Map<string, string[]>} directoryDomains - lowercase domain → array of directory company names
  */
-async function matchSponsors(sponsorsToMatch, existingAltNames, directoryDomains) {
+async function matchSponsors(sponsorsToMatch, existingAltPairs, directoryDomains) {
   const rowsToInsert = []
   let matched = 0
   let noMatch = 0
 
   for (const [sponsorKey, { sponsor, centralContacts }] of sponsorsToMatch) {
-    // Already in companies_alternate_names — skip
-    if (existingAltNames.has(sponsorKey)) continue
-
     const domain = extractEmailDomain(centralContacts)
 
     if (domain) {
-      const directoryName = directoryDomains.get(domain)
-      if (directoryName) {
-        console.log(`[ClinicalTrialsScan] MATCHED: "${sponsor}" → "${directoryName}" via domain ${domain}`)
-        rowsToInsert.push({
-          directory_name: directoryName,
-          alternate_name: sponsor,
-          matched_via: 'email_domain',
-          domain,
-        })
-        matched++
-        continue
+      const directoryNames = directoryDomains.get(domain)
+      if (directoryNames && directoryNames.length > 0) {
+        // Filter out pairs that already exist in DB
+        const newNames = directoryNames.filter(
+          (dirName) => !existingAltPairs.has(`${sponsorKey}\0${dirName.trim().toLowerCase()}`)
+        )
+        if (newNames.length > 0) {
+          console.log(`[ClinicalTrialsScan] MATCHED: "${sponsor}" → ${newNames.length} companies via domain ${domain}`)
+          for (const dirName of newNames) {
+            rowsToInsert.push({
+              directory_name: dirName,
+              alternate_name: sponsor,
+              matched_via: 'email_domain',
+              domain,
+            })
+          }
+          matched++
+          continue
+        }
       }
     }
 
@@ -405,7 +416,7 @@ async function matchSponsors(sponsorsToMatch, existingAltNames, directoryDomains
     }
   }
 
-  console.log(`[ClinicalTrialsScan] Name matching: ${matched} matched, ${noMatch} no match, ${rowsToInsert.length} new rows`)
+  console.log(`[ClinicalTrialsScan] Name matching: ${matched} sponsors matched, ${noMatch} no match, ${rowsToInsert.length} new rows inserted`)
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -416,11 +427,11 @@ async function main() {
 
   // Pre-load lookup data for company name matching
   console.log('[ClinicalTrialsScan] Loading company matching data...')
-  const [existingAltNames, directoryDomains] = await Promise.all([
+  const [existingAltPairs, directoryDomains] = await Promise.all([
     loadExistingAlternateNames(),
     loadDirectoryDomains(),
   ])
-  console.log(`[ClinicalTrialsScan] Loaded ${existingAltNames.size} existing alternate names, ${directoryDomains.size} directory domains`)
+  console.log(`[ClinicalTrialsScan] Loaded ${existingAltPairs.size} existing alternate name pairs, ${directoryDomains.size} unique directory domains`)
 
   let totalFetched = 0
   let phaseFiltered = 0
@@ -469,7 +480,7 @@ async function main() {
       // Collect sponsor for matching (only if insert/update succeeded and sponsor exists)
       if (trial.lead_sponsor_name && (result === 'inserted' || result === 'updated')) {
         const key = trial.lead_sponsor_name.trim().toLowerCase()
-        if (!existingAltNames.has(key) && !sponsorsToMatch.has(key)) {
+        if (!sponsorsToMatch.has(key)) {
           sponsorsToMatch.set(key, {
             sponsor: trial.lead_sponsor_name,
             centralContacts: trial.central_contacts,
@@ -503,7 +514,7 @@ async function main() {
   console.log(`[ClinicalTrialsScan] ${sponsorsToMatch.size} new sponsors to match`)
 
   if (sponsorsToMatch.size > 0) {
-    await matchSponsors(sponsorsToMatch, existingAltNames, directoryDomains)
+    await matchSponsors(sponsorsToMatch, existingAltPairs, directoryDomains)
   } else {
     console.log('[ClinicalTrialsScan] No new sponsors to match.')
   }
