@@ -1605,6 +1605,14 @@ function NavIcon({ type, className = 'w-5 h-5' }) {
           <line x1="6" y1="14" x2="18" y2="14"/>
         </svg>
       )
+    case 'flask':
+      return (
+        <svg {...props}>
+          <path d="M9 3h6"/>
+          <path d="M8.5 3v6L4 19a1 1 0 0 0 .9 1.45h14.2a1 1 0 0 0 .9-1.45L15.5 9V3"/>
+          <path d="M19 2l2 2M21 2l-2 2" strokeWidth="2.5"/>
+        </svg>
+      )
     case 'trending':
       return (
         <svg {...props}>
@@ -1674,6 +1682,7 @@ const MAIN_NAV = [
   { key: 'dashboard',  label: 'Dashboard',        icon: 'grid' },
   { key: 'leads',      label: 'My Leads',          icon: 'clipboard', countKey: 'leads' },
   { key: 'clinical',   label: 'Clinical Trials',   icon: 'beaker',    countKey: 'clinical' },
+  { key: 'clinical_new', label: 'Clinical Trials - NEW', icon: 'flask' },
   { key: 'funding',    label: 'Funding & M&A',     icon: 'trending',  countKey: 'funding' },
   { key: 'competitor', label: 'Competitor Jobs',   icon: 'briefcase', countKey: 'competitor' },
   { key: 'stale',      label: 'Stale Roles',       icon: 'clock',     countKey: 'stale' },
@@ -2517,6 +2526,197 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot, table,
   )
 }
 
+// ─── Clinical Trials NEW Page ────────────────────────────────────────────────
+
+function ClinicalTrialsNewPage() {
+  const [trials, setTrials] = useState([])
+  const [pastClients, setPastClients] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [expandedRows, setExpandedRows] = useState(new Set())
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+
+  useEffect(() => {
+    fetch('/api/clinical-trials')
+      .then(r => r.json())
+      .then(data => {
+        setTrials(data.trials || [])
+        setPastClients(data.pastClients || [])
+        setLoading(false)
+      })
+      .catch(() => setLoading(false))
+  }, [])
+
+  const pastClientsLower = useMemo(() => new Set(pastClients.map(n => n.toLowerCase())), [pastClients])
+
+  const toggleRow = useCallback((id) => {
+    setExpandedRows(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }, [])
+
+  const getDisplayName = useCallback((t) => t.matched_name || t.lead_sponsor_name || '', [])
+
+  const getCategory = useCallback((t) => {
+    const drug = t.is_fda_regulated_drug
+    const device = t.is_fda_regulated_device
+    if (drug && device) return 'Drug / Device'
+    if (drug) return 'Drug'
+    if (device) return 'Device'
+    return ''
+  }, [])
+
+  const isPastClient = useCallback((t) => {
+    const name = getDisplayName(t).toLowerCase()
+    return name && pastClientsLower.has(name)
+  }, [pastClientsLower, getDisplayName])
+
+  const extractors = useMemo(() => ({
+    nct_id: t => t.nct_id || '',
+    company: t => getDisplayName(t),
+    title: t => t.brief_title || '',
+    phase: t => t.phase || '',
+    category: t => getCategory(t),
+    last_update: t => formatDate(t.last_update_post_date),
+  }), [getDisplayName, getCategory])
+
+  const allValues = useMemo(() => ({
+    nct_id: trials.map(t => t.nct_id || ''),
+    company: trials.map(t => getDisplayName(t)),
+    title: trials.map(t => t.brief_title || ''),
+    phase: trials.map(t => t.phase || ''),
+    category: trials.map(t => getCategory(t)),
+    last_update: trials.map(t => formatDate(t.last_update_post_date)),
+  }), [trials, getDisplayName, getCategory])
+
+  const sorted = useMemo(() => {
+    const arr = [...trials]
+    arr.sort((a, b) => {
+      const aPast = isPastClient(a) ? 1 : 0
+      const bPast = isPastClient(b) ? 1 : 0
+      if (bPast !== aPast) return bPast - aPast
+      const da = new Date(a.last_update_post_date || 0).getTime()
+      const db = new Date(b.last_update_post_date || 0).getTime()
+      return db - da
+    })
+    return arr
+  }, [trials, isPastClient])
+
+  const filtered = applyFilters(sorted, extractors)
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  if (trials.length === 0) return <EmptyState message="No clinical trials found." />
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <ColumnFilterDropdown colKey="nct_id" label="NCT ID" allValues={allValues.nct_id} activeValues={filters.nct_id} onApply={setFilter} className="w-[12%]" />
+              <ColumnFilterDropdown colKey="company" label="Company Name" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[22%]" />
+              <ColumnFilterDropdown colKey="title" label="Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
+              <ColumnFilterDropdown colKey="phase" label="Phase" allValues={allValues.phase} activeValues={filters.phase} onApply={setFilter} className="w-[10%]" />
+              <ColumnFilterDropdown colKey="category" label="Category" allValues={allValues.category} activeValues={filters.category} onApply={setFilter} className="w-[12%]" />
+              <ColumnFilterDropdown colKey="last_update" label="Last Update" allValues={allValues.last_update} activeValues={filters.last_update} onApply={setFilter} className="w-[14%]" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {filtered.map((trial, i) => {
+              const isExpanded = expandedRows.has(trial.id || trial.nct_id)
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              const displayName = getDisplayName(trial)
+              const isClient = isPastClient(trial)
+              const category = getCategory(trial)
+              const contacts = Array.isArray(trial.central_contacts) ? trial.central_contacts : []
+
+              return (
+                <Fragment key={trial.id || trial.nct_id}>
+                  <tr
+                    onClick={() => toggleRow(trial.id || trial.nct_id)}
+                    className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
+                  >
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {trial.nct_id || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                      {displayName || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-white" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {trial.brief_title || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {trial.phase || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {category || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {formatDate(trial.last_update_post_date)}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr>
+                      <td colSpan={6} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                        <div className="flex flex-col gap-4">
+                          <div>
+                            <a
+                              href={trial.source_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm text-blue-400 hover:text-blue-300 font-medium"
+                            >
+                              View on ClinicalTrials.gov &#8599;
+                            </a>
+                          </div>
+                          <div>
+                            <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Contact Information</h4>
+                            {contacts.length > 0 ? (
+                              <div className="flex flex-col gap-2">
+                                {contacts.map((c, ci) => (
+                                  <div key={ci} className="text-sm text-gray-300 flex flex-wrap gap-x-4 gap-y-1">
+                                    {c.name && <span>{c.name}</span>}
+                                    {c.email && (
+                                      <a href={`mailto:${c.email}`} className="text-blue-400 hover:text-blue-300" onClick={e => e.stopPropagation()}>
+                                        {c.email}
+                                      </a>
+                                    )}
+                                    {c.phone && (
+                                      <a href={`tel:${c.phone}`} className="text-blue-400 hover:text-blue-300" onClick={e => e.stopPropagation()}>
+                                        {c.phone}
+                                      </a>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-gray-500 italic">No contact information available</p>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function PastBuyersPage() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -3318,6 +3518,7 @@ export default function Home() {
                   onUpdateClient={updateInferredClient}
                 />
               )}
+              {activePage === 'clinical_new' && <ClinicalTrialsNewPage />}
               {activePage === 'buyers'     && <PastBuyersPage />}
               {activePage === 'candidates' && <PastCandidatesPage />}
               {activePage === 'contacts'   && <OtherContactsPage />}
