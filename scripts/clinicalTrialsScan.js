@@ -353,14 +353,14 @@ function extractParentName(raw) {
  * (regardless of matched_via), skip all matching layers.
  */
 async function loadExistingAlternateNames() {
-  const names = new Set()
+  const names = new Map()
   const PAGE = 1000
   let offset = 0
 
   while (true) {
     const { data, error } = await supabase
       .from('companies_alternate_names')
-      .select('alternate_name')
+      .select('alternate_name, directory_name, matched_via')
       .range(offset, offset + PAGE - 1)
 
     if (error) {
@@ -370,7 +370,10 @@ async function loadExistingAlternateNames() {
     if (!data || data.length === 0) break
 
     for (const row of data) {
-      names.add(row.alternate_name.trim().toLowerCase())
+      names.set(row.alternate_name.trim().toLowerCase(), {
+        directory_name: row.directory_name,
+        matched_via: row.matched_via,
+      })
     }
     offset += PAGE
   }
@@ -433,8 +436,18 @@ async function loadDirectory() {
     offset += PAGE
   }
 
+  // Exact name → company_size map for enrichment lookups
+  const sizeMap = new Map()
+  for (const [, entries] of nameMap) {
+    for (const entry of entries) {
+      if (!sizeMap.has(entry.name)) {
+        sizeMap.set(entry.name, entry.size)
+      }
+    }
+  }
+
   console.log(`[ClinicalTrialsScan] Loaded ${total} directory companies → ${domainMap.size} domains, ${nameMap.size} cleaned names, ${prefixIndex.size} prefix words`)
-  return { domainMap, nameMap, prefixIndex }
+  return { domainMap, nameMap, prefixIndex, sizeMap }
 }
 
 // ── Matching layers ──────────────────────────────────────────────────────────
@@ -602,6 +615,8 @@ async function matchSponsors(sponsorsToMatch, existingAltNames, directory) {
         matched_via: result.layer,
         domain: result.domain || null,
       })
+      // Update in-memory map
+      existingAltNames.set(sponsorKey, { directory_name: result.dirName, matched_via: result.layer })
 
       // Layer 4 also records the parent name as an alternate name
       if (result.layer === 'subsidiary' && result.parentName) {
@@ -613,6 +628,7 @@ async function matchSponsors(sponsorsToMatch, existingAltNames, directory) {
             matched_via: 'subsidiary',
             domain: null,
           })
+          existingAltNames.set(parentKey, { directory_name: result.dirName, matched_via: 'subsidiary' })
         }
       }
 
@@ -626,6 +642,8 @@ async function matchSponsors(sponsorsToMatch, existingAltNames, directory) {
         matched_via: 'no_match',
         domain: null,
       })
+      // Update in-memory map
+      existingAltNames.set(sponsorKey, { directory_name: sponsor, matched_via: 'no_match' })
       noMatch++
     }
   }
@@ -673,14 +691,12 @@ async function main() {
   ])
   console.log(`[ClinicalTrialsScan] Loaded ${existingAltNames.size} existing alternate names`)
 
+  // ── Phase 1: Fetch all trials from API ────────────────────────────────────
   let totalFetched = 0
   let phaseFiltered = 0
-  let inserted = 0
-  let updated = 0
-  let skipped = 0
-  let errors = 0
   let pageNum = 0
   let pageToken = null
+  const allTrials = []
 
   // Collect unique sponsors to match after all pages are processed
   // Map key: lowercase sponsor name, value: { sponsor, centralContacts }
@@ -701,24 +717,14 @@ async function main() {
     const studies = data.studies || []
     totalFetched += studies.length
 
-    let pageInserted = 0
-    let pageUpdated = 0
-    let pageSkipped = 0
-
     for (const study of studies) {
       const trial = extractTrial(study)
       if (!trial) { phaseFiltered++; continue }
 
-      const result = await upsertTrial(trial)
-      switch (result) {
-        case 'inserted': inserted++; pageInserted++; break
-        case 'updated':  updated++;  pageUpdated++;  break
-        case 'skipped':  skipped++;  pageSkipped++;  break
-        case 'error':    errors++;   break
-      }
+      allTrials.push(trial)
 
-      // Collect sponsor for matching (only if insert/update succeeded and sponsor exists)
-      if (trial.lead_sponsor_name && (result === 'inserted' || result === 'updated')) {
+      // Collect sponsor for matching
+      if (trial.lead_sponsor_name) {
         const key = trial.lead_sponsor_name.trim().toLowerCase()
         if (!existingAltNames.has(key) && !sponsorsToMatch.has(key)) {
           sponsorsToMatch.set(key, {
@@ -729,10 +735,7 @@ async function main() {
       }
     }
 
-    console.log(
-      `[ClinicalTrialsScan] Page ${pageNum}: ${studies.length} studies fetched, ` +
-      `${pageInserted} inserted, ${pageUpdated} updated, ${pageSkipped} skipped`
-    )
+    console.log(`[ClinicalTrialsScan] Page ${pageNum}: ${studies.length} studies fetched, ${allTrials.length} trials collected`)
 
     if (data.nextPageToken) {
       pageToken = data.nextPageToken
@@ -741,15 +744,12 @@ async function main() {
     }
   }
 
-  console.log(`\n[ClinicalTrialsScan] === TRIALS COMPLETE ===`)
+  console.log(`\n[ClinicalTrialsScan] === FETCH COMPLETE ===`)
   console.log(`[ClinicalTrialsScan] Total fetched:   ${totalFetched}`)
   console.log(`[ClinicalTrialsScan] Phase filtered: ${phaseFiltered}`)
-  console.log(`[ClinicalTrialsScan] Inserted:       ${inserted}`)
-  console.log(`[ClinicalTrialsScan] Updated:        ${updated}`)
-  console.log(`[ClinicalTrialsScan] Skipped:        ${skipped}`)
-  console.log(`[ClinicalTrialsScan] Errors:         ${errors}`)
+  console.log(`[ClinicalTrialsScan] Trials to upsert: ${allTrials.length}`)
 
-  // ── Company name matching ──────────────────────────────────────────────────
+  // ── Phase 2: Company name matching ────────────────────────────────────────
   console.log(`\n[ClinicalTrialsScan] === COMPANY NAME MATCHING ===`)
   console.log(`[ClinicalTrialsScan] ${sponsorsToMatch.size} new sponsors to match`)
 
@@ -758,6 +758,48 @@ async function main() {
   } else {
     console.log('[ClinicalTrialsScan] No new sponsors to match.')
   }
+
+  // ── Phase 3: Build enrichment maps and upsert trials ──────────────────────
+  // altNameToDir: lowercase sponsor name → directory_name (excluding no_match)
+  const altNameToDir = new Map()
+  for (const [altName, info] of existingAltNames) {
+    if (info.matched_via !== 'no_match') {
+      altNameToDir.set(altName, info.directory_name)
+    }
+  }
+
+  // dirToSize: exact directory name → company_size
+  const dirToSize = directory.sizeMap
+
+  console.log(`\n[ClinicalTrialsScan] === UPSERT WITH ENRICHMENT ===`)
+  console.log(`[ClinicalTrialsScan] ${altNameToDir.size} sponsor→company mappings, ${dirToSize.size} company→size mappings`)
+
+  let inserted = 0
+  let updated = 0
+  let skipped = 0
+  let errors = 0
+
+  for (const trial of allTrials) {
+    // Enrich with matched_name and company_size
+    const sponsorKey = trial.lead_sponsor_name?.trim().toLowerCase()
+    const matchedName = sponsorKey ? (altNameToDir.get(sponsorKey) || null) : null
+    trial.matched_name = matchedName
+    trial.company_size = matchedName ? (dirToSize.get(matchedName) || null) : null
+
+    const result = await upsertTrial(trial)
+    switch (result) {
+      case 'inserted': inserted++; break
+      case 'updated':  updated++;  break
+      case 'skipped':  skipped++;  break
+      case 'error':    errors++;   break
+    }
+  }
+
+  console.log(`\n[ClinicalTrialsScan] === UPSERT COMPLETE ===`)
+  console.log(`[ClinicalTrialsScan] Inserted:       ${inserted}`)
+  console.log(`[ClinicalTrialsScan] Updated:        ${updated}`)
+  console.log(`[ClinicalTrialsScan] Skipped:        ${skipped}`)
+  console.log(`[ClinicalTrialsScan] Errors:         ${errors}`)
 
   console.log(`\n[ClinicalTrialsScan] === ALL DONE ===`)
 }
