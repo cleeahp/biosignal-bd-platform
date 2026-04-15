@@ -726,11 +726,19 @@ async function main() {
       // Collect sponsor for matching
       if (trial.lead_sponsor_name) {
         const key = trial.lead_sponsor_name.trim().toLowerCase()
-        if (!existingAltNames.has(key) && !sponsorsToMatch.has(key)) {
-          sponsorsToMatch.set(key, {
-            sponsor: trial.lead_sponsor_name,
-            centralContacts: trial.central_contacts,
-          })
+        if (!existingAltNames.has(key)) {
+          if (!sponsorsToMatch.has(key)) {
+            sponsorsToMatch.set(key, {
+              sponsor: trial.lead_sponsor_name,
+              centralContacts: trial.central_contacts,
+            })
+          } else if (trial.central_contacts && extractEmailDomain(trial.central_contacts)) {
+            // Upgrade contacts if existing entry has no usable email
+            const existing = sponsorsToMatch.get(key)
+            if (!extractEmailDomain(existing.centralContacts)) {
+              existing.centralContacts = trial.central_contacts
+            }
+          }
         }
       }
     }
