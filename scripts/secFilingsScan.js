@@ -93,6 +93,27 @@ function splitDateRange(startDate, endDate) {
   return chunks
 }
 
+/**
+ * Split a date range into ~3-day sub-chunks for retry on failed chunks.
+ */
+function splitSmallChunks(startDate, endDate) {
+  const SUB_CHUNK_MS = 3 * 24 * 60 * 60 * 1000
+  const chunks = []
+  let current = new Date(startDate)
+  const end = new Date(endDate)
+
+  while (current <= end) {
+    const chunkEnd = new Date(Math.min(current.getTime() + SUB_CHUNK_MS - 1, end.getTime()))
+    chunks.push({
+      startDate: formatDate(current),
+      endDate: formatDate(chunkEnd),
+    })
+    current = new Date(chunkEnd.getTime() + 24 * 60 * 60 * 1000)
+  }
+
+  return chunks
+}
+
 // ── Company name cleaning & matching ────────────────────────────────────────
 
 const LEGAL_SUFFIXES_RE = /[,.]?\s*\b(Inc\.?|Corp\.?|Corporation|LLC\.?|Ltd\.?|Limited|L\.?P\.?|LP|Co\.?|GmbH|B\.?V\.?|S\.?A\.?|S\.?L\.?|KGaA|ApS|Srl|A\/S|PLC|plc|AG|NV|SE|Pty)\s*$/i
@@ -389,67 +410,67 @@ async function fetchSecDocument(url, attempt = 1) {
 }
 
 /**
- * From the filing index page HTML, find the URL of the actual 8-K document.
- * Index pages have a table with links to filing documents.
+ * Build the URL to the compound .txt filing document from CIK and accession.
+ * This is the SGML document containing both metadata and the actual 8-K HTML.
  */
-function findDocumentUrl(indexHtml, baseUrl) {
-  // Look for links to .htm files that are the 8-K document (not exhibits)
-  // The first document in the filing index table is typically the 8-K itself
-  const linkPattern = /<a\s+href="([^"]*\.htm[l]?)"[^>]*>/gi
-  const matches = []
-  let m
-  while ((m = linkPattern.exec(indexHtml)) !== null) {
-    matches.push(m[1])
-  }
+function buildTxtUrl(cik, accession) {
+  if (!cik || !accession) return null
+  const noDashes = accession.replace(/-/g, '')
+  const strippedCik = String(cik).replace(/^0+/, '')
+  return `https://www.sec.gov/Archives/edgar/data/${strippedCik}/${noDashes}/${accession}.txt`
+}
 
-  // Filter to likely 8-K documents (contains "8k" or "8-k" in filename, or is the first .htm)
-  for (const href of matches) {
-    const lower = href.toLowerCase()
-    if (lower.includes('8k') || lower.includes('8-k')) {
-      // Build absolute URL
-      if (href.startsWith('http')) return href
-      const base = baseUrl.replace(/[^/]*$/, '')
-      return base + href
-    }
-  }
+/**
+ * Extract the 8-K document content from the compound SGML .txt file.
+ * The .txt file contains multiple <DOCUMENT> sections. We want the one
+ * where <TYPE>8-K (the primary document, not exhibits like EX-10.1).
+ * Returns the content between <TEXT> and </TEXT> within that section,
+ * or null if not found.
+ */
+function extract8KDocumentContent(sgmlText) {
+  // Split into DOCUMENT sections
+  const docPattern = /<DOCUMENT>([\s\S]*?)<\/DOCUMENT>/gi
+  let match
 
-  // Fall back to first .htm link that isn't the index itself
-  for (const href of matches) {
-    if (!href.includes('-index')) {
-      if (href.startsWith('http')) return href
-      const base = baseUrl.replace(/[^/]*$/, '')
-      return base + href
-    }
+  while ((match = docPattern.exec(sgmlText)) !== null) {
+    const docContent = match[1]
+
+    // Check if this is the 8-K document (not an exhibit)
+    const typeMatch = docContent.match(/<TYPE>\s*(.*)/i)
+    if (!typeMatch) continue
+
+    const docType = typeMatch[1].trim().toUpperCase()
+    if (docType !== '8-K' && docType !== '8-K/A') continue
+
+    // Extract content between <TEXT> and </TEXT>
+    const textMatch = docContent.match(/<TEXT>([\s\S]*?)<\/TEXT>/i)
+    if (textMatch) return textMatch[1]
   }
 
   return null
 }
 
 /**
- * Parse Item 1.01 from an 8-K filing. Fetches the filing HTML,
- * finds the Item 1.01 section, extracts the first substantive paragraph,
- * and classifies the agreement type.
+ * Parse Item 1.01 from an 8-K filing. Fetches the compound .txt file,
+ * extracts the 8-K document section (skipping SEC-HEADER and exhibits),
+ * finds "Item 1.01 Entry into a Material Definitive Agreement", and
+ * extracts the first substantive paragraph.
  *
  * Returns { agreement_type, agreement_summary } or null.
  */
 async function parseItem101(filing) {
-  if (!filing.filing_url) return null
+  if (!filing.company_cik || !filing.accession_number) return null
 
   try {
-    // Fetch the filing index page
-    let html = await fetchSecDocument(filing.filing_url)
+    const txtUrl = buildTxtUrl(filing.company_cik, filing.accession_number)
+    if (!txtUrl) return null
+
+    const sgmlText = await fetchSecDocument(txtUrl)
+    if (!sgmlText) return null
+
+    // Extract the 8-K document content (not exhibits, not SEC-HEADER)
+    const html = extract8KDocumentContent(sgmlText)
     if (!html) return null
-
-    // Check if this page itself contains Item 1.01
-    const item101Pattern = /Item[\s\u00a0&#;0-9]*1\.01/i
-    if (!item101Pattern.test(html)) {
-      // This is likely an index page — find the actual document URL
-      const docUrl = findDocumentUrl(html, filing.filing_url)
-      if (!docUrl) return null
-
-      html = await fetchSecDocument(docUrl)
-      if (!html || !item101Pattern.test(html)) return null
-    }
 
     // Find the position of Item 1.01
     const item101Match = html.match(/Item[\s\u00a0&#;0-9]*1\.01[\s\S]*?(?:Entry\s+into\s+a\s+Material\s+Definitive\s+Agreement)/i)
@@ -473,19 +494,17 @@ async function parseItem101(filing) {
     }
 
     if (!summary) {
-      // Fallback: try extracting text between Item 1.01 heading and next Item heading
+      // Fallback: extract text between Item 1.01 heading and next Item heading
       const nextItemMatch = afterItem.match(/Item[\s\u00a0&#;0-9]*[0-9]+\.[0-9]+/i)
       const sectionText = nextItemMatch
         ? afterItem.substring(0, nextItemMatch.index)
         : afterItem.substring(0, 10000)
 
       const plainText = decodeHtmlEntities(stripHtmlTags(sectionText)).replace(/\s+/g, ' ').trim()
-      // Find the first sentence that looks like a description (starts with "On" or contains key verbs)
       const sentences = plainText.split(/(?<=\.)\s+/)
       for (const sentence of sentences) {
         const trimmed = sentence.trim()
         if (trimmed.length >= 40 && /\b(on|the|we|our|company|pursuant|entered|agreement|acquired|merger|offering)\b/i.test(trimmed)) {
-          // Grab this sentence and the rest of the section
           const startIdx = plainText.indexOf(trimmed)
           summary = plainText.substring(startIdx, startIdx + 5000).trim()
           break
@@ -629,6 +648,9 @@ function extractS1Filing(hit) {
 
 // ── Scan a single date chunk ────────────────────────────────────────────────
 
+const CHUNK_RETRY_DELAY_MS = 30_000
+const CHUNK_MAX_RETRIES = 3
+
 async function scanChunk(formType, extractFn, startDate, endDate, existingAccessions, nameMap, wordIndex, sizeMap, existingAltNames, altNameRows) {
   let totalFetched = 0
   let matched = 0
@@ -642,7 +664,9 @@ async function scanChunk(formType, extractFn, startDate, endDate, existingAccess
     try {
       data = await fetchEdgarPage(formType, startDate, endDate, from)
     } catch (err) {
-      console.error(`[SECFilingsScan] Fatal fetch error for ${formType} (${startDate}–${endDate}) at offset ${from}: ${err.message}`)
+      console.error(`[SECFilingsScan] Fetch error for ${formType} (${startDate}–${endDate}) at offset ${from}: ${err.message}`)
+      // Signal to caller that this chunk failed (for retry logic)
+      if (from === 0) throw err
       break
     }
 
@@ -722,7 +746,48 @@ async function scanFormType(formType, table, extractFn, startDate, endDate, exis
 
   for (const chunk of chunks) {
     console.log(`\n[SECFilingsScan] Chunk: ${chunk.startDate} to ${chunk.endDate}`)
-    const result = await scanChunk(formType, extractFn, chunk.startDate, chunk.endDate, existingAccessions, nameMap, wordIndex, sizeMap, existingAltNames, altNameRows)
+
+    let result = null
+
+    // Try the chunk with retries
+    for (let attempt = 1; attempt <= CHUNK_MAX_RETRIES; attempt++) {
+      try {
+        result = await scanChunk(formType, extractFn, chunk.startDate, chunk.endDate, existingAccessions, nameMap, wordIndex, sizeMap, existingAltNames, altNameRows)
+        break
+      } catch (err) {
+        if (attempt < CHUNK_MAX_RETRIES) {
+          console.warn(`[SECFilingsScan] Chunk failed, retrying (${attempt}/${CHUNK_MAX_RETRIES})...`)
+          await sleep(CHUNK_RETRY_DELAY_MS)
+        } else {
+          console.warn(`[SECFilingsScan] Chunk failed after ${CHUNK_MAX_RETRIES} retries. Splitting failed chunk into sub-chunks...`)
+        }
+      }
+    }
+
+    // If all retries failed, split into ~3-day sub-chunks and try each
+    if (!result) {
+      const subChunks = splitDateRange(chunk.startDate, chunk.endDate)
+        .length > 1 ? splitSmallChunks(chunk.startDate, chunk.endDate) : []
+
+      if (subChunks.length > 0) {
+        for (const sub of subChunks) {
+          console.log(`[SECFilingsScan] Sub-chunk: ${sub.startDate} to ${sub.endDate}`)
+          try {
+            const subResult = await scanChunk(formType, extractFn, sub.startDate, sub.endDate, existingAccessions, nameMap, wordIndex, sizeMap, existingAltNames, altNameRows)
+            totalFetched += subResult.totalFetched
+            totalMatched += subResult.matched
+            totalFilteredOut += subResult.filteredOut
+            totalSkipped += subResult.skipped
+            allRows.push(...subResult.rowsToInsert)
+            console.log(`[SECFilingsScan] Sub-chunk result: ${subResult.totalFetched} fetched, ${subResult.matched} matched`)
+          } catch (subErr) {
+            console.error(`[SECFilingsScan] Sub-chunk ${sub.startDate}–${sub.endDate} also failed: ${subErr.message}`)
+          }
+          await sleep(RATE_LIMIT_MS)
+        }
+      }
+      continue
+    }
 
     totalFetched += result.totalFetched
     totalMatched += result.matched
