@@ -1684,6 +1684,7 @@ const MAIN_NAV = [
   { key: 'clinical',   label: 'Clinical Trials',   icon: 'beaker',    countKey: 'clinical' },
   { key: 'clinical_new', label: 'Clinical Trials - NEW', icon: 'flask' },
   { key: 'funding',    label: 'Funding & M&A',     icon: 'trending',  countKey: 'funding' },
+  { key: 'ma_funding_new', label: 'M&A and Funding - NEW', icon: 'trending' },
   { key: 'competitor', label: 'Competitor Jobs',   icon: 'briefcase', countKey: 'competitor' },
   { key: 'stale',      label: 'Stale Roles',       icon: 'clock',     countKey: 'stale' },
   { key: 'buyers',     label: 'Past Buyers',       icon: 'users' },
@@ -2717,6 +2718,151 @@ function ClinicalTrialsNewPage() {
   )
 }
 
+// ─── M&A and Funding NEW Page ────────────────────────────────────────────────
+
+function MAFundingNewPage() {
+  const [filings, setFilings] = useState([])
+  const [pastClients, setPastClients] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [expandedRows, setExpandedRows] = useState(new Set())
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+
+  useEffect(() => {
+    fetch('/api/ma-funding')
+      .then(r => r.json())
+      .then(data => {
+        setFilings(data.filings || [])
+        setPastClients(data.pastClients || [])
+        setLoading(false)
+      })
+      .catch(() => setLoading(false))
+  }, [])
+
+  const pastClientsLower = useMemo(() => new Set(pastClients.map(n => n.toLowerCase())), [pastClients])
+
+  const toggleRow = useCallback((id) => {
+    setExpandedRows(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }, [])
+
+  const getDisplayName = useCallback((f) => f.matched_name || f.company_name || '', [])
+
+  const isPastClient = useCallback((f) => {
+    const name = getDisplayName(f).toLowerCase()
+    return name && pastClientsLower.has(name)
+  }, [pastClientsLower, getDisplayName])
+
+  const extractors = useMemo(() => ({
+    company: f => getDisplayName(f),
+    transaction: f => f._transaction || '',
+  }), [getDisplayName])
+
+  const allValues = useMemo(() => ({
+    company: filings.map(f => getDisplayName(f)),
+    transaction: filings.map(f => f._transaction || ''),
+  }), [filings, getDisplayName])
+
+  const sorted = useMemo(() => {
+    const arr = [...filings]
+    arr.sort((a, b) => {
+      const aPast = isPastClient(a) ? 1 : 0
+      const bPast = isPastClient(b) ? 1 : 0
+      if (bPast !== aPast) return bPast - aPast
+      const da = new Date(a.filing_date || 0).getTime()
+      const db = new Date(b.filing_date || 0).getTime()
+      return db - da
+    })
+    return arr
+  }, [filings, isPastClient])
+
+  const filtered = applyFilters(sorted, extractors)
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  if (filings.length === 0) return <EmptyState message="No M&A or funding filings found." />
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <ColumnFilterDropdown colKey="company" label="Company Name" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[30%]" />
+              <ColumnFilterDropdown colKey="transaction" label="Transaction" allValues={allValues.transaction} activeValues={filters.transaction} onApply={setFilter} className="w-[20%]" />
+              <Th className="w-[20%]">Filing Date</Th>
+              <Th className="w-[30%]">Filing Link</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {filtered.map((filing, i) => {
+              const rowKey = filing.id || filing.accession_number
+              const isExpanded = expandedRows.has(rowKey)
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              const displayName = getDisplayName(filing)
+              const isClient = isPastClient(filing)
+              const hasExpandContent = filing._source === '8-K' && filing.agreement_summary
+
+              return (
+                <Fragment key={rowKey}>
+                  <tr
+                    onClick={() => hasExpandContent && toggleRow(rowKey)}
+                    className={`${rowBg} hover:bg-[#263045] ${hasExpandContent ? 'cursor-pointer' : ''} transition-colors`}
+                  >
+                    <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                      {displayName || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {filing._transaction || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {formatDate(filing.filing_date)}
+                    </td>
+                    <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
+                      {filing.filing_url ? (
+                        <a
+                          href={filing.filing_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-400 hover:text-blue-300 font-medium"
+                        >
+                          View Filing &#8599;
+                        </a>
+                      ) : <span className="text-gray-600">—</span>}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr>
+                      <td colSpan={4} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                        <div>
+                          <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Agreement Summary</h4>
+                          <p className="text-sm text-gray-300 leading-relaxed" style={{ whiteSpace: 'pre-wrap' }}>
+                            {filing.agreement_summary}
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function PastBuyersPage() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -3519,6 +3665,7 @@ export default function Home() {
                 />
               )}
               {activePage === 'clinical_new' && <ClinicalTrialsNewPage />}
+              {activePage === 'ma_funding_new' && <MAFundingNewPage />}
               {activePage === 'buyers'     && <PastBuyersPage />}
               {activePage === 'candidates' && <PastCandidatesPage />}
               {activePage === 'contacts'   && <OtherContactsPage />}
