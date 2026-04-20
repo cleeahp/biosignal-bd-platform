@@ -1688,19 +1688,19 @@ function NavIcon({ type, className = 'w-5 h-5' }) {
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 const MAIN_NAV = [
-  { key: 'dashboard',  label: 'Dashboard',        icon: 'grid' },
-  { key: 'leads',      label: 'My Leads',          icon: 'clipboard', countKey: 'leads' },
-  { key: 'madison_leads', label: 'Madison Leads',  icon: 'clipboard' },
-  { key: 'clinical',   label: 'Clinical Trials',   icon: 'beaker',    countKey: 'clinical' },
-  { key: 'clinical_new', label: 'Clinical Trials - NEW', icon: 'flask' },
-  { key: 'funding',    label: 'Funding & M&A',     icon: 'trending',  countKey: 'funding' },
-  { key: 'ma_funding_new', label: 'M&A - NEW', icon: 'trending' },
-  { key: 'funding_new', label: 'Funding - NEW', icon: 'dollar' },
-  { key: 'competitor', label: 'Competitor Jobs',   icon: 'briefcase', countKey: 'competitor' },
-  { key: 'stale',      label: 'Stale Roles',       icon: 'clock',     countKey: 'stale' },
-  { key: 'buyers',     label: 'Past Buyers',       icon: 'users' },
-  { key: 'candidates', label: 'Past Candidates',   icon: 'user' },
-  { key: 'contacts',   label: 'Other Contacts',    icon: 'user' },
+  { key: 'dashboard',      label: 'Dashboard',              icon: 'grid' },
+  { key: 'madison_leads',  label: 'Madison Leads',          icon: 'clipboard', countKey: 'madison_leads' },
+  { key: 'clinical_new',   label: 'Clinical Trials - NEW',  icon: 'flask',     countKey: 'clinical_new' },
+  { key: 'ma_funding_new', label: 'M&A - NEW',              icon: 'trending',  countKey: 'ma_funding_new' },
+  { key: 'funding_new',    label: 'Funding - NEW',          icon: 'dollar',    countKey: 'funding_new' },
+  { key: 'competitor',     label: 'Competitor Jobs',        icon: 'briefcase', countKey: 'competitor' },
+  { key: 'stale',          label: 'Stale Roles',            icon: 'clock',     countKey: 'stale' },
+  { key: 'buyers',         label: 'Past Buyers',            icon: 'users' },
+  { key: 'candidates',     label: 'Past Candidates',        icon: 'user' },
+  { key: 'contacts',       label: 'Other Contacts',         icon: 'user' },
+  { key: 'clinical',       label: 'Clinical Trials',        icon: 'beaker',    countKey: 'clinical' },
+  { key: 'funding',        label: 'Funding & M&A',          icon: 'trending',  countKey: 'funding' },
+  { key: 'leads',          label: 'My Leads',               icon: 'clipboard', countKey: 'leads' },
 ]
 
 function Sidebar({ activePage, setActivePage, tabCounts }) {
@@ -3862,6 +3862,7 @@ export default function Home() {
   const [agentRunning, setAgentRunning] = useState(false)
   const [toast, setToast]               = useState(null)
   const [dismissTarget, setDismissTarget] = useState(null) // { signal, tabKey }
+  const [sidebarCounts, setSidebarCounts] = useState({})
 
   const fetchSignals = useCallback(async () => {
     try {
@@ -3901,6 +3902,17 @@ export default function Home() {
     }
   }, [])
 
+  const fetchSidebarCounts = useCallback(async () => {
+    try {
+      const res = await fetch('/api/sidebar-counts', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = await res.json()
+      setSidebarCounts(data || {})
+    } catch (err) {
+      console.error('Error fetching sidebar counts:', err)
+    }
+  }, [])
+
   useEffect(() => {
     const stored = localStorage.getItem('biosignal_rep_name')
     if (stored) {
@@ -3911,7 +3923,8 @@ export default function Home() {
     fetchSignals()
     fetchAgentRuns()
     fetchLeads()
-  }, [fetchSignals, fetchAgentRuns, fetchLeads])
+    fetchSidebarCounts()
+  }, [fetchSignals, fetchAgentRuns, fetchLeads, fetchSidebarCounts])
 
   useEffect(() => {
     if (!supabase) return
@@ -3938,11 +3951,15 @@ export default function Home() {
   const competitorSignals = signals.filter(s => s.signal_type === 'competitor_job_posting' && activeStatuses.includes(s.status))
   const staleSignals      = signals.filter(s => ['stale_job_posting', 'target_company_job'].includes(s.signal_type) && activeStatuses.includes(s.status))
   const tabCounts = {
-    clinical:   clinicalSignals.length,
-    funding:    fundingSignals.length,
-    competitor: competitorSignals.length,
-    stale:      staleSignals.length,
-    leads:      repName ? leads.filter(l => l.claimed_by === repName).length : 0,
+    clinical:       clinicalSignals.length,
+    funding:        fundingSignals.length,
+    competitor:     competitorSignals.length,
+    stale:          staleSignals.length,
+    leads:          repName ? leads.filter(l => l.claimed_by === repName).length : 0,
+    madison_leads:  sidebarCounts.madison_leads || 0,
+    clinical_new:   sidebarCounts.clinical_new || 0,
+    ma_funding_new: sidebarCounts.ma_funding_new || 0,
+    funding_new:    sidebarCounts.funding_new || 0,
   }
 
   const toggleRow = (id) => {
