@@ -27,6 +27,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 const URLS = [
   'https://www.fiercebiotech.com/keyword/cell-gene-therapy',
   'https://www.fiercebiotech.com/clinical-data',
+  'https://www.fiercebiotech.com/venture-capital',
 ]
 const BASE_URL = 'https://www.fiercebiotech.com'
 const FETCH_DELAY_MS = 2000
