@@ -17,6 +17,7 @@ create table if not exists public.funding_projects (
   matched_name            text,
   company_size            text,
   matched_via             text,
+  project_url             text,
   created_at              timestamptz not null default now()
 );
 

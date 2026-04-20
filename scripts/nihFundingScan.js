@@ -263,11 +263,6 @@ async function fetchReporterPage(fromDate, toDate, offset, attempt = 1) {
         to_date: toDate,
       },
     },
-    include_fields: [
-      'ApplId', 'ProjectNum', 'ProjectTitle', 'OrgName', 'OrgCity',
-      'OrgState', 'AwardAmount', 'PublicHealthRelevance', 'FiscalYear',
-      'AwardNoticeDate', 'DateAdded',
-    ],
     offset,
     limit: PAGE_SIZE,
     sort_field: 'DateAdded',
@@ -311,18 +306,21 @@ function extractProject(record) {
   const applId = record.appl_id != null ? String(record.appl_id) : null
   if (!applId) return null
 
+  const org = record.organization || {}
+
   return {
     appl_id: applId,
     project_num: record.project_num || null,
     project_title: record.project_title || null,
-    org_name: record.org_name || null,
-    org_city: record.org_city || null,
-    org_state: record.org_state || null,
+    org_name: org.org_name || null,
+    org_city: org.org_city || null,
+    org_state: org.org_state || null,
     award_amount: typeof record.award_amount === 'number' ? record.award_amount : (record.award_amount ? Number(record.award_amount) : null),
-    public_health_relevance: record.public_health_relevance || null,
+    public_health_relevance: record.phr_text || null,
     fiscal_year: typeof record.fiscal_year === 'number' ? record.fiscal_year : (record.fiscal_year ? parseInt(record.fiscal_year, 10) : null),
     award_notice_date: normalizeDate(record.award_notice_date),
     date_added: normalizeDate(record.date_added),
+    project_url: `https://reporter.nih.gov/project-details/${applId}`,
   }
 }
 
@@ -402,6 +400,10 @@ async function main() {
     }
 
     if (results.length === 0) break
+
+    if (offset === 0) {
+      console.log(`[NIHFundingScan] Sample result structure: ${JSON.stringify(results[0], null, 2).substring(0, 2000)}`)
+    }
 
     totalFetched += results.length
     console.log(`[NIHFundingScan] Page ${Math.floor(offset / PAGE_SIZE) + 1}: fetched ${results.length} projects (total so far: ${totalFetched})`)
