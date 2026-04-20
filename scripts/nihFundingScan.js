@@ -262,10 +262,6 @@ async function fetchReporterPage(fromDate, toDate, offset, attempt = 1) {
         from_date: fromDate,
         to_date: toDate,
       },
-      organization_type: [
-        'SMALL BUSINESSES',
-        'FOR-PROFIT ORGANIZATIONS (OTHER THAN SMALL BUSINESSES)',
-      ],
     },
     offset,
     limit: PAGE_SIZE,
@@ -407,6 +403,19 @@ async function main() {
 
     if (offset === 0) {
       console.log(`[NIHFundingScan] Sample result structure: ${JSON.stringify(results[0], null, 2).substring(0, 2000)}`)
+
+      console.log('[NIHFundingScan] Sample org types from first page:')
+      const orgTypeCounts = new Map()
+      for (const r of results.slice(0, 50)) {
+        const ot = r.organization?.organization_type
+        const names = Array.isArray(ot) ? ot.map(t => t?.name).filter(Boolean) : (ot?.name ? [ot.name] : [])
+        for (const name of names) {
+          orgTypeCounts.set(name, (orgTypeCounts.get(name) || 0) + 1)
+        }
+      }
+      for (const [name, count] of orgTypeCounts) {
+        console.log(`[NIHFundingScan]   ${name} (${count})`)
+      }
     }
 
     totalFetched += results.length
