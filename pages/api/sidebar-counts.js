@@ -76,11 +76,20 @@ export default async function handler(req, res) {
       return true
     }).length
 
+    // News: sum of all three news tables
+    const [{ count: fierceCount }, { count: biospaceCount }, { count: endpointsCount }] = await Promise.all([
+      supabase.from('fiercebio_news').select('*', { count: 'exact', head: true }),
+      supabase.from('biospace_news').select('*', { count: 'exact', head: true }),
+      supabase.from('endpoint_news').select('*', { count: 'exact', head: true }),
+    ])
+    const newsCount = (fierceCount || 0) + (biospaceCount || 0) + (endpointsCount || 0)
+
     return res.status(200).json({
       madison_leads: madisonCount || 0,
       clinical_new: clinicalNewCount,
       ma_funding_new: eightKCount + s1Count,
       funding_new: fundingNewCount,
+      news: newsCount,
     })
   } catch (err) {
     return res.status(500).json({ error: err.message })

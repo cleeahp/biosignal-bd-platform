@@ -1629,6 +1629,16 @@ function NavIcon({ type, className = 'w-5 h-5' }) {
           <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
         </svg>
       )
+    case 'file-text':
+      return (
+        <svg {...props}>
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="8" y1="13" x2="16" y2="13"/>
+          <line x1="8" y1="17" x2="16" y2="17"/>
+          <line x1="8" y1="9" x2="10" y2="9"/>
+        </svg>
+      )
     case 'briefcase':
       return (
         <svg {...props}>
@@ -1693,6 +1703,7 @@ const MAIN_NAV = [
   { key: 'clinical_new',   label: 'Clinical Trials - NEW',  icon: 'flask',     countKey: 'clinical_new' },
   { key: 'ma_funding_new', label: 'M&A - NEW',              icon: 'trending',  countKey: 'ma_funding_new' },
   { key: 'funding_new',    label: 'Funding - NEW',          icon: 'dollar',    countKey: 'funding_new' },
+  { key: 'news',           label: 'News',                   icon: 'file-text', countKey: 'news' },
   { key: 'competitor',     label: 'Competitor Jobs',        icon: 'briefcase', countKey: 'competitor' },
   { key: 'stale',          label: 'Stale Roles',            icon: 'clock',     countKey: 'stale' },
   { key: 'buyers',         label: 'Past Buyers',            icon: 'users' },
@@ -3030,6 +3041,95 @@ function FundingNewPage() {
   )
 }
 
+// ─── News Page ───────────────────────────────────────────────────────────────
+
+function NewsPage() {
+  const [articles, setArticles] = useState([])
+  const [loading, setLoading] = useState(true)
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+
+  useEffect(() => {
+    fetch('/api/news')
+      .then(r => r.json())
+      .then(data => {
+        setArticles(data.articles || [])
+        setLoading(false)
+      })
+      .catch(() => setLoading(false))
+  }, [])
+
+  const extractors = useMemo(() => ({
+    title: a => a.title || '',
+    source: a => a._source || '',
+  }), [])
+
+  const allValues = useMemo(() => ({
+    title: articles.map(a => a.title || ''),
+    source: articles.map(a => a._source || ''),
+  }), [articles])
+
+  const filtered = applyFilters(articles, extractors)
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  if (articles.length === 0) return <EmptyState message="No news articles found." />
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <ColumnFilterDropdown colKey="title" label="Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[55%]" />
+              <Th className="w-[15%]">Date</Th>
+              <ColumnFilterDropdown colKey="source" label="Source" allValues={allValues.source} activeValues={filters.source} onApply={setFilter} className="w-[15%]" />
+              <Th className="w-[15%]">Link</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {filtered.map((article, i) => {
+              const rowKey = article.url
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              return (
+                <tr key={rowKey} className={`${rowBg} transition-colors`}>
+                  <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                    {article.title || '—'}
+                  </td>
+                  <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                    {article.date ? formatDate(article.date) : '—'}
+                  </td>
+                  <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                    {article._source || '—'}
+                  </td>
+                  <td className="px-3 py-3 text-sm">
+                    {article.url ? (
+                      <a
+                        href={article.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-400 hover:text-blue-300 font-medium"
+                      >
+                        Read Article &#8599;
+                      </a>
+                    ) : <span className="text-gray-600">—</span>}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // ─── Madison Leads Page ──────────────────────────────────────────────────────
 
 function MadisonLeadsPage() {
@@ -3960,6 +4060,7 @@ export default function Home() {
     clinical_new:   sidebarCounts.clinical_new || 0,
     ma_funding_new: sidebarCounts.ma_funding_new || 0,
     funding_new:    sidebarCounts.funding_new || 0,
+    news:           sidebarCounts.news || 0,
   }
 
   const toggleRow = (id) => {
@@ -4317,6 +4418,7 @@ export default function Home() {
               {activePage === 'clinical_new' && <ClinicalTrialsNewPage />}
               {activePage === 'ma_funding_new' && <MAFundingNewPage />}
               {activePage === 'funding_new' && <FundingNewPage />}
+              {activePage === 'news' && <NewsPage />}
               {activePage === 'madison_leads' && <MadisonLeadsPage />}
               {activePage === 'buyers'     && <PastBuyersPage />}
               {activePage === 'candidates' && <PastCandidatesPage />}
