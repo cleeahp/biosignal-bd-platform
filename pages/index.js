@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
+import { createPortal } from 'react-dom'
 import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -227,10 +228,10 @@ function ColumnFilterDropdown({ colKey, label, allValues, activeValues, onApply,
           <svg className="w-3 h-3 opacity-40" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
         </span>
       </th>
-      {isOpen && (
+      {isOpen && typeof document !== 'undefined' && createPortal(
         <div
           ref={dropdownRef}
-          style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 50 }}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 1000 }}
           className="w-56 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl"
         >
           <div className="p-2 border-b border-[#374151]">
@@ -273,7 +274,8 @@ function ColumnFilterDropdown({ colKey, label, allValues, activeValues, onApply,
               Apply
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   )
@@ -1620,6 +1622,13 @@ function NavIcon({ type, className = 'w-5 h-5' }) {
           <polyline points="16,7 22,7 22,13"/>
         </svg>
       )
+    case 'dollar':
+      return (
+        <svg {...props}>
+          <line x1="12" y1="2" x2="12" y2="22"/>
+          <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+        </svg>
+      )
     case 'briefcase':
       return (
         <svg {...props}>
@@ -1685,8 +1694,8 @@ const MAIN_NAV = [
   { key: 'clinical',   label: 'Clinical Trials',   icon: 'beaker',    countKey: 'clinical' },
   { key: 'clinical_new', label: 'Clinical Trials - NEW', icon: 'flask' },
   { key: 'funding',    label: 'Funding & M&A',     icon: 'trending',  countKey: 'funding' },
-  { key: 'ma_funding_new', label: 'M&A and Funding - NEW', icon: 'trending' },
-  { key: 'funding_new', label: 'Funding - NEW', icon: 'trending' },
+  { key: 'ma_funding_new', label: 'M&A - NEW', icon: 'trending' },
+  { key: 'funding_new', label: 'Funding - NEW', icon: 'dollar' },
   { key: 'competitor', label: 'Competitor Jobs',   icon: 'briefcase', countKey: 'competitor' },
   { key: 'stale',      label: 'Stale Roles',       icon: 'clock',     countKey: 'stale' },
   { key: 'buyers',     label: 'Past Buyers',       icon: 'users' },
@@ -3024,19 +3033,21 @@ function FundingNewPage() {
 // ─── Madison Leads Page ──────────────────────────────────────────────────────
 
 function MadisonLeadsPage() {
-  const [data, setData] = useState({ trackedCompanies: [], clinicalTrials: [], filings: [], pastClients: [] })
+  const [data, setData] = useState({ trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], pastClients: [] })
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searchOpen, setSearchOpen] = useState(false)
   const [expandedTrialRows, setExpandedTrialRows] = useState(new Set())
   const [expandedFilingRows, setExpandedFilingRows] = useState(new Set())
+  const [expandedFundingRows, setExpandedFundingRows] = useState(new Set())
   const searchRef = useRef(null)
   const dropdownRef = useRef(null)
   const debounceRef = useRef(null)
 
   const trialsFilter = useColumnFilters()
   const filingsFilter = useColumnFilters()
+  const fundingFilter = useColumnFilters()
 
   const loadData = useCallback(() => {
     setLoading(true)
@@ -3109,6 +3120,10 @@ function MadisonLeadsPage() {
 
   const toggleFilingRow = useCallback((id) => {
     setExpandedFilingRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }, [])
+
+  const toggleFundingRow = useCallback((id) => {
+    setExpandedFundingRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
   }, [])
 
   const isPastClient = useCallback((name) => {
@@ -3185,6 +3200,33 @@ function MadisonLeadsPage() {
   }, [data.filings, isPastClient, getFilingDisplayName])
 
   const filteredFilings = filingsFilter.applyFilters(sortedFilings, filingExtractors)
+
+  // ── Funding table logic ───────────────────────────────────────────────────
+
+  const getFundingDisplayName = useCallback((p) => p.matched_name || '', [])
+
+  const fundingExtractors = useMemo(() => ({
+    company: p => getFundingDisplayName(p),
+    title: p => p.project_title || '',
+  }), [getFundingDisplayName])
+
+  const fundingAllValues = useMemo(() => ({
+    company: data.fundingProjects.map(p => getFundingDisplayName(p)),
+    title: data.fundingProjects.map(p => p.project_title || ''),
+  }), [data.fundingProjects, getFundingDisplayName])
+
+  const sortedFunding = useMemo(() => {
+    const arr = [...data.fundingProjects]
+    arr.sort((a, b) => {
+      const ap = isPastClient(getFundingDisplayName(a)) ? 1 : 0
+      const bp = isPastClient(getFundingDisplayName(b)) ? 1 : 0
+      if (bp !== ap) return bp - ap
+      return new Date(b.award_notice_date || 0) - new Date(a.award_notice_date || 0)
+    })
+    return arr
+  }, [data.fundingProjects, isPastClient, getFundingDisplayName])
+
+  const filteredFunding = fundingFilter.applyFilters(sortedFunding, fundingExtractors)
 
   // Filter search results to exclude already-tracked companies
   const availableResults = searchResults.filter(r => !data.trackedCompanies.includes(r.name))
@@ -3375,6 +3417,69 @@ function MadisonLeadsPage() {
                             <div>
                               <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Agreement Summary</h4>
                               <p className="text-sm text-gray-300 leading-relaxed" style={{ whiteSpace: 'pre-wrap' }}>{filing.agreement_summary}</p>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Funding Projects Section ─────────────────────────────────────── */}
+      {!loading && data.fundingProjects.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <h2 className="text-white text-base font-semibold">Funding Projects</h2>
+          <ClearAllFiltersButton hasActiveFilters={fundingFilter.hasActiveFilters} onClear={fundingFilter.clearAll} />
+          <div className="rounded-lg border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <ColumnFilterDropdown colKey="company" label="Company Name" allValues={fundingAllValues.company} activeValues={fundingFilter.filters.company} onApply={fundingFilter.setFilter} className="w-[30%]" />
+                  <ColumnFilterDropdown colKey="title" label="Project Title" allValues={fundingAllValues.title} activeValues={fundingFilter.filters.title} onApply={fundingFilter.setFilter} className="w-[30%]" />
+                  <Th className="w-[15%]">Award</Th>
+                  <Th className="w-[10%]">Award Date</Th>
+                  <Th className="w-[15%]">Project Link</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {filteredFunding.map((project, i) => {
+                  const rowKey = project.id || project.appl_id
+                  const hasExpandContent = !!(project.public_health_relevance && project.public_health_relevance.trim())
+                  const isExpanded = expandedFundingRows.has(rowKey)
+                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                  const displayName = getFundingDisplayName(project)
+                  const isClient = isPastClient(displayName)
+
+                  return (
+                    <Fragment key={rowKey}>
+                      <tr
+                        onClick={() => hasExpandContent && toggleFundingRow(rowKey)}
+                        className={`${rowBg} hover:bg-[#263045] ${hasExpandContent ? 'cursor-pointer' : ''} transition-colors`}
+                      >
+                        <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                          {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                          {displayName || '—'}
+                        </td>
+                        <td className="px-3 py-3 text-sm text-white" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{project.project_title || '—'}</td>
+                        <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatAward(project.award_amount)}</td>
+                        <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(project.award_notice_date)}</td>
+                        <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
+                          {project.project_url ? (
+                            <a href={project.project_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Project &#8599;</a>
+                          ) : <span className="text-gray-600">—</span>}
+                        </td>
+                      </tr>
+                      {isExpanded && hasExpandContent && (
+                        <tr>
+                          <td colSpan={5} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                            <div>
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Summary:</h4>
+                              <p className="text-sm text-gray-300 leading-relaxed" style={{ whiteSpace: 'pre-wrap' }}>{project.public_health_relevance}</p>
                             </div>
                           </td>
                         </tr>

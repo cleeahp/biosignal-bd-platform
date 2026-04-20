@@ -43,6 +43,7 @@ export default async function handler(req, res) {
       trackedCompanies: [],
       clinicalTrials: [],
       filings: [],
+      fundingProjects: [],
       pastClients: (clientRows || []).map(r => r.name),
     })
   }
@@ -149,10 +150,37 @@ export default async function handler(req, res) {
 
   const filings = [...filtered8K, ...filteredS1]
 
+  // ── Funding projects for tracked companies ────────────────────────────────
+  const funding = []
+  offset = 0
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('funding_projects')
+      .select('*')
+      .in('matched_name', trackedCompanies)
+      .range(offset, offset + PAGE - 1)
+
+    if (error) return res.status(500).json({ error: error.message })
+    if (!data || data.length === 0) break
+    funding.push(...data)
+    offset += PAGE
+  }
+
+  const filteredFunding = funding.filter(p => {
+    if (!p.matched_name) return false
+    if (p.company_size === '10,001+ employees' || p.company_size === '10,001+') {
+      const name = p.matched_name.toLowerCase()
+      return pastClientsLower.has(name)
+    }
+    return true
+  })
+
   return res.status(200).json({
     trackedCompanies,
     clinicalTrials: filteredTrials,
     filings,
+    fundingProjects: filteredFunding,
     pastClients,
   })
 }
