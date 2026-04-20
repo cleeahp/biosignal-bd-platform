@@ -29,8 +29,12 @@ const URLS = [
   'https://www.fiercebiotech.com/clinical-data',
   'https://www.fiercebiotech.com/venture-capital',
   'https://www.fiercebiotech.com/deals',
+  'https://www.fiercebiotech.com/devices',
+  'https://www.fiercebiotech.com/diagnostics',
+  'https://www.fiercepharma.com/keyword/cell-gene-therapy',
+  'https://www.fiercepharma.com/keyword/drug-delivery',
+  'https://www.fiercepharma.com/vaccines',
 ]
-const BASE_URL = 'https://www.fiercebiotech.com'
 const FETCH_DELAY_MS = 2000
 
 function sleep(ms) {
@@ -110,13 +114,17 @@ async function fetchPage(url) {
 }
 
 /**
- * Extract articles from the FierceBiotech keyword page HTML.
+ * Extract articles from a FierceBiotech/FiercePharma keyword page HTML.
  * Each article is rooted at an <h3 class="element-title ..."><a href="...">TITLE</a></h3>
  * and the publication date follows somewhere after in the same card block as
  * <span class="date d-inline-block">Apr 20, 2026 10:15am</span>.
+ *
+ * Relative hrefs are resolved against `sourceUrl`'s origin so articles from
+ * fiercebiotech.com and fiercepharma.com get the correct domain.
  */
-function extractArticles(html) {
+function extractArticles(html, sourceUrl) {
   const articles = []
+  const baseOrigin = new URL(sourceUrl).origin
 
   const h3Pattern = /<h3\s+class="element-title[^"]*"[^>]*>([\s\S]*?)<\/h3>/gi
   const titleMatches = []
@@ -132,7 +140,7 @@ function extractArticles(html) {
     if (!anchorMatch) continue
 
     let href = anchorMatch[1].trim()
-    if (href.startsWith('/')) href = BASE_URL + href
+    if (href.startsWith('/')) href = baseOrigin + href
 
     const title = decodeHtmlEntities(stripHtmlTags(anchorMatch[2])).replace(/\s+/g, ' ').trim()
     if (!title || !href) continue
@@ -228,7 +236,7 @@ async function main() {
       continue
     }
 
-    const pageArticles = extractArticles(html)
+    const pageArticles = extractArticles(html, url)
     for (const article of pageArticles) {
       if (seenUrls.has(article.article_url)) continue
       seenUrls.add(article.article_url)
