@@ -7,6 +7,7 @@ create table if not exists public.endpoint_news (
   id            uuid primary key default gen_random_uuid(),
   title         text not null,
   article_url   text not null,
+  matched_names text[],
   created_at    timestamptz not null default now()
 );
 

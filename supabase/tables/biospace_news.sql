@@ -6,6 +6,7 @@ create table if not exists public.biospace_news (
   title         text not null,
   article_url   text not null,
   article_date  date,
+  matched_names text[],
   created_at    timestamptz not null default now()
 );
 

@@ -13,6 +13,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js'
+import { buildNewsMatcher } from '../lib/newsCompanyMatcher.js'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -164,6 +165,23 @@ function extractArticles(html, sourceUrl) {
 
 // ── Data loading ────────────────────────────────────────────────────────────
 
+async function loadCompanyNames() {
+  const names = []
+  const PAGE = 1000
+  let offset = 0
+  while (true) {
+    const { data, error } = await supabase
+      .from('companies_directory')
+      .select('name')
+      .range(offset, offset + PAGE - 1)
+    if (error) { console.error(`[FierceBioScan] Error loading companies_directory: ${error.message}`); break }
+    if (!data || data.length === 0) break
+    for (const row of data) if (row.name) names.push(row.name)
+    offset += PAGE
+  }
+  return names
+}
+
 async function loadExistingUrls() {
   const urls = new Set()
   const PAGE = 1000
@@ -244,8 +262,13 @@ async function main() {
     }
   }
 
-  const existingUrls = await loadExistingUrls()
+  const [existingUrls, companyNames] = await Promise.all([
+    loadExistingUrls(),
+    loadCompanyNames(),
+  ])
   console.log(`[FierceBioScan] ${existingUrls.size} existing articles loaded`)
+  const matcher = buildNewsMatcher(companyNames)
+  console.log(`[FierceBioScan] ${matcher.size} company name patterns loaded for matching`)
 
   const toInsert = []
   let skipped = 0
@@ -256,6 +279,15 @@ async function main() {
       continue
     }
     existingUrls.add(article.article_url)
+
+    const matched = matcher.match(article.title)
+    if (matched.length > 0) {
+      article.matched_names = matched
+      console.log(`[FierceBioScan] Matched: "${article.title}" → ${matched.join(', ')}`)
+    } else {
+      article.matched_names = null
+    }
+
     console.log(`[FierceBioScan] Found: ${article.title} (${article.article_date || 'unknown date'}) — ${article.article_url}`)
     toInsert.push(article)
   }
