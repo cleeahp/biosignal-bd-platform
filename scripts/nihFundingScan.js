@@ -258,7 +258,7 @@ function matchCompany(companyName, nameMap, wordIndex) {
 async function fetchReporterPage(fromDate, toDate, offset, attempt = 1) {
   const payload = {
     criteria: {
-      date_added: {
+      award_notice_date: {
         from_date: fromDate,
         to_date: toDate,
       },
@@ -361,7 +361,7 @@ async function batchInsert(table, rows) {
 async function main() {
   const toDate = formatDate(new Date())
   const fromDate = formatDate(daysAgo(LOOKBACK_DAYS))
-  console.log(`[NIHFundingScan] Mode: ${mode}, Date range: ${fromDate} to ${toDate}`)
+  console.log(`[NIHFundingScan] Mode: ${mode}, Award notice date range: ${fromDate} to ${toDate}`)
 
   console.log('[NIHFundingScan] Loading company data and existing appl_ids...')
   const [directory, existingApplIds, existingAltNames] = await Promise.all([
