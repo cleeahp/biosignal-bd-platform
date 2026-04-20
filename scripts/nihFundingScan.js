@@ -262,6 +262,10 @@ async function fetchReporterPage(fromDate, toDate, offset, attempt = 1) {
         from_date: fromDate,
         to_date: toDate,
       },
+      organization_type: [
+        'SMALL BUSINESSES',
+        'FOR-PROFIT ORGANIZATIONS (OTHER THAN SMALL BUSINESSES)',
+      ],
     },
     offset,
     limit: PAGE_SIZE,
