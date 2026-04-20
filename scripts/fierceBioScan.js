@@ -24,8 +24,16 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
-const SOURCE_URL = 'https://www.fiercebiotech.com/keyword/cell-gene-therapy'
+const URLS = [
+  'https://www.fiercebiotech.com/keyword/cell-gene-therapy',
+  'https://www.fiercebiotech.com/clinical-data',
+]
 const BASE_URL = 'https://www.fiercebiotech.com'
+const FETCH_DELAY_MS = 2000
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 // ── CLI argument parsing ────────────────────────────────────────────────────
@@ -199,10 +207,32 @@ async function batchInsert(rows) {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log(`[FierceBioScan] Mode: ${mode}, URL: ${SOURCE_URL}`)
+  console.log(`[FierceBioScan] Mode: ${mode}, URLs: ${URLS.length}`)
 
-  const html = await fetchPage(SOURCE_URL)
-  const articles = extractArticles(html)
+  // Scrape each URL and dedupe by article_url across pages
+  const seenUrls = new Set()
+  const articles = []
+
+  for (let i = 0; i < URLS.length; i++) {
+    const url = URLS[i]
+    if (i > 0) await sleep(FETCH_DELAY_MS)
+
+    console.log(`[FierceBioScan] Scraping: ${url}`)
+    let html
+    try {
+      html = await fetchPage(url)
+    } catch (err) {
+      console.error(`[FierceBioScan] Fetch error for ${url}: ${err.message}`)
+      continue
+    }
+
+    const pageArticles = extractArticles(html)
+    for (const article of pageArticles) {
+      if (seenUrls.has(article.article_url)) continue
+      seenUrls.add(article.article_url)
+      articles.push(article)
+    }
+  }
 
   const existingUrls = await loadExistingUrls()
   console.log(`[FierceBioScan] ${existingUrls.size} existing articles loaded`)
