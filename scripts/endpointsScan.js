@@ -152,6 +152,25 @@ async function loadCompanyNames() {
   return names
 }
 
+async function loadAlternateNames() {
+  const rows = []
+  const PAGE = 1000
+  let offset = 0
+  while (true) {
+    const { data, error } = await supabase
+      .from('companies_alternate_names')
+      .select('alternate_name, directory_name')
+      .range(offset, offset + PAGE - 1)
+    if (error) { console.error(`[EndpointsScan] Error loading companies_alternate_names: ${error.message}`); break }
+    if (!data || data.length === 0) break
+    for (const row of data) {
+      if (row.alternate_name && row.directory_name) rows.push(row)
+    }
+    offset += PAGE
+  }
+  return rows
+}
+
 async function loadExistingUrls() {
   const urls = new Set()
   const PAGE = 1000
@@ -232,13 +251,14 @@ async function main() {
     }
   }
 
-  const [existingUrls, companyNames] = await Promise.all([
+  const [existingUrls, companyNames, alternateNames] = await Promise.all([
     loadExistingUrls(),
     loadCompanyNames(),
+    loadAlternateNames(),
   ])
   console.log(`[EndpointsScan] ${existingUrls.size} existing articles loaded`)
-  const matcher = buildNewsMatcher(companyNames)
-  console.log(`[EndpointsScan] ${matcher.size} company name patterns loaded for matching`)
+  const matcher = buildNewsMatcher(companyNames, alternateNames)
+  console.log(`[EndpointsScan] ${matcher.size} company name patterns loaded for matching (${companyNames.length} directory names, ${alternateNames.length} alternate names)`)
 
   const toInsert = []
   let skipped = 0

@@ -25,9 +25,9 @@ export default async function handler(req, res) {
 
   try {
     const [fierce, biospace, endpoints] = await Promise.all([
-      fetchAll('fiercebio_news', 'title, article_url, article_date, created_at'),
-      fetchAll('biospace_news', 'title, article_url, article_date, created_at'),
-      fetchAll('endpoint_news', 'title, article_url, created_at'),
+      fetchAll('fiercebio_news', 'title, article_url, article_date, matched_names, created_at'),
+      fetchAll('biospace_news', 'title, article_url, article_date, matched_names, created_at'),
+      fetchAll('endpoint_news', 'title, article_url, matched_names, created_at'),
     ])
 
     const articles = [
@@ -36,6 +36,8 @@ export default async function handler(req, res) {
         url: r.article_url,
         date: r.article_date || null,
         created_at: r.created_at,
+        matched_names: r.matched_names || null,
+        source_table: 'fiercebio_news',
         _source: 'Fierce Bio',
       })),
       ...biospace.map(r => ({
@@ -43,6 +45,8 @@ export default async function handler(req, res) {
         url: r.article_url,
         date: r.article_date || null,
         created_at: r.created_at,
+        matched_names: r.matched_names || null,
+        source_table: 'biospace_news',
         _source: 'BioSpace',
       })),
       ...endpoints.map(r => ({
@@ -50,6 +54,8 @@ export default async function handler(req, res) {
         url: r.article_url,
         date: null,
         created_at: r.created_at,
+        matched_names: r.matched_names || null,
+        source_table: 'endpoint_news',
         _source: 'Endpoints News',
       })),
     ]
