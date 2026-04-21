@@ -3043,10 +3043,213 @@ function FundingNewPage() {
 
 // ─── News Page ───────────────────────────────────────────────────────────────
 
+function AssignCompanyModal({ article, onClose, onSaved }) {
+  const [selected, setSelected] = useState(() => {
+    const names = Array.isArray(article.matched_names) ? article.matched_names : []
+    return names.map(name => ({ name, alternate_name: '' }))
+  })
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+  const debounceRef = useRef(null)
+  const searchRef = useRef(null)
+  const dropdownRef = useRef(null)
+
+  const hadExisting = Array.isArray(article.matched_names) && article.matched_names.length > 0
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    const q = searchQuery.trim()
+    if (q.length < 2) {
+      setSearchResults([])
+      setSearchOpen(false)
+      return
+    }
+    debounceRef.current = setTimeout(() => {
+      fetch(`/api/company-search?q=${encodeURIComponent(q)}`)
+        .then(r => r.json())
+        .then(results => {
+          setSearchResults(Array.isArray(results) ? results : [])
+          setSearchOpen(true)
+        })
+        .catch(() => {})
+    }, 300)
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [searchQuery])
+
+  useEffect(() => {
+    if (!searchOpen) return
+    const handleClick = (e) => {
+      if (
+        dropdownRef.current && !dropdownRef.current.contains(e.target)
+        && searchRef.current && !searchRef.current.contains(e.target)
+      ) {
+        setSearchOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [searchOpen])
+
+  useEffect(() => {
+    const handleKey = (e) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
+  const addCompany = (name) => {
+    setSelected(prev => prev.some(s => s.name === name) ? prev : [...prev, { name, alternate_name: '' }])
+    setSearchQuery('')
+    setSearchOpen(false)
+  }
+
+  const removeCompany = (name) => {
+    setSelected(prev => prev.filter(s => s.name !== name))
+  }
+
+  const updateAlternateName = (name, value) => {
+    setSelected(prev => prev.map(s => s.name === name ? { ...s, alternate_name: value } : s))
+  }
+
+  const save = async () => {
+    setSaving(true)
+    setError(null)
+    const body = {
+      article_url: article.url,
+      source_table: article.source_table,
+      company_names: selected.map(s => s.name),
+      alternate_entries: selected
+        .filter(s => s.alternate_name && s.alternate_name.trim())
+        .map(s => ({ directory_name: s.name, alternate_name: s.alternate_name.trim() })),
+    }
+    try {
+      const response = await fetch('/api/news-company', {
+        method: hadExisting ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!response.ok) {
+        const json = await response.json().catch(() => ({}))
+        throw new Error(json.error || `HTTP ${response.status}`)
+      }
+      onSaved(selected.map(s => s.name))
+      onClose()
+    } catch (err) {
+      setError(err.message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const availableResults = searchResults.filter(r => !selected.some(s => s.name === r.name))
+
+  if (typeof document === 'undefined') return null
+  return createPortal(
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div className="relative w-full max-w-xl mx-4 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl flex flex-col max-h-[90vh]">
+        <div className="flex items-start justify-between gap-4 p-4 border-b border-[#374151]">
+          <div className="flex-1 min-w-0">
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Assign Companies</h3>
+            <p
+              className="mt-1 text-sm text-gray-100 font-semibold"
+              style={{ userSelect: 'text', cursor: 'text' }}
+            >
+              {article.title}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none shrink-0" aria-label="Close">
+            &times;
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div className="relative" ref={searchRef}>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search companies..."
+              className="w-full bg-[#111827] text-sm text-white px-3 py-2 rounded border border-[#374151] outline-none focus:border-blue-500 placeholder-gray-500"
+            />
+            {searchOpen && availableResults.length > 0 && (
+              <div
+                ref={dropdownRef}
+                className="absolute z-10 mt-1 w-full max-h-60 overflow-y-auto bg-[#111827] border border-[#374151] rounded shadow-2xl"
+              >
+                {availableResults.slice(0, 50).map(r => (
+                  <button
+                    key={r.name}
+                    onClick={() => addCompany(r.name)}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-blue-600/20 hover:text-white transition-colors"
+                  >
+                    {r.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {selected.length === 0 ? (
+            <p className="text-sm text-gray-500 italic">No companies selected yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {selected.map(s => (
+                <div key={s.name} className="bg-[#111827] rounded border border-[#374151] p-3">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <span className="text-sm font-semibold text-gray-100">{s.name}</span>
+                    <button
+                      onClick={() => removeCompany(s.name)}
+                      className="text-gray-500 hover:text-red-400 text-base leading-none"
+                      aria-label={`Remove ${s.name}`}
+                    >
+                      &times;
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    value={s.alternate_name}
+                    onChange={e => updateAlternateName(s.name, e.target.value)}
+                    placeholder="Alternate name (paste from title above)"
+                    className="w-full bg-[#1f2937] text-sm text-gray-200 px-2 py-1.5 rounded border border-[#374151] outline-none focus:border-blue-500 placeholder-gray-600"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {error && <p className="text-sm text-red-400">{error}</p>}
+        </div>
+
+        <div className="p-4 border-t border-[#374151] flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={saving}
+            className="text-sm text-gray-400 hover:text-white px-3 py-1.5 rounded disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={save}
+            disabled={saving}
+            className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 px-4 py-1.5 rounded disabled:opacity-50"
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 function NewsPage() {
   const [articles, setArticles] = useState([])
   const [loading, setLoading] = useState(true)
-  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const [assignArticle, setAssignArticle] = useState(null)
+  const { filters, setFilter, clearAll, hasActiveFilters } = useColumnFilters()
 
   useEffect(() => {
     fetch('/api/news')
@@ -3058,17 +3261,46 @@ function NewsPage() {
       .catch(() => setLoading(false))
   }, [])
 
-  const extractors = useMemo(() => ({
-    title: a => a.title || '',
-    source: a => a._source || '',
-  }), [])
+  const allValues = useMemo(() => {
+    const companySet = new Set()
+    for (const a of articles) {
+      if (Array.isArray(a.matched_names)) {
+        for (const n of a.matched_names) if (n) companySet.add(n)
+      }
+    }
+    return {
+      company: [...companySet],
+      title: articles.map(a => a.title || ''),
+      source: articles.map(a => a._source || ''),
+    }
+  }, [articles])
 
-  const allValues = useMemo(() => ({
-    title: articles.map(a => a.title || ''),
-    source: articles.map(a => a._source || ''),
-  }), [articles])
+  const filtered = useMemo(() => {
+    if (!hasActiveFilters) return articles
+    return articles.filter(a => {
+      for (const [colKey, allowedValues] of Object.entries(filters)) {
+        if (!allowedValues || allowedValues.length === 0) continue
+        const allowedLower = allowedValues.map(v => String(v).toLowerCase())
+        if (colKey === 'company') {
+          const names = Array.isArray(a.matched_names) ? a.matched_names : []
+          if (!names.some(n => allowedLower.includes(String(n).toLowerCase()))) return false
+        } else if (colKey === 'title') {
+          if (!allowedLower.includes(String(a.title || '').toLowerCase())) return false
+        } else if (colKey === 'source') {
+          if (!allowedLower.includes(String(a._source || '').toLowerCase())) return false
+        }
+      }
+      return true
+    })
+  }, [articles, filters, hasActiveFilters])
 
-  const filtered = applyFilters(articles, extractors)
+  const updateArticleMatches = useCallback((url, newMatches) => {
+    setArticles(prev => prev.map(a =>
+      a.url === url
+        ? { ...a, matched_names: newMatches && newMatches.length > 0 ? newMatches : null }
+        : a
+    ))
+  }, [])
 
   if (loading) {
     return (
@@ -3087,7 +3319,8 @@ function NewsPage() {
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
-              <ColumnFilterDropdown colKey="title" label="Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[55%]" />
+              <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[20%]" />
+              <ColumnFilterDropdown colKey="title" label="Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[35%]" />
               <Th className="w-[15%]">Date</Th>
               <ColumnFilterDropdown colKey="source" label="Source" allValues={allValues.source} activeValues={filters.source} onApply={setFilter} className="w-[15%]" />
               <Th className="w-[15%]">Link</Th>
@@ -3097,18 +3330,33 @@ function NewsPage() {
             {filtered.map((article, i) => {
               const rowKey = article.url
               const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              const names = Array.isArray(article.matched_names) ? article.matched_names : []
               return (
                 <tr key={rowKey} className={`${rowBg} transition-colors`}>
-                  <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                  <td className="px-3 py-3 text-sm text-gray-200 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                    <div className="flex flex-col gap-1">
+                      {names.length === 0 && <span className="text-gray-600">—</span>}
+                      {names.map(n => (
+                        <span key={n} className="text-gray-100">{n}</span>
+                      ))}
+                      <button
+                        onClick={() => setAssignArticle(article)}
+                        className="self-start mt-1 text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30 hover:bg-blue-600/20 transition-colors"
+                      >
+                        {names.length > 0 ? 'Edit' : '+ Assign'}
+                      </button>
+                    </div>
+                  </td>
+                  <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
                     {article.title || '—'}
                   </td>
-                  <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                  <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
                     {article.date ? formatDate(article.date) : '—'}
                   </td>
-                  <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                  <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
                     {article._source || '—'}
                   </td>
-                  <td className="px-3 py-3 text-sm">
+                  <td className="px-3 py-3 text-sm align-top">
                     {article.url ? (
                       <a
                         href={article.url}
@@ -3126,6 +3374,13 @@ function NewsPage() {
           </tbody>
         </table>
       </div>
+      {assignArticle && (
+        <AssignCompanyModal
+          article={assignArticle}
+          onClose={() => setAssignArticle(null)}
+          onSaved={(newMatches) => updateArticleMatches(assignArticle.url, newMatches)}
+        />
+      )}
     </div>
   )
 }
