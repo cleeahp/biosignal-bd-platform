@@ -29,20 +29,26 @@ async function applyAssignment(req, res) {
     return res.status(500).json({ error: `Update failed: ${updateErr.message}` })
   }
 
-  const altRows = Array.isArray(alternate_entries)
-    ? alternate_entries
-        .map((e) => ({
-          directory_name: e && e.directory_name ? String(e.directory_name).trim() : '',
-          alternate_name: e && e.alternate_name ? String(e.alternate_name).trim() : '',
-        }))
-        .filter((e) => e.directory_name && e.alternate_name)
-        .map((e) => ({
-          directory_name: e.directory_name,
-          alternate_name: e.alternate_name,
-          matched_via: 'news_page_entry',
-          domain: null,
-        }))
-    : []
+  // Build the upsert list: skip any entry whose alternate_name is null,
+  // undefined, empty, or whitespace-only after trimming.
+  const altRows = []
+  if (Array.isArray(alternate_entries)) {
+    for (const entry of alternate_entries) {
+      if (!entry || typeof entry !== 'object') continue
+      const rawAlt = entry.alternate_name
+      if (rawAlt === null || rawAlt === undefined) continue
+      const alternateName = String(rawAlt).trim()
+      if (alternateName.length < 1) continue
+      const directoryName = entry.directory_name ? String(entry.directory_name).trim() : ''
+      if (!directoryName) continue
+      altRows.push({
+        directory_name: directoryName,
+        alternate_name: alternateName,
+        matched_via: 'news_page_entry',
+        domain: null,
+      })
+    }
+  }
 
   let upsertedCount = 0
   if (altRows.length > 0) {

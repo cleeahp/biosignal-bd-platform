@@ -3133,13 +3133,18 @@ function AssignCompanyModal({ article, onClose, onSaved }) {
   const save = async () => {
     setSaving(true)
     setError(null)
+    const alternateEntries = []
+    for (const s of selected) {
+      if (s.alternate_name === null || s.alternate_name === undefined) continue
+      const trimmed = String(s.alternate_name).trim()
+      if (trimmed.length < 1) continue
+      alternateEntries.push({ directory_name: s.name, alternate_name: trimmed })
+    }
     const body = {
       article_url: article.url,
       source_table: article.source_table,
       company_names: selected.map(s => s.name),
-      alternate_entries: selected
-        .filter(s => s.alternate_name && s.alternate_name.trim())
-        .map(s => ({ directory_name: s.name, alternate_name: s.alternate_name.trim() })),
+      alternate_entries: alternateEntries,
     }
     try {
       const response = await fetch('/api/news-company', {
