@@ -3277,6 +3277,7 @@ function AssignCompanyModal({ article, onClose, onSaved }) {
 
 function NewsPage() {
   const [articles, setArticles] = useState([])
+  const [pastClients, setPastClients] = useState([])
   const [loading, setLoading] = useState(true)
   const [assignArticle, setAssignArticle] = useState(null)
   const { filters, setFilter, clearAll, hasActiveFilters } = useColumnFilters()
@@ -3286,10 +3287,21 @@ function NewsPage() {
       .then(r => r.json())
       .then(data => {
         setArticles(data.articles || [])
+        setPastClients(data.pastClients || [])
         setLoading(false)
       })
       .catch(() => setLoading(false))
   }, [])
+
+  const pastClientsLower = useMemo(() => new Set(pastClients.map(n => n.toLowerCase())), [pastClients])
+  const isPastClientName = useCallback((name) => {
+    if (!name) return false
+    return pastClientsLower.has(String(name).toLowerCase())
+  }, [pastClientsLower])
+  const articleHasPastClient = useCallback((a) => {
+    const names = Array.isArray(a.matched_names) ? a.matched_names : []
+    return names.some(isPastClientName)
+  }, [isPastClientName])
 
   const allValues = useMemo(() => {
     const companySet = new Set()
@@ -3305,9 +3317,24 @@ function NewsPage() {
     }
   }, [articles])
 
+  const sorted = useMemo(() => {
+    const arr = [...articles]
+    arr.sort((a, b) => {
+      const aPast = articleHasPastClient(a) ? 1 : 0
+      const bPast = articleHasPastClient(b) ? 1 : 0
+      if (bPast !== aPast) return bPast - aPast
+      const aHas = a.date ? 1 : 0
+      const bHas = b.date ? 1 : 0
+      if (aHas !== bHas) return bHas - aHas
+      if (a.date && b.date) return new Date(b.date) - new Date(a.date)
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0)
+    })
+    return arr
+  }, [articles, articleHasPastClient])
+
   const filtered = useMemo(() => {
-    if (!hasActiveFilters) return articles
-    return articles.filter(a => {
+    if (!hasActiveFilters) return sorted
+    return sorted.filter(a => {
       for (const [colKey, allowedValues] of Object.entries(filters)) {
         if (!allowedValues || allowedValues.length === 0) continue
         const allowedLower = allowedValues.map(v => String(v).toLowerCase())
@@ -3322,7 +3349,7 @@ function NewsPage() {
       }
       return true
     })
-  }, [articles, filters, hasActiveFilters])
+  }, [sorted, filters, hasActiveFilters])
 
   const updateArticleMatches = useCallback((url, newMatches) => {
     setArticles(prev => prev.map(a =>
@@ -3367,7 +3394,10 @@ function NewsPage() {
                     <div className="flex flex-col gap-1">
                       {names.length === 0 && <span className="text-gray-600">—</span>}
                       {names.map(n => (
-                        <span key={n} className="text-gray-100">{n}</span>
+                        <span key={n} className="text-gray-100">
+                          {isPastClientName(n) && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                          {n}
+                        </span>
                       ))}
                       <button
                         onClick={() => setAssignArticle(article)}
@@ -3418,7 +3448,7 @@ function NewsPage() {
 // ─── Madison Leads Page ──────────────────────────────────────────────────────
 
 function MadisonLeadsPage() {
-  const [data, setData] = useState({ trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], pastClients: [] })
+  const [data, setData] = useState({ trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], pastClients: [] })
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
@@ -3426,6 +3456,7 @@ function MadisonLeadsPage() {
   const [expandedTrialRows, setExpandedTrialRows] = useState(new Set())
   const [expandedFilingRows, setExpandedFilingRows] = useState(new Set())
   const [expandedFundingRows, setExpandedFundingRows] = useState(new Set())
+  const [assignArticle, setAssignArticle] = useState(null)
   const searchRef = useRef(null)
   const dropdownRef = useRef(null)
   const debounceRef = useRef(null)
@@ -3433,6 +3464,7 @@ function MadisonLeadsPage() {
   const trialsFilter = useColumnFilters()
   const filingsFilter = useColumnFilters()
   const fundingFilter = useColumnFilters()
+  const newsFilter = useColumnFilters()
 
   const loadData = useCallback(() => {
     setLoading(true)
@@ -3612,6 +3644,72 @@ function MadisonLeadsPage() {
   }, [data.fundingProjects, isPastClient, getFundingDisplayName])
 
   const filteredFunding = fundingFilter.applyFilters(sortedFunding, fundingExtractors)
+
+  // ── News table logic ──────────────────────────────────────────────────────
+
+  const articleHasPastClient = useCallback((a) => {
+    const names = Array.isArray(a.matched_names) ? a.matched_names : []
+    return names.some(n => isPastClient(n))
+  }, [isPastClient])
+
+  const newsAllValues = useMemo(() => {
+    const companySet = new Set()
+    for (const a of data.newsArticles || []) {
+      if (Array.isArray(a.matched_names)) {
+        for (const n of a.matched_names) if (n) companySet.add(n)
+      }
+    }
+    return {
+      company: [...companySet],
+      title: (data.newsArticles || []).map(a => a.title || ''),
+      source: (data.newsArticles || []).map(a => a._source || ''),
+    }
+  }, [data.newsArticles])
+
+  const sortedNews = useMemo(() => {
+    const arr = [...(data.newsArticles || [])]
+    arr.sort((a, b) => {
+      const ap = articleHasPastClient(a) ? 1 : 0
+      const bp = articleHasPastClient(b) ? 1 : 0
+      if (bp !== ap) return bp - ap
+      const aHas = a.date ? 1 : 0
+      const bHas = b.date ? 1 : 0
+      if (aHas !== bHas) return bHas - aHas
+      if (a.date && b.date) return new Date(b.date) - new Date(a.date)
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0)
+    })
+    return arr
+  }, [data.newsArticles, articleHasPastClient])
+
+  const filteredNews = useMemo(() => {
+    if (!newsFilter.hasActiveFilters) return sortedNews
+    return sortedNews.filter(a => {
+      for (const [colKey, allowedValues] of Object.entries(newsFilter.filters)) {
+        if (!allowedValues || allowedValues.length === 0) continue
+        const allowedLower = allowedValues.map(v => String(v).toLowerCase())
+        if (colKey === 'company') {
+          const names = Array.isArray(a.matched_names) ? a.matched_names : []
+          if (!names.some(n => allowedLower.includes(String(n).toLowerCase()))) return false
+        } else if (colKey === 'title') {
+          if (!allowedLower.includes(String(a.title || '').toLowerCase())) return false
+        } else if (colKey === 'source') {
+          if (!allowedLower.includes(String(a._source || '').toLowerCase())) return false
+        }
+      }
+      return true
+    })
+  }, [sortedNews, newsFilter.filters, newsFilter.hasActiveFilters])
+
+  const updateNewsMatches = useCallback((url, newMatches) => {
+    setData(prev => ({
+      ...prev,
+      newsArticles: (prev.newsArticles || []).map(a =>
+        a.url === url
+          ? { ...a, matched_names: newMatches && newMatches.length > 0 ? newMatches : null }
+          : a
+      ),
+    }))
+  }, [])
 
   // Filter search results to exclude already-tracked companies
   const availableResults = searchResults.filter(r => !data.trackedCompanies.includes(r.name))
@@ -3876,6 +3974,83 @@ function MadisonLeadsPage() {
             </table>
           </div>
         </div>
+      )}
+
+      {/* ── News Section ─────────────────────────────────────────────────── */}
+      {!loading && (data.newsArticles || []).length > 0 && (
+        <div className="flex flex-col gap-2">
+          <h2 className="text-white text-base font-semibold">News</h2>
+          <ClearAllFiltersButton hasActiveFilters={newsFilter.hasActiveFilters} onClear={newsFilter.clearAll} />
+          <div className="rounded-lg border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <ColumnFilterDropdown colKey="company" label="Company" allValues={newsAllValues.company} activeValues={newsFilter.filters.company} onApply={newsFilter.setFilter} className="w-[20%]" />
+                  <ColumnFilterDropdown colKey="title" label="Title" allValues={newsAllValues.title} activeValues={newsFilter.filters.title} onApply={newsFilter.setFilter} className="w-[35%]" />
+                  <Th className="w-[15%]">Date</Th>
+                  <ColumnFilterDropdown colKey="source" label="Source" allValues={newsAllValues.source} activeValues={newsFilter.filters.source} onApply={newsFilter.setFilter} className="w-[15%]" />
+                  <Th className="w-[15%]">Link</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {filteredNews.map((article, i) => {
+                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                  const names = Array.isArray(article.matched_names) ? article.matched_names : []
+                  return (
+                    <tr key={article.url} className={`${rowBg} transition-colors`}>
+                      <td className="px-3 py-3 text-sm text-gray-200 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        <div className="flex flex-col gap-1">
+                          {names.length === 0 && <span className="text-gray-600">—</span>}
+                          {names.map(n => (
+                            <span key={n} className="text-gray-100">
+                              {isPastClient(n) && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                              {n}
+                            </span>
+                          ))}
+                          <button
+                            onClick={() => setAssignArticle(article)}
+                            className="self-start mt-1 text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30 hover:bg-blue-600/20 transition-colors"
+                          >
+                            {names.length > 0 ? 'Edit' : '+ Assign'}
+                          </button>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        {article.title || '—'}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        {article.date ? formatDate(article.date) : '—'}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        {article._source || '—'}
+                      </td>
+                      <td className="px-3 py-3 text-sm align-top">
+                        {article.url ? (
+                          <a
+                            href={article.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-400 hover:text-blue-300 font-medium"
+                          >
+                            Read Article &#8599;
+                          </a>
+                        ) : <span className="text-gray-600">—</span>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {assignArticle && (
+        <AssignCompanyModal
+          article={assignArticle}
+          onClose={() => setAssignArticle(null)}
+          onSaved={(newMatches) => updateNewsMatches(assignArticle.url, newMatches)}
+        />
       )}
     </div>
   )

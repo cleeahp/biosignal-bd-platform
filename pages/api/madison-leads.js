@@ -44,6 +44,7 @@ export default async function handler(req, res) {
       clinicalTrials: [],
       filings: [],
       fundingProjects: [],
+      newsArticles: [],
       pastClients: (clientRows || []).map(r => r.name),
     })
   }
@@ -176,11 +177,45 @@ export default async function handler(req, res) {
     return true
   })
 
+  // ── News articles for tracked companies ───────────────────────────────────
+  const NEWS_SOURCES = [
+    { table: 'fiercebio_news', source: 'Fierce Bio',    select: 'title, article_url, article_date, matched_names, created_at', hasDate: true },
+    { table: 'biospace_news',  source: 'BioSpace',      select: 'title, article_url, article_date, matched_names, created_at', hasDate: true },
+    { table: 'endpoint_news',  source: 'Endpoints News', select: 'title, article_url, matched_names, created_at',              hasDate: false },
+  ]
+
+  const newsArticles = []
+  for (const cfg of NEWS_SOURCES) {
+    offset = 0
+    while (true) {
+      const { data, error } = await supabase
+        .from(cfg.table)
+        .select(cfg.select)
+        .overlaps('matched_names', trackedCompanies)
+        .range(offset, offset + PAGE - 1)
+      if (error) return res.status(500).json({ error: error.message })
+      if (!data || data.length === 0) break
+      for (const r of data) {
+        newsArticles.push({
+          title: r.title,
+          url: r.article_url,
+          date: cfg.hasDate ? (r.article_date || null) : null,
+          created_at: r.created_at,
+          matched_names: r.matched_names || null,
+          source_table: cfg.table,
+          _source: cfg.source,
+        })
+      }
+      offset += PAGE
+    }
+  }
+
   return res.status(200).json({
     trackedCompanies,
     clinicalTrials: filteredTrials,
     filings,
     fundingProjects: filteredFunding,
+    newsArticles,
     pastClients,
   })
 }
