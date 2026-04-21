@@ -3051,6 +3051,7 @@ function AssignCompanyModal({ article, onClose, onSaved }) {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searchOpen, setSearchOpen] = useState(false)
+  const [searchPos, setSearchPos] = useState({ top: 0, left: 0, width: 0 })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
   const debounceRef = useRef(null)
@@ -3092,6 +3093,22 @@ function AssignCompanyModal({ article, onClose, onSaved }) {
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
   }, [searchOpen])
+
+  useEffect(() => {
+    if (!searchOpen) return
+    const updatePos = () => {
+      if (!searchRef.current) return
+      const rect = searchRef.current.getBoundingClientRect()
+      setSearchPos({ top: rect.bottom + 4, left: rect.left, width: rect.width })
+    }
+    updatePos()
+    window.addEventListener('resize', updatePos)
+    window.addEventListener('scroll', updatePos, true)
+    return () => {
+      window.removeEventListener('resize', updatePos)
+      window.removeEventListener('scroll', updatePos, true)
+    }
+  }, [searchOpen, searchResults])
 
   useEffect(() => {
     const handleKey = (e) => { if (e.key === 'Escape') onClose() }
@@ -3166,7 +3183,7 @@ function AssignCompanyModal({ article, onClose, onSaved }) {
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          <div className="relative" ref={searchRef}>
+          <div ref={searchRef}>
             <input
               type="text"
               value={searchQuery}
@@ -3174,23 +3191,31 @@ function AssignCompanyModal({ article, onClose, onSaved }) {
               placeholder="Search companies..."
               className="w-full bg-[#111827] text-sm text-white px-3 py-2 rounded border border-[#374151] outline-none focus:border-blue-500 placeholder-gray-500"
             />
-            {searchOpen && availableResults.length > 0 && (
-              <div
-                ref={dropdownRef}
-                className="absolute z-10 mt-1 w-full max-h-60 overflow-y-auto bg-[#111827] border border-[#374151] rounded shadow-2xl"
-              >
-                {availableResults.slice(0, 50).map(r => (
-                  <button
-                    key={r.name}
-                    onClick={() => addCompany(r.name)}
-                    className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-blue-600/20 hover:text-white transition-colors"
-                  >
-                    {r.name}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
+          {searchOpen && availableResults.length > 0 && createPortal(
+            <div
+              ref={dropdownRef}
+              style={{
+                position: 'fixed',
+                top: searchPos.top,
+                left: searchPos.left,
+                width: searchPos.width,
+                zIndex: 1100,
+              }}
+              className="max-h-60 overflow-y-auto bg-[#111827] border border-[#374151] rounded shadow-2xl"
+            >
+              {availableResults.slice(0, 50).map(r => (
+                <button
+                  key={r.name}
+                  onClick={() => addCompany(r.name)}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-blue-600/20 hover:text-white transition-colors"
+                >
+                  {r.name}
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )}
 
           {selected.length === 0 ? (
             <p className="text-sm text-gray-500 italic">No companies selected yet.</p>
