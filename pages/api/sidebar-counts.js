@@ -76,6 +76,13 @@ export default async function handler(req, res) {
       return true
     }).length
 
+    // Jobs - NEW: size filter only (matches /api/jobs-new)
+    const jobs = await fetchAll('clay_jobs', 'matched_name, company_size')
+    const jobsNewCount = jobs.filter(j => {
+      if (isBigCo(j.company_size)) return keepBigCo(j.matched_name)
+      return true
+    }).length
+
     // News: sum of all three news tables
     const [{ count: fierceCount }, { count: biospaceCount }, { count: endpointsCount }] = await Promise.all([
       supabase.from('fiercebio_news').select('*', { count: 'exact', head: true }),
@@ -89,6 +96,7 @@ export default async function handler(req, res) {
       clinical_new: clinicalNewCount,
       ma_funding_new: eightKCount + s1Count,
       funding_new: fundingNewCount,
+      jobs_new: jobsNewCount,
       news: newsCount,
     })
   } catch (err) {
