@@ -46,7 +46,6 @@ export default async function handler(req, res) {
       fundingProjects: [],
       newsArticles: [],
       clayJobs: [],
-      clayCompetitorJobs: [],
       pastClients: (clientRows || []).map(r => r.name),
     })
   }
@@ -237,31 +236,6 @@ export default async function handler(req, res) {
     return true
   })
 
-  // ── Clay competitor jobs for tracked companies ────────────────────────────
-  const clayCompetitorJobsRaw = []
-  offset = 0
-
-  while (true) {
-    const { data, error } = await supabase
-      .from('clay_jobs_competitors')
-      .select('*')
-      .in('matched_name', trackedCompanies)
-      .range(offset, offset + PAGE - 1)
-
-    if (error) return res.status(500).json({ error: error.message })
-    if (!data || data.length === 0) break
-    clayCompetitorJobsRaw.push(...data)
-    offset += PAGE
-  }
-
-  const clayCompetitorJobs = clayCompetitorJobsRaw.filter(j => {
-    if (j.company_size === '10,001+ employees' || j.company_size === '10,001+') {
-      const name = (j.matched_name || '').toLowerCase()
-      return !!name && pastClientsLower.has(name)
-    }
-    return true
-  })
-
   return res.status(200).json({
     trackedCompanies,
     clinicalTrials: filteredTrials,
@@ -269,7 +243,6 @@ export default async function handler(req, res) {
     fundingProjects: filteredFunding,
     newsArticles,
     clayJobs,
-    clayCompetitorJobs,
     pastClients,
   })
 }

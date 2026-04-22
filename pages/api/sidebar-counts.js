@@ -83,12 +83,12 @@ export default async function handler(req, res) {
       return true
     }).length
 
-    // Competitor Jobs - NEW: size filter only (matches /api/competitor-jobs-new)
-    const competitorJobs = await fetchAll('clay_jobs_competitors', 'matched_name, company_size')
-    const competitorJobsNewCount = competitorJobs.filter(j => {
-      if (isBigCo(j.company_size)) return keepBigCo(j.matched_name)
-      return true
-    }).length
+    // Competitor Jobs - NEW: total row count (matches /api/competitor-jobs-new)
+    const { count: competitorJobsCount, error: competitorJobsErr } = await supabase
+      .from('clay_jobs_competitors')
+      .select('*', { count: 'exact', head: true })
+    if (competitorJobsErr) throw new Error(`clay_jobs_competitors: ${competitorJobsErr.message}`)
+    const competitorJobsNewCount = competitorJobsCount || 0
 
     // News: sum of all three news tables
     const [{ count: fierceCount }, { count: biospaceCount }, { count: endpointsCount }] = await Promise.all([

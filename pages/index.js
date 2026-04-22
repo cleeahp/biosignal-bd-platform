@@ -3236,7 +3236,6 @@ function JobsNewPage() {
 
 function CompetitorJobsNewPage() {
   const [jobs, setJobs] = useState([])
-  const [pastClients, setPastClients] = useState([])
   const [loading, setLoading] = useState(true)
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
 
@@ -3245,43 +3244,28 @@ function CompetitorJobsNewPage() {
       .then(r => r.json())
       .then(data => {
         setJobs(data.jobs || [])
-        setPastClients(data.pastClients || [])
         setLoading(false)
       })
       .catch(() => setLoading(false))
   }, [])
 
-  const pastClientsLower = useMemo(() => new Set(pastClients.map(n => n.toLowerCase())), [pastClients])
-
-  const getDisplayName = useCallback((j) => j.matched_name || j.company_name || '', [])
-
-  const isPastClient = useCallback((j) => {
-    const name = getDisplayName(j).toLowerCase()
-    return !!name && pastClientsLower.has(name)
-  }, [pastClientsLower, getDisplayName])
-
   const extractors = useMemo(() => ({
-    company: j => getDisplayName(j),
+    company: j => j.company_name || '',
     title: j => j.job_title || '',
     location: j => j.location || '',
-  }), [getDisplayName])
+  }), [])
 
   const allValues = useMemo(() => ({
-    company: jobs.map(j => getDisplayName(j)),
+    company: jobs.map(j => j.company_name || ''),
     title: jobs.map(j => j.job_title || ''),
     location: jobs.map(j => j.location || ''),
-  }), [jobs, getDisplayName])
+  }), [jobs])
 
   const sorted = useMemo(() => {
     const arr = [...jobs]
-    arr.sort((a, b) => {
-      const aPast = isPastClient(a) ? 1 : 0
-      const bPast = isPastClient(b) ? 1 : 0
-      if (bPast !== aPast) return bPast - aPast
-      return new Date(b.created_at || 0) - new Date(a.created_at || 0)
-    })
+    arr.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
     return arr
-  }, [jobs, isPastClient])
+  }, [jobs])
 
   const filtered = applyFilters(sorted, extractors)
 
@@ -3313,13 +3297,10 @@ function CompetitorJobsNewPage() {
           <tbody className="divide-y divide-[#374151]">
             {filtered.map((job, i) => {
               const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
-              const displayName = getDisplayName(job)
-              const isClient = isPastClient(job)
               return (
                 <tr key={job.id} className={`${rowBg} transition-colors`}>
                   <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
-                    {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
-                    {displayName || '—'}
+                    {job.company_name || '—'}
                   </td>
                   <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
                     {job.job_title || '—'}
@@ -3757,7 +3738,7 @@ function NewsPage() {
 // ─── Madison Leads Page ──────────────────────────────────────────────────────
 
 function MadisonLeadsPage() {
-  const [data, setData] = useState({ trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], clayCompetitorJobs: [], pastClients: [] })
+  const [data, setData] = useState({ trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [] })
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
@@ -3774,7 +3755,6 @@ function MadisonLeadsPage() {
   const filingsFilter = useColumnFilters()
   const fundingFilter = useColumnFilters()
   const jobsFilter = useColumnFilters()
-  const competitorJobsFilter = useColumnFilters()
   const newsFilter = useColumnFilters()
 
   const loadData = useCallback(() => {
@@ -3984,35 +3964,6 @@ function MadisonLeadsPage() {
   }, [data.clayJobs, isPastClient, getJobDisplayName])
 
   const filteredJobs = jobsFilter.applyFilters(sortedJobs, jobExtractors)
-
-  // ── Clay Competitor Jobs table logic ──────────────────────────────────────
-
-  const getCompetitorJobDisplayName = useCallback((j) => j.matched_name || j.company_name || '', [])
-
-  const competitorJobExtractors = useMemo(() => ({
-    company: j => getCompetitorJobDisplayName(j),
-    title: j => j.job_title || '',
-    location: j => j.location || '',
-  }), [getCompetitorJobDisplayName])
-
-  const competitorJobAllValues = useMemo(() => ({
-    company: (data.clayCompetitorJobs || []).map(j => getCompetitorJobDisplayName(j)),
-    title: (data.clayCompetitorJobs || []).map(j => j.job_title || ''),
-    location: (data.clayCompetitorJobs || []).map(j => j.location || ''),
-  }), [data.clayCompetitorJobs, getCompetitorJobDisplayName])
-
-  const sortedCompetitorJobs = useMemo(() => {
-    const arr = [...(data.clayCompetitorJobs || [])]
-    arr.sort((a, b) => {
-      const ap = isPastClient(getCompetitorJobDisplayName(a)) ? 1 : 0
-      const bp = isPastClient(getCompetitorJobDisplayName(b)) ? 1 : 0
-      if (bp !== ap) return bp - ap
-      return new Date(b.created_at || 0) - new Date(a.created_at || 0)
-    })
-    return arr
-  }, [data.clayCompetitorJobs, isPastClient, getCompetitorJobDisplayName])
-
-  const filteredCompetitorJobs = competitorJobsFilter.applyFilters(sortedCompetitorJobs, competitorJobExtractors)
 
   // ── News table logic ──────────────────────────────────────────────────────
 
@@ -4366,52 +4317,6 @@ function MadisonLeadsPage() {
                 {filteredJobs.map((job, i) => {
                   const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
                   const displayName = getJobDisplayName(job)
-                  const isClient = isPastClient(displayName)
-                  return (
-                    <tr key={job.id} className={`${rowBg} transition-colors`}>
-                      <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
-                        {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
-                        {displayName || '—'}
-                      </td>
-                      <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.job_title || '—'}</td>
-                      <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.location || '—'}</td>
-                      <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.company_domain || '—'}</td>
-                      <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatClayDate(job.date_posted)}</td>
-                      <td className="px-3 py-3 text-sm align-top">
-                        {job.job_url ? (
-                          <a href={job.job_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Job &#8599;</a>
-                        ) : <span className="text-gray-600">—</span>}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* ── Competitor Jobs Section ──────────────────────────────────────── */}
-      {!loading && (data.clayCompetitorJobs || []).length > 0 && (
-        <div className="flex flex-col gap-2">
-          <h2 className="text-white text-base font-semibold">Competitor Jobs</h2>
-          <ClearAllFiltersButton hasActiveFilters={competitorJobsFilter.hasActiveFilters} onClear={competitorJobsFilter.clearAll} />
-          <div className="rounded-lg border border-[#374151] overflow-hidden">
-            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
-              <thead>
-                <tr>
-                  <ColumnFilterDropdown colKey="company" label="Company" allValues={competitorJobAllValues.company} activeValues={competitorJobsFilter.filters.company} onApply={competitorJobsFilter.setFilter} className="w-[20%]" />
-                  <ColumnFilterDropdown colKey="title" label="Job Title" allValues={competitorJobAllValues.title} activeValues={competitorJobsFilter.filters.title} onApply={competitorJobsFilter.setFilter} className="w-[30%]" />
-                  <ColumnFilterDropdown colKey="location" label="Location" allValues={competitorJobAllValues.location} activeValues={competitorJobsFilter.filters.location} onApply={competitorJobsFilter.setFilter} className="w-[15%]" />
-                  <Th className="w-[10%]">Domain</Th>
-                  <Th className="w-[10%]">Date Posted</Th>
-                  <Th className="w-[15%]">Link</Th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#374151]">
-                {filteredCompetitorJobs.map((job, i) => {
-                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
-                  const displayName = getCompetitorJobDisplayName(job)
                   const isClient = isPastClient(displayName)
                   return (
                     <tr key={job.id} className={`${rowBg} transition-colors`}>
