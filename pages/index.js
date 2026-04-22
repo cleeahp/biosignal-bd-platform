@@ -2000,11 +2000,68 @@ function CompetitorJobsPage({ signals, repName, expandedRows, onToggleRow, onCla
   }, [signals, sortDir])
   const filtered = applyFilters(sorted, extractors)
 
+  const exportCsv = useCallback(() => {
+    const escape = (v) => {
+      const s = v == null ? '' : String(v)
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const headers = ['Competitor Firm', 'Job Title', 'Location', 'Job URL', 'Likely Client', 'Date Posted']
+    const lines = [headers.join(',')]
+    for (const s of filtered) {
+      const d = parseDetail(s.signal_detail)
+      const row = [
+        d.competitor_firm || s.companies?.name || '',
+        d.job_title || '',
+        d.job_location || '',
+        d.job_url || d.source_url || '',
+        d.inferred_client || '',
+        formatDate(d.posting_date || s.first_detected_at),
+      ]
+      lines.push(row.map(escape).join(','))
+    }
+    const csv = '﻿' + lines.join('\r\n')
+    const today = new Date()
+    const yyyy = today.getFullYear()
+    const mm = String(today.getMonth() + 1).padStart(2, '0')
+    const dd = String(today.getDate()).padStart(2, '0')
+    const filename = `competitor-jobs-${yyyy}-${mm}-${dd}.csv`
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }, [filtered])
+
   if (signals.length === 0) return <EmptyState message="No competitor job postings found. Run agents to search for open roles." />
 
   return (
     <div className="flex flex-col gap-2">
-      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <div className="flex justify-end items-center gap-2 mb-2">
+        {hasActiveFilters && (
+          <button
+            onClick={clearAll}
+            className="text-xs text-blue-400 hover:text-blue-300 font-medium px-2 py-1 rounded bg-blue-900/30 hover:bg-blue-900/50 transition-colors"
+          >
+            Clear all filters
+          </button>
+        )}
+        <button
+          onClick={exportCsv}
+          className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white border border-[#374151] transition-colors"
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          Export CSV
+        </button>
+      </div>
       <TableWrapper>
         <thead>
           <tr>
