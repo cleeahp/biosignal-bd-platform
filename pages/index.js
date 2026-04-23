@@ -295,6 +295,224 @@ function ClearAllFiltersButton({ hasActiveFilters, onClear }) {
   )
 }
 
+// ─── Date Column Sort + Year-Month Filter ────────────────────────────────────
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const NO_DATE_KEY = '__none__'
+
+function parseDateValue(raw) {
+  if (!raw) return null
+  if (raw instanceof Date) return isNaN(raw) ? null : raw
+  const s = String(raw).trim()
+  if (!s) return null
+  for (const c of [s, s.replace(/\s+at\s+/i, ' ')]) {
+    const d = new Date(c)
+    if (!isNaN(d)) return d
+  }
+  return null
+}
+
+function toYearMonth(raw) {
+  const d = parseDateValue(raw)
+  if (!d) return null
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+function formatYearMonthLabel(ym) {
+  if (!ym || ym === NO_DATE_KEY) return 'No Date'
+  const [y, m] = ym.split('-')
+  return `${MONTH_NAMES[parseInt(m, 10) - 1]} ${y}`
+}
+
+function useDateColumn() {
+  const [sortDir, setSortDir] = useState(null) // null | 'desc' | 'asc'
+  const [dateFilter, setDateFilter] = useState([])
+
+  const cycleSortDir = useCallback(() => {
+    setSortDir(cur => (cur === null ? 'desc' : cur === 'desc' ? 'asc' : null))
+  }, [])
+
+  const clearDateFilter = useCallback(() => setDateFilter([]), [])
+
+  const hasDateFilter = dateFilter.length > 0
+
+  return { sortDir, cycleSortDir, dateFilter, setDateFilter, hasDateFilter, clearDateFilter }
+}
+
+function DateColumnHeader({ label, sortDir, onCycleSort, allRawDates, activeYearMonths, onApplyFilter, className = '' }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [selected, setSelected] = useState(new Set(activeYearMonths || []))
+  const thRef = useRef(null)
+  const filterBtnRef = useRef(null)
+  const dropdownRef = useRef(null)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+
+  const hasFilter = activeYearMonths && activeYearMonths.length > 0
+
+  useEffect(() => {
+    setSelected(new Set(activeYearMonths || []))
+  }, [activeYearMonths])
+
+  const openDropdown = (e) => {
+    e.stopPropagation()
+    if (filterBtnRef.current) {
+      const rect = filterBtnRef.current.getBoundingClientRect()
+      setPos({ top: rect.bottom + 4, left: Math.max(4, Math.min(rect.left, window.innerWidth - 240)) })
+    }
+    setSearch('')
+    setIsOpen(true)
+  }
+
+  useEffect(() => {
+    if (!isOpen) return
+    const handleClick = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target) && filterBtnRef.current && !filterBtnRef.current.contains(e.target)) {
+        onApplyFilter([...selected])
+        setIsOpen(false)
+      }
+    }
+    const handleKey = (e) => {
+      if (e.key === 'Enter' || e.key === 'Escape') {
+        onApplyFilter([...selected])
+        setIsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [isOpen, selected, onApplyFilter])
+
+  const options = useMemo(() => {
+    const ymSet = new Set()
+    let hasNone = false
+    for (const raw of allRawDates || []) {
+      const ym = toYearMonth(raw)
+      if (ym) ymSet.add(ym)
+      else hasNone = true
+    }
+    const opts = [...ymSet]
+      .sort((a, b) => b.localeCompare(a))
+      .map(ym => ({ key: ym, label: formatYearMonthLabel(ym) }))
+    if (hasNone) opts.push({ key: NO_DATE_KEY, label: 'No Date' })
+    if (!search) return opts
+    const q = search.toLowerCase()
+    return opts.filter(o => o.label.toLowerCase().includes(q))
+  }, [allRawDates, search])
+
+  const toggle = (key) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+
+  const sortArrow = sortDir === 'desc' ? '▼' : sortDir === 'asc' ? '▲' : null
+
+  return (
+    <>
+      <th
+        ref={thRef}
+        onClick={onCycleSort}
+        className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap cursor-pointer hover:text-gray-200 select-none ${className}`}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          {label}
+          {sortArrow && <span className="text-blue-400">{sortArrow}</span>}
+          {hasFilter && <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />}
+          <button
+            ref={filterBtnRef}
+            type="button"
+            onClick={openDropdown}
+            className="ml-0.5 text-gray-500 hover:text-white focus:outline-none"
+            aria-label="Filter by month"
+          >
+            <svg className="w-3 h-3" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M3 5a1 1 0 011-1h12a1 1 0 01.78 1.625L12 11.25V16a1 1 0 01-1.447.894l-2-1A1 1 0 018 15v-3.75L3.22 5.625A1 1 0 013 5z" clipRule="evenodd" />
+            </svg>
+          </button>
+        </span>
+      </th>
+      {isOpen && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={dropdownRef}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 1000 }}
+          className="w-56 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl"
+        >
+          <div className="p-2 border-b border-[#374151]">
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search..."
+              autoFocus
+              className="w-full bg-[#111827] border border-[#374151] rounded px-2 py-1 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          <div className="max-h-48 overflow-y-auto p-1.5">
+            {options.length === 0 && (
+              <p className="text-xs text-gray-500 px-2 py-1">No values</p>
+            )}
+            {options.map(opt => (
+              <label key={opt.key} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-[#374151] cursor-pointer text-xs text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={selected.has(opt.key)}
+                  onChange={() => toggle(opt.key)}
+                  className="rounded border-gray-600 bg-[#111827] text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                />
+                <span className="truncate">{opt.label}</span>
+              </label>
+            ))}
+          </div>
+          <div className="p-2 border-t border-[#374151] flex justify-between">
+            <button
+              onClick={() => { setSelected(new Set()); onApplyFilter([]); setIsOpen(false) }}
+              className="text-xs text-gray-400 hover:text-white"
+            >
+              Clear
+            </button>
+            <button
+              onClick={() => { onApplyFilter([...selected]); setIsOpen(false) }}
+              className="text-xs text-blue-400 hover:text-blue-300 font-semibold"
+            >
+              Apply
+            </button>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
+function filterRowsByYearMonth(rows, getRawDate, ymKeys) {
+  if (!ymKeys || ymKeys.length === 0) return rows
+  const set = new Set(ymKeys)
+  return rows.filter(r => {
+    const ym = toYearMonth(getRawDate(r))
+    return set.has(ym || NO_DATE_KEY)
+  })
+}
+
+function sortRowsByDate(rows, getRawDate, sortDir) {
+  if (!sortDir) return rows
+  const arr = [...rows]
+  const mul = sortDir === 'asc' ? 1 : -1
+  arr.sort((a, b) => {
+    const da = parseDateValue(getRawDate(a))
+    const db = parseDateValue(getRawDate(b))
+    const ta = da ? da.getTime() : 0
+    const tb = db ? db.getTime() : 0
+    return (ta - tb) * mul
+  })
+  return arr
+}
+
 // ─── Shared UI components ─────────────────────────────────────────────────────
 
 function PastClientStar() {
@@ -2616,6 +2834,7 @@ function ClinicalTrialsNewPage() {
   const [loading, setLoading] = useState(true)
   const [expandedRows, setExpandedRows] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const dateCol = useDateColumn()
 
   useEffect(() => {
     fetch('/api/clinical-trials')
@@ -2660,7 +2879,6 @@ function ClinicalTrialsNewPage() {
     title: t => t.brief_title || '',
     phase: t => t.phase || '',
     category: t => getCategory(t),
-    last_update: t => formatDate(t.last_update_post_date),
   }), [getDisplayName, getCategory])
 
   const allValues = useMemo(() => ({
@@ -2669,10 +2887,12 @@ function ClinicalTrialsNewPage() {
     title: trials.map(t => t.brief_title || ''),
     phase: trials.map(t => t.phase || ''),
     category: trials.map(t => getCategory(t)),
-    last_update: trials.map(t => formatDate(t.last_update_post_date)),
   }), [trials, getDisplayName, getCategory])
 
-  const sorted = useMemo(() => {
+  const allRawDates = useMemo(() => trials.map(t => t.last_update_post_date), [trials])
+  const getRawDate = useCallback(t => t.last_update_post_date, [])
+
+  const defaultSorted = useMemo(() => {
     const arr = [...trials]
     arr.sort((a, b) => {
       const aPast = isPastClient(a) ? 1 : 0
@@ -2685,7 +2905,13 @@ function ClinicalTrialsNewPage() {
     return arr
   }, [trials, isPastClient])
 
-  const filtered = applyFilters(sorted, extractors)
+  const sorted = useMemo(() => (
+    dateCol.sortDir === null ? defaultSorted : sortRowsByDate(defaultSorted, getRawDate, dateCol.sortDir)
+  ), [defaultSorted, dateCol.sortDir, getRawDate])
+
+  const filtered = useMemo(() => (
+    filterRowsByYearMonth(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
   if (loading) {
     return (
@@ -2699,7 +2925,10 @@ function ClinicalTrialsNewPage() {
 
   return (
     <div className="flex flex-col gap-2">
-      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <ClearAllFiltersButton
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+      />
       <div className="rounded-lg border border-[#374151] overflow-hidden">
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
@@ -2709,7 +2938,7 @@ function ClinicalTrialsNewPage() {
               <ColumnFilterDropdown colKey="title" label="Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
               <ColumnFilterDropdown colKey="phase" label="Phase" allValues={allValues.phase} activeValues={filters.phase} onApply={setFilter} className="w-[10%]" />
               <ColumnFilterDropdown colKey="category" label="Category" allValues={allValues.category} activeValues={filters.category} onApply={setFilter} className="w-[12%]" />
-              <ColumnFilterDropdown colKey="last_update" label="Last Update" allValues={allValues.last_update} activeValues={filters.last_update} onApply={setFilter} className="w-[14%]" />
+              <DateColumnHeader label="Last Update" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeYearMonths={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[14%]" />
             </tr>
           </thead>
           <tbody className="divide-y divide-[#374151]">
@@ -2807,6 +3036,7 @@ function MAFundingNewPage() {
   const [loading, setLoading] = useState(true)
   const [expandedRows, setExpandedRows] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const dateCol = useDateColumn()
 
   useEffect(() => {
     fetch('/api/ma-funding')
@@ -2846,7 +3076,10 @@ function MAFundingNewPage() {
     transaction: filings.map(f => f._transaction || ''),
   }), [filings, getDisplayName])
 
-  const sorted = useMemo(() => {
+  const allRawDates = useMemo(() => filings.map(f => f.filing_date), [filings])
+  const getRawDate = useCallback(f => f.filing_date, [])
+
+  const defaultSorted = useMemo(() => {
     const arr = [...filings]
     arr.sort((a, b) => {
       const aPast = isPastClient(a) ? 1 : 0
@@ -2859,7 +3092,13 @@ function MAFundingNewPage() {
     return arr
   }, [filings, isPastClient])
 
-  const filtered = applyFilters(sorted, extractors)
+  const sorted = useMemo(() => (
+    dateCol.sortDir === null ? defaultSorted : sortRowsByDate(defaultSorted, getRawDate, dateCol.sortDir)
+  ), [defaultSorted, dateCol.sortDir, getRawDate])
+
+  const filtered = useMemo(() => (
+    filterRowsByYearMonth(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
   if (loading) {
     return (
@@ -2873,14 +3112,17 @@ function MAFundingNewPage() {
 
   return (
     <div className="flex flex-col gap-2">
-      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <ClearAllFiltersButton
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+      />
       <div className="rounded-lg border border-[#374151] overflow-hidden">
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
               <ColumnFilterDropdown colKey="company" label="Company Name" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[30%]" />
               <ColumnFilterDropdown colKey="transaction" label="Transaction" allValues={allValues.transaction} activeValues={filters.transaction} onApply={setFilter} className="w-[20%]" />
-              <Th className="w-[20%]">Filing Date</Th>
+              <DateColumnHeader label="Filing Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeYearMonths={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[20%]" />
               <Th className="w-[30%]">Filing Link</Th>
             </tr>
           </thead>
@@ -2959,6 +3201,7 @@ function FundingNewPage() {
   const [loading, setLoading] = useState(true)
   const [expandedRows, setExpandedRows] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const dateCol = useDateColumn()
 
   useEffect(() => {
     fetch('/api/funding-new')
@@ -2998,7 +3241,10 @@ function FundingNewPage() {
     title: projects.map(p => p.project_title || ''),
   }), [projects, getDisplayName])
 
-  const sorted = useMemo(() => {
+  const allRawDates = useMemo(() => projects.map(p => p.award_notice_date), [projects])
+  const getRawDate = useCallback(p => p.award_notice_date, [])
+
+  const defaultSorted = useMemo(() => {
     const arr = [...projects]
     arr.sort((a, b) => {
       const aPast = isPastClient(a) ? 1 : 0
@@ -3011,7 +3257,13 @@ function FundingNewPage() {
     return arr
   }, [projects, isPastClient])
 
-  const filtered = applyFilters(sorted, extractors)
+  const sorted = useMemo(() => (
+    dateCol.sortDir === null ? defaultSorted : sortRowsByDate(defaultSorted, getRawDate, dateCol.sortDir)
+  ), [defaultSorted, dateCol.sortDir, getRawDate])
+
+  const filtered = useMemo(() => (
+    filterRowsByYearMonth(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
   if (loading) {
     return (
@@ -3025,7 +3277,10 @@ function FundingNewPage() {
 
   return (
     <div className="flex flex-col gap-2">
-      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <ClearAllFiltersButton
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+      />
       <div className="rounded-lg border border-[#374151] overflow-hidden">
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
@@ -3033,7 +3288,7 @@ function FundingNewPage() {
               <ColumnFilterDropdown colKey="company" label="Company Name" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[30%]" />
               <ColumnFilterDropdown colKey="title" label="Project Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
               <Th className="w-[15%]">Award</Th>
-              <Th className="w-[10%]">Award Date</Th>
+              <DateColumnHeader label="Award Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeYearMonths={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
               <Th className="w-[15%]">Project Link</Th>
             </tr>
           </thead>
@@ -3121,6 +3376,7 @@ function JobsNewPage() {
   const [pastClients, setPastClients] = useState([])
   const [loading, setLoading] = useState(true)
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const dateCol = useDateColumn()
 
   useEffect(() => {
     fetch('/api/jobs-new')
@@ -3154,7 +3410,10 @@ function JobsNewPage() {
     location: jobs.map(j => j.location || ''),
   }), [jobs, getDisplayName])
 
-  const sorted = useMemo(() => {
+  const allRawDates = useMemo(() => jobs.map(j => j.date_posted), [jobs])
+  const getRawDate = useCallback(j => j.date_posted, [])
+
+  const defaultSorted = useMemo(() => {
     const arr = [...jobs]
     arr.sort((a, b) => {
       const aPast = isPastClient(a) ? 1 : 0
@@ -3165,7 +3424,13 @@ function JobsNewPage() {
     return arr
   }, [jobs, isPastClient])
 
-  const filtered = applyFilters(sorted, extractors)
+  const sorted = useMemo(() => (
+    dateCol.sortDir === null ? defaultSorted : sortRowsByDate(defaultSorted, getRawDate, dateCol.sortDir)
+  ), [defaultSorted, dateCol.sortDir, getRawDate])
+
+  const filtered = useMemo(() => (
+    filterRowsByYearMonth(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
   if (loading) {
     return (
@@ -3179,7 +3444,10 @@ function JobsNewPage() {
 
   return (
     <div className="flex flex-col gap-2">
-      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <ClearAllFiltersButton
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+      />
       <div className="rounded-lg border border-[#374151] overflow-hidden">
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
@@ -3188,7 +3456,7 @@ function JobsNewPage() {
               <ColumnFilterDropdown colKey="title" label="Job Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
               <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[15%]" />
               <Th className="w-[10%]">Domain</Th>
-              <Th className="w-[10%]">Date Posted</Th>
+              <DateColumnHeader label="Date Posted" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeYearMonths={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
               <Th className="w-[15%]">Link</Th>
             </tr>
           </thead>
@@ -3238,6 +3506,7 @@ function CompetitorJobsNewPage() {
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(true)
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const dateCol = useDateColumn()
 
   useEffect(() => {
     fetch('/api/competitor-jobs-new')
@@ -3261,13 +3530,22 @@ function CompetitorJobsNewPage() {
     location: jobs.map(j => j.location || ''),
   }), [jobs])
 
-  const sorted = useMemo(() => {
+  const allRawDates = useMemo(() => jobs.map(j => j.date_posted), [jobs])
+  const getRawDate = useCallback(j => j.date_posted, [])
+
+  const defaultSorted = useMemo(() => {
     const arr = [...jobs]
     arr.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
     return arr
   }, [jobs])
 
-  const filtered = applyFilters(sorted, extractors)
+  const sorted = useMemo(() => (
+    dateCol.sortDir === null ? defaultSorted : sortRowsByDate(defaultSorted, getRawDate, dateCol.sortDir)
+  ), [defaultSorted, dateCol.sortDir, getRawDate])
+
+  const filtered = useMemo(() => (
+    filterRowsByYearMonth(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
   if (loading) {
     return (
@@ -3281,7 +3559,10 @@ function CompetitorJobsNewPage() {
 
   return (
     <div className="flex flex-col gap-2">
-      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <ClearAllFiltersButton
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+      />
       <div className="rounded-lg border border-[#374151] overflow-hidden">
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
@@ -3290,7 +3571,7 @@ function CompetitorJobsNewPage() {
               <ColumnFilterDropdown colKey="title" label="Job Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
               <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[15%]" />
               <Th className="w-[10%]">Domain</Th>
-              <Th className="w-[10%]">Date Posted</Th>
+              <DateColumnHeader label="Date Posted" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeYearMonths={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
               <Th className="w-[15%]">Link</Th>
             </tr>
           </thead>
@@ -3571,6 +3852,7 @@ function NewsPage() {
   const [loading, setLoading] = useState(true)
   const [assignArticle, setAssignArticle] = useState(null)
   const { filters, setFilter, clearAll, hasActiveFilters } = useColumnFilters()
+  const dateCol = useDateColumn()
 
   useEffect(() => {
     fetch('/api/news')
@@ -3607,7 +3889,10 @@ function NewsPage() {
     }
   }, [articles])
 
-  const sorted = useMemo(() => {
+  const allRawDates = useMemo(() => articles.map(a => a.date), [articles])
+  const getRawDate = useCallback(a => a.date, [])
+
+  const defaultSorted = useMemo(() => {
     const arr = [...articles]
     arr.sort((a, b) => {
       const aPast = articleHasPastClient(a) ? 1 : 0
@@ -3622,9 +3907,12 @@ function NewsPage() {
     return arr
   }, [articles, articleHasPastClient])
 
+  const sorted = useMemo(() => (
+    dateCol.sortDir === null ? defaultSorted : sortRowsByDate(defaultSorted, getRawDate, dateCol.sortDir)
+  ), [defaultSorted, dateCol.sortDir, getRawDate])
+
   const filtered = useMemo(() => {
-    if (!hasActiveFilters) return sorted
-    return sorted.filter(a => {
+    const colFiltered = !hasActiveFilters ? sorted : sorted.filter(a => {
       for (const [colKey, allowedValues] of Object.entries(filters)) {
         if (!allowedValues || allowedValues.length === 0) continue
         const allowedLower = allowedValues.map(v => String(v).toLowerCase())
@@ -3639,7 +3927,8 @@ function NewsPage() {
       }
       return true
     })
-  }, [sorted, filters, hasActiveFilters])
+    return filterRowsByYearMonth(colFiltered, getRawDate, dateCol.dateFilter)
+  }, [sorted, filters, hasActiveFilters, getRawDate, dateCol.dateFilter])
 
   const updateArticleMatches = useCallback((url, newMatches) => {
     setArticles(prev => prev.map(a =>
@@ -3661,14 +3950,17 @@ function NewsPage() {
 
   return (
     <div className="flex flex-col gap-2">
-      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <ClearAllFiltersButton
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+      />
       <div className="rounded-lg border border-[#374151] overflow-hidden">
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
               <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[20%]" />
               <ColumnFilterDropdown colKey="title" label="Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[35%]" />
-              <Th className="w-[15%]">Date</Th>
+              <DateColumnHeader label="Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeYearMonths={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[15%]" />
               <ColumnFilterDropdown colKey="source" label="Source" allValues={allValues.source} activeValues={filters.source} onApply={setFilter} className="w-[15%]" />
               <Th className="w-[15%]">Link</Th>
             </tr>
@@ -3756,6 +4048,12 @@ function MadisonLeadsPage() {
   const fundingFilter = useColumnFilters()
   const jobsFilter = useColumnFilters()
   const newsFilter = useColumnFilters()
+
+  const trialsDateCol = useDateColumn()
+  const filingsDateCol = useDateColumn()
+  const fundingDateCol = useDateColumn()
+  const jobsDateCol = useDateColumn()
+  const newsDateCol = useDateColumn()
 
   const loadData = useCallback(() => {
     setLoading(true)
@@ -3857,7 +4155,6 @@ function MadisonLeadsPage() {
     title: t => t.brief_title || '',
     phase: t => t.phase || '',
     category: t => getCategory(t),
-    last_update: t => formatDate(t.last_update_post_date),
   }), [getTrialDisplayName, getCategory])
 
   const trialAllValues = useMemo(() => ({
@@ -3866,10 +4163,12 @@ function MadisonLeadsPage() {
     title: data.clinicalTrials.map(t => t.brief_title || ''),
     phase: data.clinicalTrials.map(t => t.phase || ''),
     category: data.clinicalTrials.map(t => getCategory(t)),
-    last_update: data.clinicalTrials.map(t => formatDate(t.last_update_post_date)),
   }), [data.clinicalTrials, getTrialDisplayName, getCategory])
 
-  const sortedTrials = useMemo(() => {
+  const trialsRawDates = useMemo(() => data.clinicalTrials.map(t => t.last_update_post_date), [data.clinicalTrials])
+  const getTrialDate = useCallback(t => t.last_update_post_date, [])
+
+  const defaultSortedTrials = useMemo(() => {
     const arr = [...data.clinicalTrials]
     arr.sort((a, b) => {
       const ap = isPastClient(getTrialDisplayName(a)) ? 1 : 0
@@ -3880,7 +4179,13 @@ function MadisonLeadsPage() {
     return arr
   }, [data.clinicalTrials, isPastClient, getTrialDisplayName])
 
-  const filteredTrials = trialsFilter.applyFilters(sortedTrials, trialExtractors)
+  const sortedTrials = useMemo(() => (
+    trialsDateCol.sortDir === null ? defaultSortedTrials : sortRowsByDate(defaultSortedTrials, getTrialDate, trialsDateCol.sortDir)
+  ), [defaultSortedTrials, trialsDateCol.sortDir, getTrialDate])
+
+  const filteredTrials = useMemo(() => (
+    filterRowsByYearMonth(trialsFilter.applyFilters(sortedTrials, trialExtractors), getTrialDate, trialsDateCol.dateFilter)
+  ), [sortedTrials, trialsFilter.applyFilters, trialExtractors, getTrialDate, trialsDateCol.dateFilter])
 
   // ── Filings table logic ───────────────────────────────────────────────────
 
@@ -3896,7 +4201,10 @@ function MadisonLeadsPage() {
     transaction: data.filings.map(f => f._transaction || ''),
   }), [data.filings, getFilingDisplayName])
 
-  const sortedFilings = useMemo(() => {
+  const filingsRawDates = useMemo(() => data.filings.map(f => f.filing_date), [data.filings])
+  const getFilingDate = useCallback(f => f.filing_date, [])
+
+  const defaultSortedFilings = useMemo(() => {
     const arr = [...data.filings]
     arr.sort((a, b) => {
       const ap = isPastClient(getFilingDisplayName(a)) ? 1 : 0
@@ -3907,7 +4215,13 @@ function MadisonLeadsPage() {
     return arr
   }, [data.filings, isPastClient, getFilingDisplayName])
 
-  const filteredFilings = filingsFilter.applyFilters(sortedFilings, filingExtractors)
+  const sortedFilings = useMemo(() => (
+    filingsDateCol.sortDir === null ? defaultSortedFilings : sortRowsByDate(defaultSortedFilings, getFilingDate, filingsDateCol.sortDir)
+  ), [defaultSortedFilings, filingsDateCol.sortDir, getFilingDate])
+
+  const filteredFilings = useMemo(() => (
+    filterRowsByYearMonth(filingsFilter.applyFilters(sortedFilings, filingExtractors), getFilingDate, filingsDateCol.dateFilter)
+  ), [sortedFilings, filingsFilter.applyFilters, filingExtractors, getFilingDate, filingsDateCol.dateFilter])
 
   // ── Funding table logic ───────────────────────────────────────────────────
 
@@ -3923,7 +4237,10 @@ function MadisonLeadsPage() {
     title: data.fundingProjects.map(p => p.project_title || ''),
   }), [data.fundingProjects, getFundingDisplayName])
 
-  const sortedFunding = useMemo(() => {
+  const fundingRawDates = useMemo(() => data.fundingProjects.map(p => p.award_notice_date), [data.fundingProjects])
+  const getFundingDate = useCallback(p => p.award_notice_date, [])
+
+  const defaultSortedFunding = useMemo(() => {
     const arr = [...data.fundingProjects]
     arr.sort((a, b) => {
       const ap = isPastClient(getFundingDisplayName(a)) ? 1 : 0
@@ -3934,7 +4251,13 @@ function MadisonLeadsPage() {
     return arr
   }, [data.fundingProjects, isPastClient, getFundingDisplayName])
 
-  const filteredFunding = fundingFilter.applyFilters(sortedFunding, fundingExtractors)
+  const sortedFunding = useMemo(() => (
+    fundingDateCol.sortDir === null ? defaultSortedFunding : sortRowsByDate(defaultSortedFunding, getFundingDate, fundingDateCol.sortDir)
+  ), [defaultSortedFunding, fundingDateCol.sortDir, getFundingDate])
+
+  const filteredFunding = useMemo(() => (
+    filterRowsByYearMonth(fundingFilter.applyFilters(sortedFunding, fundingExtractors), getFundingDate, fundingDateCol.dateFilter)
+  ), [sortedFunding, fundingFilter.applyFilters, fundingExtractors, getFundingDate, fundingDateCol.dateFilter])
 
   // ── Clay Jobs table logic ─────────────────────────────────────────────────
 
@@ -3952,7 +4275,10 @@ function MadisonLeadsPage() {
     location: (data.clayJobs || []).map(j => j.location || ''),
   }), [data.clayJobs, getJobDisplayName])
 
-  const sortedJobs = useMemo(() => {
+  const jobsRawDates = useMemo(() => (data.clayJobs || []).map(j => j.date_posted), [data.clayJobs])
+  const getJobDate = useCallback(j => j.date_posted, [])
+
+  const defaultSortedJobs = useMemo(() => {
     const arr = [...(data.clayJobs || [])]
     arr.sort((a, b) => {
       const ap = isPastClient(getJobDisplayName(a)) ? 1 : 0
@@ -3963,7 +4289,13 @@ function MadisonLeadsPage() {
     return arr
   }, [data.clayJobs, isPastClient, getJobDisplayName])
 
-  const filteredJobs = jobsFilter.applyFilters(sortedJobs, jobExtractors)
+  const sortedJobs = useMemo(() => (
+    jobsDateCol.sortDir === null ? defaultSortedJobs : sortRowsByDate(defaultSortedJobs, getJobDate, jobsDateCol.sortDir)
+  ), [defaultSortedJobs, jobsDateCol.sortDir, getJobDate])
+
+  const filteredJobs = useMemo(() => (
+    filterRowsByYearMonth(jobsFilter.applyFilters(sortedJobs, jobExtractors), getJobDate, jobsDateCol.dateFilter)
+  ), [sortedJobs, jobsFilter.applyFilters, jobExtractors, getJobDate, jobsDateCol.dateFilter])
 
   // ── News table logic ──────────────────────────────────────────────────────
 
@@ -3986,7 +4318,10 @@ function MadisonLeadsPage() {
     }
   }, [data.newsArticles])
 
-  const sortedNews = useMemo(() => {
+  const newsRawDates = useMemo(() => (data.newsArticles || []).map(a => a.date), [data.newsArticles])
+  const getNewsDate = useCallback(a => a.date, [])
+
+  const defaultSortedNews = useMemo(() => {
     const arr = [...(data.newsArticles || [])]
     arr.sort((a, b) => {
       const ap = articleHasPastClient(a) ? 1 : 0
@@ -4001,9 +4336,12 @@ function MadisonLeadsPage() {
     return arr
   }, [data.newsArticles, articleHasPastClient])
 
+  const sortedNews = useMemo(() => (
+    newsDateCol.sortDir === null ? defaultSortedNews : sortRowsByDate(defaultSortedNews, getNewsDate, newsDateCol.sortDir)
+  ), [defaultSortedNews, newsDateCol.sortDir, getNewsDate])
+
   const filteredNews = useMemo(() => {
-    if (!newsFilter.hasActiveFilters) return sortedNews
-    return sortedNews.filter(a => {
+    const colFiltered = !newsFilter.hasActiveFilters ? sortedNews : sortedNews.filter(a => {
       for (const [colKey, allowedValues] of Object.entries(newsFilter.filters)) {
         if (!allowedValues || allowedValues.length === 0) continue
         const allowedLower = allowedValues.map(v => String(v).toLowerCase())
@@ -4018,7 +4356,8 @@ function MadisonLeadsPage() {
       }
       return true
     })
-  }, [sortedNews, newsFilter.filters, newsFilter.hasActiveFilters])
+    return filterRowsByYearMonth(colFiltered, getNewsDate, newsDateCol.dateFilter)
+  }, [sortedNews, newsFilter.filters, newsFilter.hasActiveFilters, getNewsDate, newsDateCol.dateFilter])
 
   const updateNewsMatches = useCallback((url, newMatches) => {
     setData(prev => ({
@@ -4096,7 +4435,10 @@ function MadisonLeadsPage() {
       {!loading && data.clinicalTrials.length > 0 && (
         <div className="flex flex-col gap-2">
           <h2 className="text-white text-base font-semibold">Clinical Trials</h2>
-          <ClearAllFiltersButton hasActiveFilters={trialsFilter.hasActiveFilters} onClear={trialsFilter.clearAll} />
+          <ClearAllFiltersButton
+            hasActiveFilters={trialsFilter.hasActiveFilters || trialsDateCol.hasDateFilter}
+            onClear={() => { trialsFilter.clearAll(); trialsDateCol.clearDateFilter() }}
+          />
           <div className="rounded-lg border border-[#374151] overflow-hidden">
             <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
               <thead>
@@ -4106,7 +4448,7 @@ function MadisonLeadsPage() {
                   <ColumnFilterDropdown colKey="title" label="Title" allValues={trialAllValues.title} activeValues={trialsFilter.filters.title} onApply={trialsFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="phase" label="Phase" allValues={trialAllValues.phase} activeValues={trialsFilter.filters.phase} onApply={trialsFilter.setFilter} className="w-[10%]" />
                   <ColumnFilterDropdown colKey="category" label="Category" allValues={trialAllValues.category} activeValues={trialsFilter.filters.category} onApply={trialsFilter.setFilter} className="w-[12%]" />
-                  <ColumnFilterDropdown colKey="last_update" label="Last Update" allValues={trialAllValues.last_update} activeValues={trialsFilter.filters.last_update} onApply={trialsFilter.setFilter} className="w-[14%]" />
+                  <DateColumnHeader label="Last Update" sortDir={trialsDateCol.sortDir} onCycleSort={trialsDateCol.cycleSortDir} allRawDates={trialsRawDates} activeYearMonths={trialsDateCol.dateFilter} onApplyFilter={trialsDateCol.setDateFilter} className="w-[14%]" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#374151]">
@@ -4176,14 +4518,17 @@ function MadisonLeadsPage() {
       {!loading && data.filings.length > 0 && (
         <div className="flex flex-col gap-2">
           <h2 className="text-white text-base font-semibold">M&A and Filings</h2>
-          <ClearAllFiltersButton hasActiveFilters={filingsFilter.hasActiveFilters} onClear={filingsFilter.clearAll} />
+          <ClearAllFiltersButton
+            hasActiveFilters={filingsFilter.hasActiveFilters || filingsDateCol.hasDateFilter}
+            onClear={() => { filingsFilter.clearAll(); filingsDateCol.clearDateFilter() }}
+          />
           <div className="rounded-lg border border-[#374151] overflow-hidden">
             <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
               <thead>
                 <tr>
                   <ColumnFilterDropdown colKey="company" label="Company Name" allValues={filingAllValues.company} activeValues={filingsFilter.filters.company} onApply={filingsFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="transaction" label="Transaction" allValues={filingAllValues.transaction} activeValues={filingsFilter.filters.transaction} onApply={filingsFilter.setFilter} className="w-[20%]" />
-                  <Th className="w-[20%]">Filing Date</Th>
+                  <DateColumnHeader label="Filing Date" sortDir={filingsDateCol.sortDir} onCycleSort={filingsDateCol.cycleSortDir} allRawDates={filingsRawDates} activeYearMonths={filingsDateCol.dateFilter} onApplyFilter={filingsDateCol.setDateFilter} className="w-[20%]" />
                   <Th className="w-[30%]">Filing Link</Th>
                 </tr>
               </thead>
@@ -4237,7 +4582,10 @@ function MadisonLeadsPage() {
       {!loading && data.fundingProjects.length > 0 && (
         <div className="flex flex-col gap-2">
           <h2 className="text-white text-base font-semibold">Funding Projects</h2>
-          <ClearAllFiltersButton hasActiveFilters={fundingFilter.hasActiveFilters} onClear={fundingFilter.clearAll} />
+          <ClearAllFiltersButton
+            hasActiveFilters={fundingFilter.hasActiveFilters || fundingDateCol.hasDateFilter}
+            onClear={() => { fundingFilter.clearAll(); fundingDateCol.clearDateFilter() }}
+          />
           <div className="rounded-lg border border-[#374151] overflow-hidden">
             <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
               <thead>
@@ -4245,7 +4593,7 @@ function MadisonLeadsPage() {
                   <ColumnFilterDropdown colKey="company" label="Company Name" allValues={fundingAllValues.company} activeValues={fundingFilter.filters.company} onApply={fundingFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="title" label="Project Title" allValues={fundingAllValues.title} activeValues={fundingFilter.filters.title} onApply={fundingFilter.setFilter} className="w-[30%]" />
                   <Th className="w-[15%]">Award</Th>
-                  <Th className="w-[10%]">Award Date</Th>
+                  <DateColumnHeader label="Award Date" sortDir={fundingDateCol.sortDir} onCycleSort={fundingDateCol.cycleSortDir} allRawDates={fundingRawDates} activeYearMonths={fundingDateCol.dateFilter} onApplyFilter={fundingDateCol.setDateFilter} className="w-[10%]" />
                   <Th className="w-[15%]">Project Link</Th>
                 </tr>
               </thead>
@@ -4300,7 +4648,10 @@ function MadisonLeadsPage() {
       {!loading && (data.clayJobs || []).length > 0 && (
         <div className="flex flex-col gap-2">
           <h2 className="text-white text-base font-semibold">Jobs</h2>
-          <ClearAllFiltersButton hasActiveFilters={jobsFilter.hasActiveFilters} onClear={jobsFilter.clearAll} />
+          <ClearAllFiltersButton
+            hasActiveFilters={jobsFilter.hasActiveFilters || jobsDateCol.hasDateFilter}
+            onClear={() => { jobsFilter.clearAll(); jobsDateCol.clearDateFilter() }}
+          />
           <div className="rounded-lg border border-[#374151] overflow-hidden">
             <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
               <thead>
@@ -4309,7 +4660,7 @@ function MadisonLeadsPage() {
                   <ColumnFilterDropdown colKey="title" label="Job Title" allValues={jobAllValues.title} activeValues={jobsFilter.filters.title} onApply={jobsFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="location" label="Location" allValues={jobAllValues.location} activeValues={jobsFilter.filters.location} onApply={jobsFilter.setFilter} className="w-[15%]" />
                   <Th className="w-[10%]">Domain</Th>
-                  <Th className="w-[10%]">Date Posted</Th>
+                  <DateColumnHeader label="Date Posted" sortDir={jobsDateCol.sortDir} onCycleSort={jobsDateCol.cycleSortDir} allRawDates={jobsRawDates} activeYearMonths={jobsDateCol.dateFilter} onApplyFilter={jobsDateCol.setDateFilter} className="w-[10%]" />
                   <Th className="w-[15%]">Link</Th>
                 </tr>
               </thead>
@@ -4346,14 +4697,17 @@ function MadisonLeadsPage() {
       {!loading && (data.newsArticles || []).length > 0 && (
         <div className="flex flex-col gap-2">
           <h2 className="text-white text-base font-semibold">News</h2>
-          <ClearAllFiltersButton hasActiveFilters={newsFilter.hasActiveFilters} onClear={newsFilter.clearAll} />
+          <ClearAllFiltersButton
+            hasActiveFilters={newsFilter.hasActiveFilters || newsDateCol.hasDateFilter}
+            onClear={() => { newsFilter.clearAll(); newsDateCol.clearDateFilter() }}
+          />
           <div className="rounded-lg border border-[#374151] overflow-hidden">
             <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
               <thead>
                 <tr>
                   <ColumnFilterDropdown colKey="company" label="Company" allValues={newsAllValues.company} activeValues={newsFilter.filters.company} onApply={newsFilter.setFilter} className="w-[20%]" />
                   <ColumnFilterDropdown colKey="title" label="Title" allValues={newsAllValues.title} activeValues={newsFilter.filters.title} onApply={newsFilter.setFilter} className="w-[35%]" />
-                  <Th className="w-[15%]">Date</Th>
+                  <DateColumnHeader label="Date" sortDir={newsDateCol.sortDir} onCycleSort={newsDateCol.cycleSortDir} allRawDates={newsRawDates} activeYearMonths={newsDateCol.dateFilter} onApplyFilter={newsDateCol.setDateFilter} className="w-[15%]" />
                   <ColumnFilterDropdown colKey="source" label="Source" allValues={newsAllValues.source} activeValues={newsFilter.filters.source} onApply={newsFilter.setFilter} className="w-[15%]" />
                   <Th className="w-[15%]">Link</Th>
                 </tr>
