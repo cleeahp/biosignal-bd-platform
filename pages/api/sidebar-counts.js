@@ -46,6 +46,12 @@ export default async function handler(req, res) {
       .select('*', { count: 'exact', head: true })
     if (madisonErr) throw new Error(`madison_leads: ${madisonErr.message}`)
 
+    // Jim Leads: count of tracked companies
+    const { count: jimCount, error: jimErr } = await supabase
+      .from('jim_leads')
+      .select('*', { count: 'exact', head: true })
+    if (jimErr) throw new Error(`jim_leads: ${jimErr.message}`)
+
     // Clinical Trials - NEW: size filter only (matches /api/clinical-trials)
     const trials = await fetchAll('clinical_trials', 'matched_name, company_size')
     const clinicalNewCount = trials.filter(t => {
@@ -100,6 +106,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       madison_leads: madisonCount || 0,
+      jim_leads: jimCount || 0,
       clinical_new: clinicalNewCount,
       ma_funding_new: eightKCount + s1Count,
       funding_new: fundingNewCount,
