@@ -295,9 +295,9 @@ function ClearAllFiltersButton({ hasActiveFilters, onClear }) {
   )
 }
 
-// ─── Date Column Sort + Year-Month Filter ────────────────────────────────────
+// ─── Date Column Sort + Hierarchical Filter ──────────────────────────────────
 
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const MONTH_NAMES_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 const NO_DATE_KEY = '__none__'
 
 function parseDateValue(raw) {
@@ -312,16 +312,18 @@ function parseDateValue(raw) {
   return null
 }
 
-function toYearMonth(raw) {
-  const d = parseDateValue(raw)
-  if (!d) return null
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+function formatDayKey(y, m, d) {
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
 }
 
-function formatYearMonthLabel(ym) {
-  if (!ym || ym === NO_DATE_KEY) return 'No Date'
-  const [y, m] = ym.split('-')
-  return `${MONTH_NAMES[parseInt(m, 10) - 1]} ${y}`
+function formatDayLabel(y, m, d) {
+  return `${MONTH_NAMES_FULL[m - 1]} ${d}, ${y}`
+}
+
+function toYearMonthDay(raw) {
+  const d = parseDateValue(raw)
+  if (!d) return null
+  return formatDayKey(d.getFullYear(), d.getMonth() + 1, d.getDate())
 }
 
 function useDateColumn() {
@@ -339,28 +341,233 @@ function useDateColumn() {
   return { sortDir, cycleSortDir, dateFilter, setDateFilter, hasDateFilter, clearDateFilter }
 }
 
-function DateColumnHeader({ label, sortDir, onCycleSort, allRawDates, activeYearMonths, onApplyFilter, className = '' }) {
+function IndeterminateCheckbox({ state, onChange }) {
+  const ref = useRef(null)
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = state === 'indeterminate'
+  }, [state])
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      checked={state === 'checked'}
+      onChange={onChange}
+      onClick={e => e.stopPropagation()}
+      className="rounded border-gray-600 bg-[#111827] text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+    />
+  )
+}
+
+function HierarchicalDateFilter({ label, sortDir, onCycleSort, allRawDates, activeDateKeys, onApplyFilter, className = '' }) {
   const [isOpen, setIsOpen] = useState(false)
   const [search, setSearch] = useState('')
-  const [selected, setSelected] = useState(new Set(activeYearMonths || []))
+  const [selected, setSelected] = useState(new Set(activeDateKeys || []))
+  const [expandedYears, setExpandedYears] = useState(new Set())
+  const [expandedMonths, setExpandedMonths] = useState(new Set())
   const thRef = useRef(null)
   const filterBtnRef = useRef(null)
   const dropdownRef = useRef(null)
   const [pos, setPos] = useState({ top: 0, left: 0 })
 
-  const hasFilter = activeYearMonths && activeYearMonths.length > 0
+  const hasFilter = activeDateKeys && activeDateKeys.length > 0
 
   useEffect(() => {
-    setSelected(new Set(activeYearMonths || []))
-  }, [activeYearMonths])
+    setSelected(new Set(activeDateKeys || []))
+  }, [activeDateKeys])
+
+  // Build full tree from all raw dates: Map<year, Map<month, Set<day>>>
+  const tree = useMemo(() => {
+    const years = new Map()
+    let hasNone = false
+    for (const raw of allRawDates || []) {
+      const d = parseDateValue(raw)
+      if (!d) { hasNone = true; continue }
+      const y = d.getFullYear()
+      const m = d.getMonth() + 1
+      const day = d.getDate()
+      if (!years.has(y)) years.set(y, new Map())
+      const months = years.get(y)
+      if (!months.has(m)) months.set(m, new Set())
+      months.get(m).add(day)
+    }
+    return { years, hasNone }
+  }, [allRawDates])
+
+  // All leaf keys (day keys + NO_DATE_KEY) — used for Select All
+  const allLeafKeys = useMemo(() => {
+    const keys = []
+    for (const [y, months] of tree.years) {
+      for (const [m, days] of months) {
+        for (const d of days) keys.push(formatDayKey(y, m, d))
+      }
+    }
+    if (tree.hasNone) keys.push(NO_DATE_KEY)
+    return keys
+  }, [tree])
+
+  // Precompute, for each year and month, the list of day keys (used for checkbox state + toggles)
+  const daysByYear = useMemo(() => {
+    const map = new Map()
+    for (const [y, months] of tree.years) {
+      const keys = []
+      for (const [m, days] of months) {
+        for (const d of days) keys.push(formatDayKey(y, m, d))
+      }
+      map.set(y, keys)
+    }
+    return map
+  }, [tree])
+
+  const daysByMonth = useMemo(() => {
+    const map = new Map()
+    for (const [y, months] of tree.years) {
+      for (const [m, days] of months) {
+        const keys = [...days].map(d => formatDayKey(y, m, d))
+        map.set(`${y}-${m}`, keys)
+      }
+    }
+    return map
+  }, [tree])
+
+  // Derive checkbox state from selection (for the full, non-searched tree — so toggling "Select All" of a partially-filtered view still reflects correctly at the top level)
+  const tripleState = (keys) => {
+    if (!keys || keys.length === 0) return 'unchecked'
+    let allIn = true, anyIn = false
+    for (const k of keys) {
+      if (selected.has(k)) anyIn = true
+      else allIn = false
+      if (anyIn && !allIn) break
+    }
+    if (allIn) return 'checked'
+    if (anyIn) return 'indeterminate'
+    return 'unchecked'
+  }
+
+  const yearState = (y) => tripleState(daysByYear.get(y))
+  const monthState = (y, m) => tripleState(daysByMonth.get(`${y}-${m}`))
+
+  // Filtered tree based on search (search matches year number, month name, or day label)
+  const filteredTree = useMemo(() => {
+    if (!search) return tree
+    const q = search.toLowerCase()
+    const years = new Map()
+    for (const [y, months] of tree.years) {
+      const yLabel = String(y)
+      const keepYearEntirely = yLabel.includes(q)
+      const matchedMonths = new Map()
+      for (const [m, days] of months) {
+        const mLabel = MONTH_NAMES_FULL[m - 1].toLowerCase()
+        const keepMonthEntirely = keepYearEntirely || mLabel.includes(q)
+        const matchedDays = new Set()
+        for (const day of days) {
+          if (keepMonthEntirely) {
+            matchedDays.add(day)
+          } else {
+            const label = formatDayLabel(y, m, day).toLowerCase()
+            if (label.includes(q)) matchedDays.add(day)
+          }
+        }
+        if (matchedDays.size > 0) matchedMonths.set(m, matchedDays)
+      }
+      if (matchedMonths.size > 0) years.set(y, matchedMonths)
+    }
+    const hasNone = tree.hasNone && ('no date'.includes(q) || 'none'.includes(q))
+    return { years, hasNone }
+  }, [tree, search])
+
+  const sortedYears = useMemo(() => [...filteredTree.years.keys()].sort((a, b) => b - a), [filteredTree])
+
+  const sortedMonthsFor = useCallback((y) => {
+    const months = filteredTree.years.get(y)
+    if (!months) return []
+    return [...months.keys()].sort((a, b) => b - a)
+  }, [filteredTree])
+
+  const sortedDaysFor = useCallback((y, m) => {
+    const months = filteredTree.years.get(y)
+    if (!months || !months.has(m)) return []
+    return [...months.get(m)].sort((a, b) => b - a)
+  }, [filteredTree])
+
+  // Toggle handlers
+  const toggleYear = (y) => {
+    const keys = daysByYear.get(y) || []
+    const state = yearState(y)
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (state === 'checked') {
+        for (const k of keys) next.delete(k)
+      } else {
+        for (const k of keys) next.add(k)
+      }
+      return next
+    })
+  }
+
+  const toggleMonth = (y, m) => {
+    const keys = daysByMonth.get(`${y}-${m}`) || []
+    const state = monthState(y, m)
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (state === 'checked') {
+        for (const k of keys) next.delete(k)
+      } else {
+        for (const k of keys) next.add(k)
+      }
+      return next
+    })
+  }
+
+  const toggleDay = (y, m, d) => {
+    const k = formatDayKey(y, m, d)
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(k) ? next.delete(k) : next.add(k)
+      return next
+    })
+  }
+
+  const toggleNone = () => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(NO_DATE_KEY) ? next.delete(NO_DATE_KEY) : next.add(NO_DATE_KEY)
+      return next
+    })
+  }
+
+  const toggleYearExpand = (y) => {
+    setExpandedYears(prev => {
+      const next = new Set(prev)
+      next.has(y) ? next.delete(y) : next.add(y)
+      return next
+    })
+  }
+
+  const toggleMonthExpand = (y, m) => {
+    const key = `${y}-${m}`
+    setExpandedMonths(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+
+  const selectAll = () => setSelected(new Set(allLeafKeys))
+  const clearLocal = () => setSelected(new Set())
 
   const openDropdown = (e) => {
     e.stopPropagation()
     if (filterBtnRef.current) {
       const rect = filterBtnRef.current.getBoundingClientRect()
-      setPos({ top: rect.bottom + 4, left: Math.max(4, Math.min(rect.left, window.innerWidth - 240)) })
+      const width = 288
+      setPos({
+        top: rect.bottom + 4,
+        left: Math.max(4, Math.min(rect.left, window.innerWidth - width - 4)),
+      })
     }
     setSearch('')
+    setExpandedYears(new Set())
+    setExpandedMonths(new Set())
     setIsOpen(true)
   }
 
@@ -386,32 +593,8 @@ function DateColumnHeader({ label, sortDir, onCycleSort, allRawDates, activeYear
     }
   }, [isOpen, selected, onApplyFilter])
 
-  const options = useMemo(() => {
-    const ymSet = new Set()
-    let hasNone = false
-    for (const raw of allRawDates || []) {
-      const ym = toYearMonth(raw)
-      if (ym) ymSet.add(ym)
-      else hasNone = true
-    }
-    const opts = [...ymSet]
-      .sort((a, b) => b.localeCompare(a))
-      .map(ym => ({ key: ym, label: formatYearMonthLabel(ym) }))
-    if (hasNone) opts.push({ key: NO_DATE_KEY, label: 'No Date' })
-    if (!search) return opts
-    const q = search.toLowerCase()
-    return opts.filter(o => o.label.toLowerCase().includes(q))
-  }, [allRawDates, search])
-
-  const toggle = (key) => {
-    setSelected(prev => {
-      const next = new Set(prev)
-      next.has(key) ? next.delete(key) : next.add(key)
-      return next
-    })
-  }
-
   const sortArrow = sortDir === 'desc' ? '▼' : sortDir === 'asc' ? '▲' : null
+  const nothingToShow = sortedYears.length === 0 && !filteredTree.hasNone
 
   return (
     <>
@@ -429,7 +612,7 @@ function DateColumnHeader({ label, sortDir, onCycleSort, allRawDates, activeYear
             type="button"
             onClick={openDropdown}
             className="ml-0.5 text-gray-500 hover:text-white focus:outline-none"
-            aria-label="Filter by month"
+            aria-label="Filter by date"
           >
             <svg className="w-3 h-3" viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M3 5a1 1 0 011-1h12a1 1 0 01.78 1.625L12 11.25V16a1 1 0 01-1.447.894l-2-1A1 1 0 018 15v-3.75L3.22 5.625A1 1 0 013 5z" clipRule="evenodd" />
@@ -441,9 +624,10 @@ function DateColumnHeader({ label, sortDir, onCycleSort, allRawDates, activeYear
         <div
           ref={dropdownRef}
           style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 1000 }}
-          className="w-56 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl"
+          className="w-72 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl"
+          onClick={e => e.stopPropagation()}
         >
-          <div className="p-2 border-b border-[#374151]">
+          <div className="p-2 border-b border-[#374151] flex flex-col gap-2">
             <input
               type="text"
               value={search}
@@ -452,22 +636,105 @@ function DateColumnHeader({ label, sortDir, onCycleSort, allRawDates, activeYear
               autoFocus
               className="w-full bg-[#111827] border border-[#374151] rounded px-2 py-1 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-blue-500"
             />
+            <div className="flex items-center gap-3 text-xs">
+              <button onClick={selectAll} className="text-blue-400 hover:text-blue-300">Select All</button>
+              <button onClick={clearLocal} className="text-gray-400 hover:text-white">Clear All</button>
+            </div>
           </div>
-          <div className="max-h-48 overflow-y-auto p-1.5">
-            {options.length === 0 && (
-              <p className="text-xs text-gray-500 px-2 py-1">No values</p>
+          <div className="max-h-64 overflow-y-auto py-1">
+            {nothingToShow && (
+              <p className="text-xs text-gray-500 px-3 py-2">No values</p>
             )}
-            {options.map(opt => (
-              <label key={opt.key} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-[#374151] cursor-pointer text-xs text-gray-300">
+            {sortedYears.map(y => {
+              const isYExpanded = expandedYears.has(y) || !!search
+              const yState = yearState(y)
+              return (
+                <div key={y}>
+                  <div
+                    className="flex items-center gap-1.5 px-2 py-1 hover:bg-[#374151] text-xs text-gray-200"
+                    style={{ paddingLeft: 8 }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleYearExpand(y)}
+                      className="w-3 text-gray-500 hover:text-white text-[10px] leading-none"
+                      aria-label={isYExpanded ? 'Collapse' : 'Expand'}
+                    >
+                      {isYExpanded ? '▼' : '▶'}
+                    </button>
+                    <IndeterminateCheckbox state={yState} onChange={() => toggleYear(y)} />
+                    <span
+                      className="truncate cursor-pointer select-none flex-1 font-medium"
+                      onClick={() => toggleYearExpand(y)}
+                    >
+                      {y}
+                    </span>
+                  </div>
+                  {isYExpanded && sortedMonthsFor(y).map(m => {
+                    const mkey = `${y}-${m}`
+                    const isMExpanded = expandedMonths.has(mkey) || !!search
+                    const mState = monthState(y, m)
+                    return (
+                      <div key={mkey}>
+                        <div
+                          className="flex items-center gap-1.5 px-2 py-1 hover:bg-[#374151] text-xs text-gray-300"
+                          style={{ paddingLeft: 24 }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggleMonthExpand(y, m)}
+                            className="w-3 text-gray-500 hover:text-white text-[10px] leading-none"
+                            aria-label={isMExpanded ? 'Collapse' : 'Expand'}
+                          >
+                            {isMExpanded ? '▼' : '▶'}
+                          </button>
+                          <IndeterminateCheckbox state={mState} onChange={() => toggleMonth(y, m)} />
+                          <span
+                            className="truncate cursor-pointer select-none flex-1"
+                            onClick={() => toggleMonthExpand(y, m)}
+                          >
+                            {MONTH_NAMES_FULL[m - 1]}
+                          </span>
+                        </div>
+                        {isMExpanded && sortedDaysFor(y, m).map(day => {
+                          const dKey = formatDayKey(y, m, day)
+                          return (
+                            <label
+                              key={dKey}
+                              className="flex items-center gap-1.5 px-2 py-1 hover:bg-[#374151] cursor-pointer text-xs text-gray-400"
+                              style={{ paddingLeft: 40 }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selected.has(dKey)}
+                                onChange={() => toggleDay(y, m, day)}
+                                className="rounded border-gray-600 bg-[#111827] text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                              />
+                              <span className="truncate">{formatDayLabel(y, m, day)}</span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })}
+            {filteredTree.hasNone && (
+              <label
+                className="flex items-center gap-1.5 px-2 py-1 hover:bg-[#374151] cursor-pointer text-xs text-gray-300"
+                style={{ paddingLeft: 8 }}
+              >
+                <span className="w-3" />
                 <input
                   type="checkbox"
-                  checked={selected.has(opt.key)}
-                  onChange={() => toggle(opt.key)}
+                  checked={selected.has(NO_DATE_KEY)}
+                  onChange={toggleNone}
                   className="rounded border-gray-600 bg-[#111827] text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
                 />
-                <span className="truncate">{opt.label}</span>
+                <span className="truncate">No Date</span>
               </label>
-            ))}
+            )}
           </div>
           <div className="p-2 border-t border-[#374151] flex justify-between">
             <button
@@ -490,12 +757,12 @@ function DateColumnHeader({ label, sortDir, onCycleSort, allRawDates, activeYear
   )
 }
 
-function filterRowsByYearMonth(rows, getRawDate, ymKeys) {
-  if (!ymKeys || ymKeys.length === 0) return rows
-  const set = new Set(ymKeys)
+function filterRowsByDateKeys(rows, getRawDate, selectedKeys) {
+  if (!selectedKeys || selectedKeys.length === 0) return rows
+  const set = new Set(selectedKeys)
   return rows.filter(r => {
-    const ym = toYearMonth(getRawDate(r))
-    return set.has(ym || NO_DATE_KEY)
+    const ymd = toYearMonthDay(getRawDate(r))
+    return set.has(ymd || NO_DATE_KEY)
   })
 }
 
@@ -2911,7 +3178,7 @@ function ClinicalTrialsNewPage() {
   ), [defaultSorted, dateCol.sortDir, getRawDate])
 
   const filtered = useMemo(() => (
-    filterRowsByYearMonth(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+    filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
   ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
   if (loading) {
@@ -2939,7 +3206,7 @@ function ClinicalTrialsNewPage() {
               <ColumnFilterDropdown colKey="title" label="Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
               <ColumnFilterDropdown colKey="phase" label="Phase" allValues={allValues.phase} activeValues={filters.phase} onApply={setFilter} className="w-[10%]" />
               <ColumnFilterDropdown colKey="category" label="Category" allValues={allValues.category} activeValues={filters.category} onApply={setFilter} className="w-[12%]" />
-              <DateColumnHeader label="Last Update" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeYearMonths={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[14%]" />
+              <HierarchicalDateFilter label="Last Update" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[14%]" />
             </tr>
           </thead>
           <tbody className="divide-y divide-[#374151]">
@@ -3098,7 +3365,7 @@ function MAFundingNewPage() {
   ), [defaultSorted, dateCol.sortDir, getRawDate])
 
   const filtered = useMemo(() => (
-    filterRowsByYearMonth(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+    filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
   ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
   if (loading) {
@@ -3123,7 +3390,7 @@ function MAFundingNewPage() {
             <tr>
               <ColumnFilterDropdown colKey="company" label="Company Name" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[30%]" />
               <ColumnFilterDropdown colKey="transaction" label="Transaction" allValues={allValues.transaction} activeValues={filters.transaction} onApply={setFilter} className="w-[20%]" />
-              <DateColumnHeader label="Filing Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeYearMonths={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[20%]" />
+              <HierarchicalDateFilter label="Filing Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[20%]" />
               <Th className="w-[30%]">Filing Link</Th>
             </tr>
           </thead>
@@ -3263,7 +3530,7 @@ function FundingNewPage() {
   ), [defaultSorted, dateCol.sortDir, getRawDate])
 
   const filtered = useMemo(() => (
-    filterRowsByYearMonth(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+    filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
   ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
   if (loading) {
@@ -3289,7 +3556,7 @@ function FundingNewPage() {
               <ColumnFilterDropdown colKey="company" label="Company Name" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[30%]" />
               <ColumnFilterDropdown colKey="title" label="Project Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
               <Th className="w-[15%]">Award</Th>
-              <DateColumnHeader label="Award Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeYearMonths={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
+              <HierarchicalDateFilter label="Award Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
               <Th className="w-[15%]">Project Link</Th>
             </tr>
           </thead>
@@ -3430,7 +3697,7 @@ function JobsNewPage() {
   ), [defaultSorted, dateCol.sortDir, getRawDate])
 
   const filtered = useMemo(() => (
-    filterRowsByYearMonth(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+    filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
   ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
   if (loading) {
@@ -3457,7 +3724,7 @@ function JobsNewPage() {
               <ColumnFilterDropdown colKey="title" label="Job Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
               <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[15%]" />
               <Th className="w-[10%]">Domain</Th>
-              <DateColumnHeader label="Date Posted" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeYearMonths={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
+              <HierarchicalDateFilter label="Date Posted" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
               <Th className="w-[15%]">Link</Th>
             </tr>
           </thead>
@@ -3545,7 +3812,7 @@ function CompetitorJobsNewPage() {
   ), [defaultSorted, dateCol.sortDir, getRawDate])
 
   const filtered = useMemo(() => (
-    filterRowsByYearMonth(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+    filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
   ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
   if (loading) {
@@ -3572,7 +3839,7 @@ function CompetitorJobsNewPage() {
               <ColumnFilterDropdown colKey="title" label="Job Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
               <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[15%]" />
               <Th className="w-[10%]">Domain</Th>
-              <DateColumnHeader label="Date Posted" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeYearMonths={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
+              <HierarchicalDateFilter label="Date Posted" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
               <Th className="w-[15%]">Link</Th>
             </tr>
           </thead>
@@ -3928,7 +4195,7 @@ function NewsPage() {
       }
       return true
     })
-    return filterRowsByYearMonth(colFiltered, getRawDate, dateCol.dateFilter)
+    return filterRowsByDateKeys(colFiltered, getRawDate, dateCol.dateFilter)
   }, [sorted, filters, hasActiveFilters, getRawDate, dateCol.dateFilter])
 
   const updateArticleMatches = useCallback((url, newMatches) => {
@@ -3961,7 +4228,7 @@ function NewsPage() {
             <tr>
               <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[20%]" />
               <ColumnFilterDropdown colKey="title" label="Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[35%]" />
-              <DateColumnHeader label="Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeYearMonths={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[15%]" />
+              <HierarchicalDateFilter label="Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[15%]" />
               <ColumnFilterDropdown colKey="source" label="Source" allValues={allValues.source} activeValues={filters.source} onApply={setFilter} className="w-[15%]" />
               <Th className="w-[15%]">Link</Th>
             </tr>
@@ -4185,7 +4452,7 @@ function MadisonLeadsPage() {
   ), [defaultSortedTrials, trialsDateCol.sortDir, getTrialDate])
 
   const filteredTrials = useMemo(() => (
-    filterRowsByYearMonth(trialsFilter.applyFilters(sortedTrials, trialExtractors), getTrialDate, trialsDateCol.dateFilter)
+    filterRowsByDateKeys(trialsFilter.applyFilters(sortedTrials, trialExtractors), getTrialDate, trialsDateCol.dateFilter)
   ), [sortedTrials, trialsFilter.applyFilters, trialExtractors, getTrialDate, trialsDateCol.dateFilter])
 
   // ── Filings table logic ───────────────────────────────────────────────────
@@ -4221,7 +4488,7 @@ function MadisonLeadsPage() {
   ), [defaultSortedFilings, filingsDateCol.sortDir, getFilingDate])
 
   const filteredFilings = useMemo(() => (
-    filterRowsByYearMonth(filingsFilter.applyFilters(sortedFilings, filingExtractors), getFilingDate, filingsDateCol.dateFilter)
+    filterRowsByDateKeys(filingsFilter.applyFilters(sortedFilings, filingExtractors), getFilingDate, filingsDateCol.dateFilter)
   ), [sortedFilings, filingsFilter.applyFilters, filingExtractors, getFilingDate, filingsDateCol.dateFilter])
 
   // ── Funding table logic ───────────────────────────────────────────────────
@@ -4257,7 +4524,7 @@ function MadisonLeadsPage() {
   ), [defaultSortedFunding, fundingDateCol.sortDir, getFundingDate])
 
   const filteredFunding = useMemo(() => (
-    filterRowsByYearMonth(fundingFilter.applyFilters(sortedFunding, fundingExtractors), getFundingDate, fundingDateCol.dateFilter)
+    filterRowsByDateKeys(fundingFilter.applyFilters(sortedFunding, fundingExtractors), getFundingDate, fundingDateCol.dateFilter)
   ), [sortedFunding, fundingFilter.applyFilters, fundingExtractors, getFundingDate, fundingDateCol.dateFilter])
 
   // ── Clay Jobs table logic ─────────────────────────────────────────────────
@@ -4295,7 +4562,7 @@ function MadisonLeadsPage() {
   ), [defaultSortedJobs, jobsDateCol.sortDir, getJobDate])
 
   const filteredJobs = useMemo(() => (
-    filterRowsByYearMonth(jobsFilter.applyFilters(sortedJobs, jobExtractors), getJobDate, jobsDateCol.dateFilter)
+    filterRowsByDateKeys(jobsFilter.applyFilters(sortedJobs, jobExtractors), getJobDate, jobsDateCol.dateFilter)
   ), [sortedJobs, jobsFilter.applyFilters, jobExtractors, getJobDate, jobsDateCol.dateFilter])
 
   // ── News table logic ──────────────────────────────────────────────────────
@@ -4357,7 +4624,7 @@ function MadisonLeadsPage() {
       }
       return true
     })
-    return filterRowsByYearMonth(colFiltered, getNewsDate, newsDateCol.dateFilter)
+    return filterRowsByDateKeys(colFiltered, getNewsDate, newsDateCol.dateFilter)
   }, [sortedNews, newsFilter.filters, newsFilter.hasActiveFilters, getNewsDate, newsDateCol.dateFilter])
 
   const updateNewsMatches = useCallback((url, newMatches) => {
@@ -4449,7 +4716,7 @@ function MadisonLeadsPage() {
                   <ColumnFilterDropdown colKey="title" label="Title" allValues={trialAllValues.title} activeValues={trialsFilter.filters.title} onApply={trialsFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="phase" label="Phase" allValues={trialAllValues.phase} activeValues={trialsFilter.filters.phase} onApply={trialsFilter.setFilter} className="w-[10%]" />
                   <ColumnFilterDropdown colKey="category" label="Category" allValues={trialAllValues.category} activeValues={trialsFilter.filters.category} onApply={trialsFilter.setFilter} className="w-[12%]" />
-                  <DateColumnHeader label="Last Update" sortDir={trialsDateCol.sortDir} onCycleSort={trialsDateCol.cycleSortDir} allRawDates={trialsRawDates} activeYearMonths={trialsDateCol.dateFilter} onApplyFilter={trialsDateCol.setDateFilter} className="w-[14%]" />
+                  <HierarchicalDateFilter label="Last Update" sortDir={trialsDateCol.sortDir} onCycleSort={trialsDateCol.cycleSortDir} allRawDates={trialsRawDates} activeDateKeys={trialsDateCol.dateFilter} onApplyFilter={trialsDateCol.setDateFilter} className="w-[14%]" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#374151]">
@@ -4529,7 +4796,7 @@ function MadisonLeadsPage() {
                 <tr>
                   <ColumnFilterDropdown colKey="company" label="Company Name" allValues={filingAllValues.company} activeValues={filingsFilter.filters.company} onApply={filingsFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="transaction" label="Transaction" allValues={filingAllValues.transaction} activeValues={filingsFilter.filters.transaction} onApply={filingsFilter.setFilter} className="w-[20%]" />
-                  <DateColumnHeader label="Filing Date" sortDir={filingsDateCol.sortDir} onCycleSort={filingsDateCol.cycleSortDir} allRawDates={filingsRawDates} activeYearMonths={filingsDateCol.dateFilter} onApplyFilter={filingsDateCol.setDateFilter} className="w-[20%]" />
+                  <HierarchicalDateFilter label="Filing Date" sortDir={filingsDateCol.sortDir} onCycleSort={filingsDateCol.cycleSortDir} allRawDates={filingsRawDates} activeDateKeys={filingsDateCol.dateFilter} onApplyFilter={filingsDateCol.setDateFilter} className="w-[20%]" />
                   <Th className="w-[30%]">Filing Link</Th>
                 </tr>
               </thead>
@@ -4594,7 +4861,7 @@ function MadisonLeadsPage() {
                   <ColumnFilterDropdown colKey="company" label="Company Name" allValues={fundingAllValues.company} activeValues={fundingFilter.filters.company} onApply={fundingFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="title" label="Project Title" allValues={fundingAllValues.title} activeValues={fundingFilter.filters.title} onApply={fundingFilter.setFilter} className="w-[30%]" />
                   <Th className="w-[15%]">Award</Th>
-                  <DateColumnHeader label="Award Date" sortDir={fundingDateCol.sortDir} onCycleSort={fundingDateCol.cycleSortDir} allRawDates={fundingRawDates} activeYearMonths={fundingDateCol.dateFilter} onApplyFilter={fundingDateCol.setDateFilter} className="w-[10%]" />
+                  <HierarchicalDateFilter label="Award Date" sortDir={fundingDateCol.sortDir} onCycleSort={fundingDateCol.cycleSortDir} allRawDates={fundingRawDates} activeDateKeys={fundingDateCol.dateFilter} onApplyFilter={fundingDateCol.setDateFilter} className="w-[10%]" />
                   <Th className="w-[15%]">Project Link</Th>
                 </tr>
               </thead>
@@ -4661,7 +4928,7 @@ function MadisonLeadsPage() {
                   <ColumnFilterDropdown colKey="title" label="Job Title" allValues={jobAllValues.title} activeValues={jobsFilter.filters.title} onApply={jobsFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="location" label="Location" allValues={jobAllValues.location} activeValues={jobsFilter.filters.location} onApply={jobsFilter.setFilter} className="w-[15%]" />
                   <Th className="w-[10%]">Domain</Th>
-                  <DateColumnHeader label="Date Posted" sortDir={jobsDateCol.sortDir} onCycleSort={jobsDateCol.cycleSortDir} allRawDates={jobsRawDates} activeYearMonths={jobsDateCol.dateFilter} onApplyFilter={jobsDateCol.setDateFilter} className="w-[10%]" />
+                  <HierarchicalDateFilter label="Date Posted" sortDir={jobsDateCol.sortDir} onCycleSort={jobsDateCol.cycleSortDir} allRawDates={jobsRawDates} activeDateKeys={jobsDateCol.dateFilter} onApplyFilter={jobsDateCol.setDateFilter} className="w-[10%]" />
                   <Th className="w-[15%]">Link</Th>
                 </tr>
               </thead>
@@ -4708,7 +4975,7 @@ function MadisonLeadsPage() {
                 <tr>
                   <ColumnFilterDropdown colKey="company" label="Company" allValues={newsAllValues.company} activeValues={newsFilter.filters.company} onApply={newsFilter.setFilter} className="w-[20%]" />
                   <ColumnFilterDropdown colKey="title" label="Title" allValues={newsAllValues.title} activeValues={newsFilter.filters.title} onApply={newsFilter.setFilter} className="w-[35%]" />
-                  <DateColumnHeader label="Date" sortDir={newsDateCol.sortDir} onCycleSort={newsDateCol.cycleSortDir} allRawDates={newsRawDates} activeYearMonths={newsDateCol.dateFilter} onApplyFilter={newsDateCol.setDateFilter} className="w-[15%]" />
+                  <HierarchicalDateFilter label="Date" sortDir={newsDateCol.sortDir} onCycleSort={newsDateCol.cycleSortDir} allRawDates={newsRawDates} activeDateKeys={newsDateCol.dateFilter} onApplyFilter={newsDateCol.setDateFilter} className="w-[15%]" />
                   <ColumnFilterDropdown colKey="source" label="Source" allValues={newsAllValues.source} activeValues={newsFilter.filters.source} onApply={newsFilter.setFilter} className="w-[15%]" />
                   <Th className="w-[15%]">Link</Th>
                 </tr>
@@ -4934,7 +5201,7 @@ function JimLeadsPage() {
   ), [defaultSortedTrials, trialsDateCol.sortDir, getTrialDate])
 
   const filteredTrials = useMemo(() => (
-    filterRowsByYearMonth(trialsFilter.applyFilters(sortedTrials, trialExtractors), getTrialDate, trialsDateCol.dateFilter)
+    filterRowsByDateKeys(trialsFilter.applyFilters(sortedTrials, trialExtractors), getTrialDate, trialsDateCol.dateFilter)
   ), [sortedTrials, trialsFilter.applyFilters, trialExtractors, getTrialDate, trialsDateCol.dateFilter])
 
   // ── Filings table logic ───────────────────────────────────────────────────
@@ -4970,7 +5237,7 @@ function JimLeadsPage() {
   ), [defaultSortedFilings, filingsDateCol.sortDir, getFilingDate])
 
   const filteredFilings = useMemo(() => (
-    filterRowsByYearMonth(filingsFilter.applyFilters(sortedFilings, filingExtractors), getFilingDate, filingsDateCol.dateFilter)
+    filterRowsByDateKeys(filingsFilter.applyFilters(sortedFilings, filingExtractors), getFilingDate, filingsDateCol.dateFilter)
   ), [sortedFilings, filingsFilter.applyFilters, filingExtractors, getFilingDate, filingsDateCol.dateFilter])
 
   // ── Funding table logic ───────────────────────────────────────────────────
@@ -5006,7 +5273,7 @@ function JimLeadsPage() {
   ), [defaultSortedFunding, fundingDateCol.sortDir, getFundingDate])
 
   const filteredFunding = useMemo(() => (
-    filterRowsByYearMonth(fundingFilter.applyFilters(sortedFunding, fundingExtractors), getFundingDate, fundingDateCol.dateFilter)
+    filterRowsByDateKeys(fundingFilter.applyFilters(sortedFunding, fundingExtractors), getFundingDate, fundingDateCol.dateFilter)
   ), [sortedFunding, fundingFilter.applyFilters, fundingExtractors, getFundingDate, fundingDateCol.dateFilter])
 
   // ── Clay Jobs table logic ─────────────────────────────────────────────────
@@ -5044,7 +5311,7 @@ function JimLeadsPage() {
   ), [defaultSortedJobs, jobsDateCol.sortDir, getJobDate])
 
   const filteredJobs = useMemo(() => (
-    filterRowsByYearMonth(jobsFilter.applyFilters(sortedJobs, jobExtractors), getJobDate, jobsDateCol.dateFilter)
+    filterRowsByDateKeys(jobsFilter.applyFilters(sortedJobs, jobExtractors), getJobDate, jobsDateCol.dateFilter)
   ), [sortedJobs, jobsFilter.applyFilters, jobExtractors, getJobDate, jobsDateCol.dateFilter])
 
   // ── News table logic ──────────────────────────────────────────────────────
@@ -5106,7 +5373,7 @@ function JimLeadsPage() {
       }
       return true
     })
-    return filterRowsByYearMonth(colFiltered, getNewsDate, newsDateCol.dateFilter)
+    return filterRowsByDateKeys(colFiltered, getNewsDate, newsDateCol.dateFilter)
   }, [sortedNews, newsFilter.filters, newsFilter.hasActiveFilters, getNewsDate, newsDateCol.dateFilter])
 
   const updateNewsMatches = useCallback((url, newMatches) => {
@@ -5198,7 +5465,7 @@ function JimLeadsPage() {
                   <ColumnFilterDropdown colKey="title" label="Title" allValues={trialAllValues.title} activeValues={trialsFilter.filters.title} onApply={trialsFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="phase" label="Phase" allValues={trialAllValues.phase} activeValues={trialsFilter.filters.phase} onApply={trialsFilter.setFilter} className="w-[10%]" />
                   <ColumnFilterDropdown colKey="category" label="Category" allValues={trialAllValues.category} activeValues={trialsFilter.filters.category} onApply={trialsFilter.setFilter} className="w-[12%]" />
-                  <DateColumnHeader label="Last Update" sortDir={trialsDateCol.sortDir} onCycleSort={trialsDateCol.cycleSortDir} allRawDates={trialsRawDates} activeYearMonths={trialsDateCol.dateFilter} onApplyFilter={trialsDateCol.setDateFilter} className="w-[14%]" />
+                  <HierarchicalDateFilter label="Last Update" sortDir={trialsDateCol.sortDir} onCycleSort={trialsDateCol.cycleSortDir} allRawDates={trialsRawDates} activeDateKeys={trialsDateCol.dateFilter} onApplyFilter={trialsDateCol.setDateFilter} className="w-[14%]" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#374151]">
@@ -5278,7 +5545,7 @@ function JimLeadsPage() {
                 <tr>
                   <ColumnFilterDropdown colKey="company" label="Company Name" allValues={filingAllValues.company} activeValues={filingsFilter.filters.company} onApply={filingsFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="transaction" label="Transaction" allValues={filingAllValues.transaction} activeValues={filingsFilter.filters.transaction} onApply={filingsFilter.setFilter} className="w-[20%]" />
-                  <DateColumnHeader label="Filing Date" sortDir={filingsDateCol.sortDir} onCycleSort={filingsDateCol.cycleSortDir} allRawDates={filingsRawDates} activeYearMonths={filingsDateCol.dateFilter} onApplyFilter={filingsDateCol.setDateFilter} className="w-[20%]" />
+                  <HierarchicalDateFilter label="Filing Date" sortDir={filingsDateCol.sortDir} onCycleSort={filingsDateCol.cycleSortDir} allRawDates={filingsRawDates} activeDateKeys={filingsDateCol.dateFilter} onApplyFilter={filingsDateCol.setDateFilter} className="w-[20%]" />
                   <Th className="w-[30%]">Filing Link</Th>
                 </tr>
               </thead>
@@ -5343,7 +5610,7 @@ function JimLeadsPage() {
                   <ColumnFilterDropdown colKey="company" label="Company Name" allValues={fundingAllValues.company} activeValues={fundingFilter.filters.company} onApply={fundingFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="title" label="Project Title" allValues={fundingAllValues.title} activeValues={fundingFilter.filters.title} onApply={fundingFilter.setFilter} className="w-[30%]" />
                   <Th className="w-[15%]">Award</Th>
-                  <DateColumnHeader label="Award Date" sortDir={fundingDateCol.sortDir} onCycleSort={fundingDateCol.cycleSortDir} allRawDates={fundingRawDates} activeYearMonths={fundingDateCol.dateFilter} onApplyFilter={fundingDateCol.setDateFilter} className="w-[10%]" />
+                  <HierarchicalDateFilter label="Award Date" sortDir={fundingDateCol.sortDir} onCycleSort={fundingDateCol.cycleSortDir} allRawDates={fundingRawDates} activeDateKeys={fundingDateCol.dateFilter} onApplyFilter={fundingDateCol.setDateFilter} className="w-[10%]" />
                   <Th className="w-[15%]">Project Link</Th>
                 </tr>
               </thead>
@@ -5410,7 +5677,7 @@ function JimLeadsPage() {
                   <ColumnFilterDropdown colKey="title" label="Job Title" allValues={jobAllValues.title} activeValues={jobsFilter.filters.title} onApply={jobsFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="location" label="Location" allValues={jobAllValues.location} activeValues={jobsFilter.filters.location} onApply={jobsFilter.setFilter} className="w-[15%]" />
                   <Th className="w-[10%]">Domain</Th>
-                  <DateColumnHeader label="Date Posted" sortDir={jobsDateCol.sortDir} onCycleSort={jobsDateCol.cycleSortDir} allRawDates={jobsRawDates} activeYearMonths={jobsDateCol.dateFilter} onApplyFilter={jobsDateCol.setDateFilter} className="w-[10%]" />
+                  <HierarchicalDateFilter label="Date Posted" sortDir={jobsDateCol.sortDir} onCycleSort={jobsDateCol.cycleSortDir} allRawDates={jobsRawDates} activeDateKeys={jobsDateCol.dateFilter} onApplyFilter={jobsDateCol.setDateFilter} className="w-[10%]" />
                   <Th className="w-[15%]">Link</Th>
                 </tr>
               </thead>
@@ -5457,7 +5724,7 @@ function JimLeadsPage() {
                 <tr>
                   <ColumnFilterDropdown colKey="company" label="Company" allValues={newsAllValues.company} activeValues={newsFilter.filters.company} onApply={newsFilter.setFilter} className="w-[20%]" />
                   <ColumnFilterDropdown colKey="title" label="Title" allValues={newsAllValues.title} activeValues={newsFilter.filters.title} onApply={newsFilter.setFilter} className="w-[35%]" />
-                  <DateColumnHeader label="Date" sortDir={newsDateCol.sortDir} onCycleSort={newsDateCol.cycleSortDir} allRawDates={newsRawDates} activeYearMonths={newsDateCol.dateFilter} onApplyFilter={newsDateCol.setDateFilter} className="w-[15%]" />
+                  <HierarchicalDateFilter label="Date" sortDir={newsDateCol.sortDir} onCycleSort={newsDateCol.cycleSortDir} allRawDates={newsRawDates} activeDateKeys={newsDateCol.dateFilter} onApplyFilter={newsDateCol.setDateFilter} className="w-[15%]" />
                   <ColumnFilterDropdown colKey="source" label="Source" allValues={newsAllValues.source} activeValues={newsFilter.filters.source} onApply={newsFilter.setFilter} className="w-[15%]" />
                   <Th className="w-[15%]">Link</Th>
                 </tr>
