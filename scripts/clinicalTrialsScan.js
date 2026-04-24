@@ -91,7 +91,6 @@ function buildQueryUrl(startDateRange, pageToken = null) {
   const params = new URLSearchParams({
     'filter.advanced': [
       `AREA[StartDate]RANGE[${startDateRange.from}, ${startDateRange.to}]`,
-      'AREA[LocationCountry]United States',
       'AREA[LeadSponsorClass]INDUSTRY',
       'AREA[Phase](PHASE2 OR PHASE3)',
     ].join(' AND '),
