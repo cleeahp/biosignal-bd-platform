@@ -22,3 +22,6 @@ yarn-error.log*
 
 # Job agent logs (written by scripts/runJobAgents.js)
 logs/*.log
+
+# Large CSV data files
+supabase/tables/*.csv
