@@ -3157,8 +3157,8 @@ function ClinicalTrialsNewPage() {
     category: trials.map(t => getCategory(t)),
   }), [trials, getDisplayName, getCategory])
 
-  const allRawDates = useMemo(() => trials.map(t => t.last_update_post_date), [trials])
-  const getRawDate = useCallback(t => t.last_update_post_date, [])
+  const allRawDates = useMemo(() => trials.map(t => t.study_start_date), [trials])
+  const getRawDate = useCallback(t => t.study_start_date, [])
 
   const defaultSorted = useMemo(() => {
     const arr = [...trials]
@@ -3166,8 +3166,8 @@ function ClinicalTrialsNewPage() {
       const aPast = isPastClient(a) ? 1 : 0
       const bPast = isPastClient(b) ? 1 : 0
       if (bPast !== aPast) return bPast - aPast
-      const da = new Date(a.last_update_post_date || 0).getTime()
-      const db = new Date(b.last_update_post_date || 0).getTime()
+      const da = new Date(a.study_start_date || 0).getTime()
+      const db = new Date(b.study_start_date || 0).getTime()
       return db - da
     })
     return arr
@@ -3206,7 +3206,7 @@ function ClinicalTrialsNewPage() {
               <ColumnFilterDropdown colKey="title" label="Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
               <ColumnFilterDropdown colKey="phase" label="Phase" allValues={allValues.phase} activeValues={filters.phase} onApply={setFilter} className="w-[10%]" />
               <ColumnFilterDropdown colKey="category" label="Category" allValues={allValues.category} activeValues={filters.category} onApply={setFilter} className="w-[12%]" />
-              <HierarchicalDateFilter label="Last Update" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[14%]" />
+              <HierarchicalDateFilter label="Start Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[14%]" />
             </tr>
           </thead>
           <tbody className="divide-y divide-[#374151]">
@@ -3241,7 +3241,7 @@ function ClinicalTrialsNewPage() {
                       {category || '—'}
                     </td>
                     <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
-                      {formatDate(trial.last_update_post_date)}
+                      {formatDate(trial.study_start_date)}
                     </td>
                   </tr>
                   {isExpanded && (
@@ -4433,8 +4433,8 @@ function MadisonLeadsPage() {
     category: data.clinicalTrials.map(t => getCategory(t)),
   }), [data.clinicalTrials, getTrialDisplayName, getCategory])
 
-  const trialsRawDates = useMemo(() => data.clinicalTrials.map(t => t.last_update_post_date), [data.clinicalTrials])
-  const getTrialDate = useCallback(t => t.last_update_post_date, [])
+  const trialsRawDates = useMemo(() => data.clinicalTrials.map(t => t.study_start_date), [data.clinicalTrials])
+  const getTrialDate = useCallback(t => t.study_start_date, [])
 
   const defaultSortedTrials = useMemo(() => {
     const arr = [...data.clinicalTrials]
@@ -4442,7 +4442,7 @@ function MadisonLeadsPage() {
       const ap = isPastClient(getTrialDisplayName(a)) ? 1 : 0
       const bp = isPastClient(getTrialDisplayName(b)) ? 1 : 0
       if (bp !== ap) return bp - ap
-      return new Date(b.last_update_post_date || 0) - new Date(a.last_update_post_date || 0)
+      return new Date(b.study_start_date || 0) - new Date(a.study_start_date || 0)
     })
     return arr
   }, [data.clinicalTrials, isPastClient, getTrialDisplayName])
@@ -4716,7 +4716,7 @@ function MadisonLeadsPage() {
                   <ColumnFilterDropdown colKey="title" label="Title" allValues={trialAllValues.title} activeValues={trialsFilter.filters.title} onApply={trialsFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="phase" label="Phase" allValues={trialAllValues.phase} activeValues={trialsFilter.filters.phase} onApply={trialsFilter.setFilter} className="w-[10%]" />
                   <ColumnFilterDropdown colKey="category" label="Category" allValues={trialAllValues.category} activeValues={trialsFilter.filters.category} onApply={trialsFilter.setFilter} className="w-[12%]" />
-                  <HierarchicalDateFilter label="Last Update" sortDir={trialsDateCol.sortDir} onCycleSort={trialsDateCol.cycleSortDir} allRawDates={trialsRawDates} activeDateKeys={trialsDateCol.dateFilter} onApplyFilter={trialsDateCol.setDateFilter} className="w-[14%]" />
+                  <HierarchicalDateFilter label="Start Date" sortDir={trialsDateCol.sortDir} onCycleSort={trialsDateCol.cycleSortDir} allRawDates={trialsRawDates} activeDateKeys={trialsDateCol.dateFilter} onApplyFilter={trialsDateCol.setDateFilter} className="w-[14%]" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#374151]">
@@ -4742,7 +4742,7 @@ function MadisonLeadsPage() {
                         <td className="px-3 py-3 text-sm text-white" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{trial.brief_title || '—'}</td>
                         <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{trial.phase || '—'}</td>
                         <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{category || '—'}</td>
-                        <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(trial.last_update_post_date)}</td>
+                        <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(trial.study_start_date)}</td>
                       </tr>
                       {isExpanded && (
                         <tr>
@@ -5182,8 +5182,8 @@ function JimLeadsPage() {
     category: data.clinicalTrials.map(t => getCategory(t)),
   }), [data.clinicalTrials, getTrialDisplayName, getCategory])
 
-  const trialsRawDates = useMemo(() => data.clinicalTrials.map(t => t.last_update_post_date), [data.clinicalTrials])
-  const getTrialDate = useCallback(t => t.last_update_post_date, [])
+  const trialsRawDates = useMemo(() => data.clinicalTrials.map(t => t.study_start_date), [data.clinicalTrials])
+  const getTrialDate = useCallback(t => t.study_start_date, [])
 
   const defaultSortedTrials = useMemo(() => {
     const arr = [...data.clinicalTrials]
@@ -5191,7 +5191,7 @@ function JimLeadsPage() {
       const ap = isPastClient(getTrialDisplayName(a)) ? 1 : 0
       const bp = isPastClient(getTrialDisplayName(b)) ? 1 : 0
       if (bp !== ap) return bp - ap
-      return new Date(b.last_update_post_date || 0) - new Date(a.last_update_post_date || 0)
+      return new Date(b.study_start_date || 0) - new Date(a.study_start_date || 0)
     })
     return arr
   }, [data.clinicalTrials, isPastClient, getTrialDisplayName])
@@ -5465,7 +5465,7 @@ function JimLeadsPage() {
                   <ColumnFilterDropdown colKey="title" label="Title" allValues={trialAllValues.title} activeValues={trialsFilter.filters.title} onApply={trialsFilter.setFilter} className="w-[30%]" />
                   <ColumnFilterDropdown colKey="phase" label="Phase" allValues={trialAllValues.phase} activeValues={trialsFilter.filters.phase} onApply={trialsFilter.setFilter} className="w-[10%]" />
                   <ColumnFilterDropdown colKey="category" label="Category" allValues={trialAllValues.category} activeValues={trialsFilter.filters.category} onApply={trialsFilter.setFilter} className="w-[12%]" />
-                  <HierarchicalDateFilter label="Last Update" sortDir={trialsDateCol.sortDir} onCycleSort={trialsDateCol.cycleSortDir} allRawDates={trialsRawDates} activeDateKeys={trialsDateCol.dateFilter} onApplyFilter={trialsDateCol.setDateFilter} className="w-[14%]" />
+                  <HierarchicalDateFilter label="Start Date" sortDir={trialsDateCol.sortDir} onCycleSort={trialsDateCol.cycleSortDir} allRawDates={trialsRawDates} activeDateKeys={trialsDateCol.dateFilter} onApplyFilter={trialsDateCol.setDateFilter} className="w-[14%]" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#374151]">
@@ -5491,7 +5491,7 @@ function JimLeadsPage() {
                         <td className="px-3 py-3 text-sm text-white" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{trial.brief_title || '—'}</td>
                         <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{trial.phase || '—'}</td>
                         <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{category || '—'}</td>
-                        <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(trial.last_update_post_date)}</td>
+                        <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(trial.study_start_date)}</td>
                       </tr>
                       {isExpanded && (
                         <tr>

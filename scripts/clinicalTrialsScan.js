@@ -3,12 +3,13 @@
  *
  * Standalone script that fetches Phase 2/3 industry-sponsored US clinical trials
  * from ClinicalTrials.gov v2 API and stores them in the clinical_trials table.
+ * Query window: studies with StartDate between 1 month ago and 1 year ahead.
  * After upserting trials, matches sponsor names to the companies_directory via
  * email domain and records results in companies_alternate_names.
  *
  * Usage:
- *   node scripts/clinicalTrialsScan.js --mode daily    # last 3 days
- *   node scripts/clinicalTrialsScan.js --mode manual   # last 90 days
+ *   node scripts/clinicalTrialsScan.js --mode daily    # StartDate window upsert
+ *   node scripts/clinicalTrialsScan.js --mode manual   # StartDate window upsert
  */
 
 import { createClient } from '@supabase/supabase-js'
@@ -36,25 +37,29 @@ const mode = modeIdx !== -1 ? args[modeIdx + 1] : null
 
 if (!mode || !['daily', 'manual'].includes(mode)) {
   console.error('Usage: node scripts/clinicalTrialsScan.js --mode <daily|manual>')
-  console.error('  daily  — lookback 3 days')
-  console.error('  manual — lookback 90 days')
+  console.error('  daily  — StartDate window upsert')
+  console.error('  manual — StartDate window upsert')
   process.exit(1)
 }
 
-const LOOKBACK_DAYS = mode === 'daily' ? 3 : 90
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function formatDate(date) {
-  const y = date.getFullYear()
+function formatDateSlash(date) {
   const m = String(date.getMonth() + 1).padStart(2, '0')
   const d = String(date.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
+  const y = date.getFullYear()
+  return `${m}/${d}/${y}`
 }
 
-function daysAgo(n) {
+function monthsAgo(n) {
   const d = new Date()
-  d.setDate(d.getDate() - n)
+  d.setMonth(d.getMonth() - n)
+  return d
+}
+
+function yearsAhead(n) {
+  const d = new Date()
+  d.setFullYear(d.getFullYear() + n)
   return d
 }
 
@@ -67,7 +72,6 @@ function sleep(ms) {
 const FIELDS = [
   'NCTId',
   'BriefTitle',
-  'LastUpdatePostDate',
   'OverallStatus',
   'LeadSponsorName',
   'Phase',
@@ -83,10 +87,10 @@ const FIELDS = [
 // when they include Phase 2 or Phase 3.
 const ALLOWED_PHASES = new Set(['PHASE2', 'PHASE3'])
 
-function buildQueryUrl(lookbackDate, pageToken = null) {
+function buildQueryUrl(startDateRange, pageToken = null) {
   const params = new URLSearchParams({
     'filter.advanced': [
-      `AREA[LastUpdatePostDate]RANGE[${lookbackDate},MAX]`,
+      `AREA[StartDate]RANGE[${startDateRange.from}, ${startDateRange.to}]`,
       'AREA[LocationCountry]United States',
       'AREA[LeadSponsorClass]INDUSTRY',
       'AREA[Phase](PHASE2 OR PHASE3)',
@@ -172,9 +176,6 @@ function extractTrial(study) {
     .join('/')
     || null
 
-  // Last update date
-  const lastUpdateRaw = status.lastUpdatePostDateStruct?.date || null
-
   // Study start date (can be "2025-03-15" or "March 2025")
   const studyStartDate = status.startDateStruct?.date || null
 
@@ -189,7 +190,6 @@ function extractTrial(study) {
   return {
     nct_id: nctId,
     brief_title: id.briefTitle || null,
-    last_update_post_date: lastUpdateRaw || null,
     overall_status: status.overallStatus || null,
     lead_sponsor_name: leadSponsor.name || null,
     phase,
@@ -207,7 +207,7 @@ async function upsertTrial(trial) {
   // Check if exists
   const { data: existing, error: selectErr } = await supabase
     .from('clinical_trials')
-    .select('id, last_update_post_date')
+    .select('id')
     .eq('nct_id', trial.nct_id)
     .maybeSingle()
 
@@ -224,18 +224,6 @@ async function upsertTrial(trial) {
       return 'error'
     }
     return 'inserted'
-  }
-
-  // Compare dates — existing.last_update_post_date is a date string from DB
-  const existingDate = existing.last_update_post_date
-    ? String(existing.last_update_post_date).substring(0, 10)
-    : null
-  const newDate = trial.last_update_post_date
-    ? String(trial.last_update_post_date).substring(0, 10)
-    : null
-
-  if (existingDate === newDate) {
-    return 'skipped'
   }
 
   // UPDATE
@@ -685,8 +673,11 @@ async function matchSponsors(sponsorsToMatch, existingAltNames, directory) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const lookbackDate = formatDate(daysAgo(LOOKBACK_DAYS))
-  console.log(`[ClinicalTrialsScan] Mode: ${mode}, Lookback: ${LOOKBACK_DAYS} days (since ${lookbackDate})`)
+  const startDateRange = {
+    from: formatDateSlash(monthsAgo(1)),
+    to: formatDateSlash(yearsAhead(1)),
+  }
+  console.log(`[ClinicalTrialsScan] Mode: ${mode}, StartDate window: ${startDateRange.from} → ${startDateRange.to}`)
 
   // Pre-load lookup data for company name matching
   console.log('[ClinicalTrialsScan] Loading company matching data...')
@@ -709,7 +700,7 @@ async function main() {
 
   while (true) {
     pageNum++
-    const url = buildQueryUrl(lookbackDate, pageToken)
+    const url = buildQueryUrl(startDateRange, pageToken)
 
     let data
     try {
@@ -789,7 +780,6 @@ async function main() {
 
   let inserted = 0
   let updated = 0
-  let skipped = 0
   let errors = 0
 
   for (const trial of allTrials) {
@@ -803,7 +793,6 @@ async function main() {
     switch (result) {
       case 'inserted': inserted++; break
       case 'updated':  updated++;  break
-      case 'skipped':  skipped++;  break
       case 'error':    errors++;   break
     }
   }
@@ -811,7 +800,6 @@ async function main() {
   console.log(`\n[ClinicalTrialsScan] === UPSERT COMPLETE ===`)
   console.log(`[ClinicalTrialsScan] Inserted:       ${inserted}`)
   console.log(`[ClinicalTrialsScan] Updated:        ${updated}`)
-  console.log(`[ClinicalTrialsScan] Skipped:        ${skipped}`)
   console.log(`[ClinicalTrialsScan] Errors:         ${errors}`)
 
   console.log(`\n[ClinicalTrialsScan] === ALL DONE ===`)
