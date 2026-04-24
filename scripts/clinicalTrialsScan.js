@@ -71,6 +71,7 @@ const FIELDS = [
   'OverallStatus',
   'LeadSponsorName',
   'Phase',
+  'StartDate',
   'CentralContactName',
   'CentralContactPhone',
   'CentralContactEMail',
@@ -174,6 +175,9 @@ function extractTrial(study) {
   // Last update date
   const lastUpdateRaw = status.lastUpdatePostDateStruct?.date || null
 
+  // Study start date (can be "2025-03-15" or "March 2025")
+  const studyStartDate = status.startDateStruct?.date || null
+
   // Central contacts
   const centralContactsList = Array.isArray(contacts.centralContacts) ? contacts.centralContacts : []
   const centralContacts = centralContactsList.map((c) => ({
@@ -189,6 +193,7 @@ function extractTrial(study) {
     overall_status: status.overallStatus || null,
     lead_sponsor_name: leadSponsor.name || null,
     phase,
+    study_start_date: studyStartDate,
     source_url: `https://clinicaltrials.gov/study/${nctId}`,
     central_contacts: centralContacts.length > 0 ? centralContacts : null,
     is_fda_regulated_drug: oversight.isFdaRegulatedDrug ?? null,
