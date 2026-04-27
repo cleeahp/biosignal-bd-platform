@@ -1774,7 +1774,8 @@ function ClinicalTrialsNewPage() {
       .catch(() => setLoading(false))
   }, [])
 
-  const pastClientsLower = useMemo(() => new Set(pastClients.map(n => n.toLowerCase())), [pastClients])
+  const pastClientMatchedNames = useMemo(() => new Set(pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
+  const pastClientNames = useMemo(() => new Set(pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
 
   const toggleRow = useCallback((id) => {
     setExpandedRows(prev => {
@@ -1797,8 +1798,10 @@ function ClinicalTrialsNewPage() {
 
   const isPastClient = useCallback((t) => {
     const name = getDisplayName(t).toLowerCase()
-    return name && pastClientsLower.has(name)
-  }, [pastClientsLower, getDisplayName])
+    if (!name) return false
+    if (pastClientMatchedNames.has(name)) return true
+    return pastClientNames.has(name)
+  }, [pastClientMatchedNames, pastClientNames, getDisplayName])
 
   const extractors = useMemo(() => ({
     nct_id: t => t.nct_id || '',
@@ -1976,7 +1979,8 @@ function MAFundingNewPage() {
       .catch(() => setLoading(false))
   }, [])
 
-  const pastClientsLower = useMemo(() => new Set(pastClients.map(n => n.toLowerCase())), [pastClients])
+  const pastClientMatchedNames = useMemo(() => new Set(pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
+  const pastClientNames = useMemo(() => new Set(pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
 
   const toggleRow = useCallback((id) => {
     setExpandedRows(prev => {
@@ -1990,8 +1994,10 @@ function MAFundingNewPage() {
 
   const isPastClient = useCallback((f) => {
     const name = getDisplayName(f).toLowerCase()
-    return name && pastClientsLower.has(name)
-  }, [pastClientsLower, getDisplayName])
+    if (!name) return false
+    if (pastClientMatchedNames.has(name)) return true
+    return pastClientNames.has(name)
+  }, [pastClientMatchedNames, pastClientNames, getDisplayName])
 
   const extractors = useMemo(() => ({
     company: f => getDisplayName(f),
@@ -2141,7 +2147,8 @@ function FundingNewPage() {
       .catch(() => setLoading(false))
   }, [])
 
-  const pastClientsLower = useMemo(() => new Set(pastClients.map(n => n.toLowerCase())), [pastClients])
+  const pastClientMatchedNames = useMemo(() => new Set(pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
+  const pastClientNames = useMemo(() => new Set(pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
 
   const toggleRow = useCallback((id) => {
     setExpandedRows(prev => {
@@ -2155,8 +2162,10 @@ function FundingNewPage() {
 
   const isPastClient = useCallback((p) => {
     const name = getDisplayName(p).toLowerCase()
-    return name && pastClientsLower.has(name)
-  }, [pastClientsLower, getDisplayName])
+    if (!name) return false
+    if (pastClientMatchedNames.has(name)) return true
+    return pastClientNames.has(name)
+  }, [pastClientMatchedNames, pastClientNames, getDisplayName])
 
   const extractors = useMemo(() => ({
     company: p => getDisplayName(p),
@@ -2316,14 +2325,17 @@ function JobsNewPage() {
       .catch(() => setLoading(false))
   }, [])
 
-  const pastClientsLower = useMemo(() => new Set(pastClients.map(n => n.toLowerCase())), [pastClients])
+  const pastClientMatchedNames = useMemo(() => new Set(pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
+  const pastClientNames = useMemo(() => new Set(pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
 
   const getDisplayName = useCallback((j) => j.matched_name || j.company_name || '', [])
 
   const isPastClient = useCallback((j) => {
     const name = getDisplayName(j).toLowerCase()
-    return !!name && pastClientsLower.has(name)
-  }, [pastClientsLower, getDisplayName])
+    if (!name) return false
+    if (pastClientMatchedNames.has(name)) return true
+    return pastClientNames.has(name)
+  }, [pastClientMatchedNames, pastClientNames, getDisplayName])
 
   const extractors = useMemo(() => ({
     company: j => getDisplayName(j),
@@ -2792,11 +2804,14 @@ function NewsPage() {
       .catch(() => setLoading(false))
   }, [])
 
-  const pastClientsLower = useMemo(() => new Set(pastClients.map(n => n.toLowerCase())), [pastClients])
+  const pastClientMatchedNames = useMemo(() => new Set(pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
+  const pastClientNames = useMemo(() => new Set(pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
   const isPastClientName = useCallback((name) => {
     if (!name) return false
-    return pastClientsLower.has(String(name).toLowerCase())
-  }, [pastClientsLower])
+    const lower = String(name).toLowerCase()
+    if (pastClientMatchedNames.has(lower)) return true
+    return pastClientNames.has(lower)
+  }, [pastClientMatchedNames, pastClientNames])
   const articleHasPastClient = useCallback((a) => {
     const names = Array.isArray(a.matched_names) ? a.matched_names : []
     return names.some(isPastClientName)
@@ -3045,7 +3060,8 @@ function MadisonLeadsPage() {
     loadData()
   }
 
-  const pastClientsLower = useMemo(() => new Set(data.pastClients.map(n => n.toLowerCase())), [data.pastClients])
+  const pastClientMatchedNames = useMemo(() => new Set(data.pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [data.pastClients])
+  const pastClientNames = useMemo(() => new Set(data.pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [data.pastClients])
 
   const toggleTrialRow = useCallback((id) => {
     setExpandedTrialRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -3061,8 +3077,10 @@ function MadisonLeadsPage() {
 
   const isPastClient = useCallback((name) => {
     const lower = (name || '').toLowerCase()
-    return lower && pastClientsLower.has(lower)
-  }, [pastClientsLower])
+    if (!lower) return false
+    if (pastClientMatchedNames.has(lower)) return true
+    return pastClientNames.has(lower)
+  }, [pastClientMatchedNames, pastClientNames])
 
   // ── Clinical Trials table logic ───────────────────────────────────────────
 
@@ -3794,7 +3812,8 @@ function JimLeadsPage() {
     loadData()
   }
 
-  const pastClientsLower = useMemo(() => new Set(data.pastClients.map(n => n.toLowerCase())), [data.pastClients])
+  const pastClientMatchedNames = useMemo(() => new Set(data.pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [data.pastClients])
+  const pastClientNames = useMemo(() => new Set(data.pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [data.pastClients])
 
   const toggleTrialRow = useCallback((id) => {
     setExpandedTrialRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -3810,8 +3829,10 @@ function JimLeadsPage() {
 
   const isPastClient = useCallback((name) => {
     const lower = (name || '').toLowerCase()
-    return lower && pastClientsLower.has(lower)
-  }, [pastClientsLower])
+    if (!lower) return false
+    if (pastClientMatchedNames.has(lower)) return true
+    return pastClientNames.has(lower)
+  }, [pastClientMatchedNames, pastClientNames])
 
   // ── Clinical Trials table logic ───────────────────────────────────────────
 

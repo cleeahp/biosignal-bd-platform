@@ -38,7 +38,7 @@ export default async function handler(req, res) {
 
   if (trackedCompanies.length === 0) {
     // Fetch past_clients even with no tracked companies (for star display)
-    const { data: clientRows } = await supabase.from('past_clients').select('name').eq('is_active', true)
+    const { data: clientRows } = await supabase.from('past_clients').select('name, matched_name').eq('is_active', true)
     return res.status(200).json({
       trackedCompanies: [],
       clinicalTrials: [],
@@ -46,20 +46,20 @@ export default async function handler(req, res) {
       fundingProjects: [],
       newsArticles: [],
       clayJobs: [],
-      pastClients: (clientRows || []).map(r => r.name),
+      pastClients: (clientRows || []).map(r => ({ name: r.name, matched_name: r.matched_name })),
     })
   }
 
   // Fetch past_clients
   const { data: clientRows, error: clientErr } = await supabase
     .from('past_clients')
-    .select('name')
+    .select('name, matched_name')
     .eq('is_active', true)
 
   if (clientErr) return res.status(500).json({ error: clientErr.message })
 
-  const pastClients = (clientRows || []).map(r => r.name)
-  const pastClientsLower = new Set(pastClients.map(n => n.toLowerCase()))
+  const pastClients = (clientRows || []).map(r => ({ name: r.name, matched_name: r.matched_name }))
+  const pastClientsLower = new Set(pastClients.map(c => c.name.toLowerCase()))
 
   const PAGE = 1000
 

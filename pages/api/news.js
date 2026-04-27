@@ -29,12 +29,14 @@ export default async function handler(req, res) {
       fetchAll('biospace_news', 'title, article_url, article_date, matched_names, created_at'),
       fetchAll('endpoint_news', 'title, article_url, matched_names, created_at'),
       (async () => {
-        const { data, error } = await supabase.from('past_clients').select('name').eq('is_active', true)
+        const { data, error } = await supabase.from('past_clients').select('name, matched_name').eq('is_active', true)
         if (error) throw new Error(`past_clients: ${error.message}`)
         return data || []
       })(),
     ])
-    const pastClients = clientRows.map(r => r.name).filter(Boolean)
+    const pastClients = clientRows
+      .filter(r => r.name)
+      .map(r => ({ name: r.name, matched_name: r.matched_name }))
 
     const articles = [
       ...fierce.map(r => ({
