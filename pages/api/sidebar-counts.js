@@ -31,13 +31,20 @@ export default async function handler(req, res) {
     // Past clients (for override on size filter)
     const { data: clientRows, error: clientErr } = await supabase
       .from('past_clients')
-      .select('name')
+      .select('name, matched_name')
       .eq('is_active', true)
     if (clientErr) throw new Error(`past_clients: ${clientErr.message}`)
-    const pastClientsLower = new Set((clientRows || []).map(r => r.name.toLowerCase()))
+    const pastClientMatchedNames = new Set(
+      (clientRows || []).map(r => r.matched_name).filter(Boolean).map(n => n.toLowerCase())
+    )
+    const pastClientNames = new Set(
+      (clientRows || []).map(r => r.name).filter(Boolean).map(n => n.toLowerCase())
+    )
     const keepBigCo = (matchedName) => {
       const name = (matchedName || '').toLowerCase()
-      return !!name && pastClientsLower.has(name)
+      if (!name) return false
+      if (pastClientMatchedNames.has(name)) return true
+      return pastClientNames.has(name)
     }
 
     // Madison Leads: count of tracked companies
