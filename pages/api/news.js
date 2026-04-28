@@ -27,7 +27,7 @@ export default async function handler(req, res) {
     const [fierce, biospace, endpoints, clientRows] = await Promise.all([
       fetchAll('fiercebio_news', 'title, article_url, article_date, matched_names, created_at'),
       fetchAll('biospace_news', 'title, article_url, article_date, matched_names, created_at'),
-      fetchAll('endpoint_news', 'title, article_url, matched_names, created_at'),
+      fetchAll('endpoint_news', 'title, article_url, article_date, matched_names, created_at'),
       (async () => {
         const { data, error } = await supabase.from('past_clients').select('name, matched_name').eq('is_active', true)
         if (error) throw new Error(`past_clients: ${error.message}`)
@@ -60,7 +60,7 @@ export default async function handler(req, res) {
       ...endpoints.map(r => ({
         title: r.title,
         url: r.article_url,
-        date: null,
+        date: r.article_date || null,
         created_at: r.created_at,
         matched_names: r.matched_names || null,
         source_table: 'endpoint_news',

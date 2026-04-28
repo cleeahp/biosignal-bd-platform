@@ -9,7 +9,8 @@
  *   node scripts/endpointsScan.js --mode manual
  *
  * Both modes scrape the same pages and insert any articles not already in
- * the database. No date column — source uses relative dates only.
+ * the database. Relative timestamps from the source are parsed into
+ * article_date at insert time and never updated thereafter.
  */
 
 import { createClient } from '@supabase/supabase-js'
@@ -80,6 +81,48 @@ function stripHtmlTags(html) {
   return html.replace(/<[^>]*>/g, '')
 }
 
+// ── Relative date parsing ───────────────────────────────────────────────────
+
+function formatDate(date) {
+  const yyyy = date.getFullYear()
+  const mm = String(date.getMonth() + 1).padStart(2, '0')
+  const dd = String(date.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+function daysAgo(n) {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  d.setDate(d.getDate() - n)
+  return formatDate(d)
+}
+
+function parseRelativeDate(text) {
+  if (!text) return null
+  const t = text.trim().toLowerCase()
+  if (!t) return null
+
+  if (/^\d+\s+minutes?\s+ago$/.test(t)) return daysAgo(0)
+  if (/^\d+\s+hours?\s+ago$/.test(t)) return daysAgo(0)
+  if (t === 'yesterday') return daysAgo(1)
+
+  let m
+  m = t.match(/^(\d+)\s+days?\s+ago$/)
+  if (m) return daysAgo(parseInt(m[1], 10))
+
+  if (t === 'last week') return daysAgo(7)
+
+  m = t.match(/^(\d+)\s+weeks?\s+ago$/)
+  if (m) return daysAgo(parseInt(m[1], 10) * 7)
+
+  if (t === 'last month') return daysAgo(30)
+
+  m = t.match(/^(\d+)\s+months?\s+ago$/)
+  if (m) return daysAgo(parseInt(m[1], 10) * 30)
+
+  return null
+}
+
 // ── Scraping ────────────────────────────────────────────────────────────────
 
 async function fetchPage(url) {
@@ -96,21 +139,27 @@ async function fetchPage(url) {
 /**
  * Extract articles from an Endpoints News listing page.
  * Each article sits inside <div class="epn_white_box epn_item"> with a
- * <h3><a href="..." title="Clean title">...</a></h3> inside.
+ * <h3><a href="..." title="Clean title">...</a></h3> and a sibling
+ * <div class="epn_time">…relative timestamp…</div> inside.
  */
 function extractArticles(html) {
   const articles = []
 
-  const boxPattern = /<div\s+class="[^"]*\bepn_item\b[^"]*"[^>]*>([\s\S]*?)<\/div>/gi
-  let match
-  while ((match = boxPattern.exec(html)) !== null) {
-    const inner = match[1]
+  const itemOpenPattern = /<div\s+class="[^"]*\bepn_item\b[^"]*"[^>]*>/gi
+  const starts = []
+  let m
+  while ((m = itemOpenPattern.exec(html)) !== null) {
+    starts.push(m.index)
+  }
+  starts.push(html.length)
 
-    const h3Match = inner.match(/<h3[^>]*>([\s\S]*?)<\/h3>/i)
+  for (let i = 0; i < starts.length - 1; i++) {
+    const block = html.slice(starts[i], starts[i + 1])
+
+    const h3Match = block.match(/<h3[^>]*>([\s\S]*?)<\/h3>/i)
     if (!h3Match) continue
 
-    const h3Inner = h3Match[1]
-    const anchorMatch = h3Inner.match(/<a\s+([^>]*)>([\s\S]*?)<\/a>/i)
+    const anchorMatch = h3Match[1].match(/<a\s+([^>]*)>([\s\S]*?)<\/a>/i)
     if (!anchorMatch) continue
 
     const attrs = anchorMatch[1]
@@ -127,7 +176,13 @@ function extractArticles(html) {
 
     if (!title) continue
 
-    articles.push({ title, article_url: href })
+    const timeMatch = block.match(/<div\s+class="[^"]*\bepn_time\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i)
+    const timeText = timeMatch
+      ? decodeHtmlEntities(stripHtmlTags(timeMatch[1])).replace(/\s+/g, ' ').trim()
+      : ''
+    const article_date = parseRelativeDate(timeText)
+
+    articles.push({ title, article_url: href, article_date })
   }
 
   return articles
