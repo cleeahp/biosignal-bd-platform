@@ -4508,9 +4508,28 @@ function JimLeadsPage() {
   )
 }
 
+function pastBuyerCompanyChanged(row) {
+  const orig = (row.original_company || '').trim().toLowerCase()
+  const curr = (row.current_company || '').trim().toLowerCase()
+  if (!orig || !curr) return false
+  return orig !== curr
+}
+
+function pastBuyerRoleChanged(row) {
+  const origCompany = (row.original_company || '').trim().toLowerCase()
+  const currCompany = (row.current_company || '').trim().toLowerCase()
+  if (!origCompany || !currCompany || origCompany !== currCompany) return false
+  const origTitle = (row.original_title || '').trim().toLowerCase()
+  const currTitle = (row.current_title || '').trim().toLowerCase()
+  if (!origTitle || !currTitle) return false
+  return origTitle !== currTitle
+}
+
 function PastBuyersPage() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
+  const [expandedIds, setExpandedIds] = useState(new Set())
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
 
   useEffect(() => {
     fetch('/api/contacts?table=past_buyers')
@@ -4519,17 +4538,139 @@ function PastBuyersPage() {
       .catch(() => setLoading(false))
   }, [])
 
+  const toggleRow = useCallback(id => {
+    setExpandedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const extractors = useMemo(() => ({
+    person_name: r => r.person_name || '',
+    current_title: r => r.current_title || '',
+    current_company: r => r.current_company || '',
+    current_location: r => r.current_location || '',
+  }), [])
+
+  const allValues = useMemo(() => ({
+    person_name: rows.map(r => r.person_name || ''),
+    current_title: rows.map(r => r.current_title || ''),
+    current_company: rows.map(r => r.current_company || ''),
+    current_location: rows.map(r => r.current_location || ''),
+  }), [rows])
+
+  const sorted = useMemo(() => {
+    const arr = [...rows]
+    arr.sort((a, b) => {
+      const aRank = pastBuyerCompanyChanged(a) ? 0 : pastBuyerRoleChanged(a) ? 1 : 2
+      const bRank = pastBuyerCompanyChanged(b) ? 0 : pastBuyerRoleChanged(b) ? 1 : 2
+      if (aRank !== bRank) return aRank - bRank
+      return (a.person_name || '').localeCompare(b.person_name || '')
+    })
+    return arr
+  }, [rows])
+
+  const filtered = useMemo(() => applyFilters(sorted, extractors), [sorted, applyFilters, extractors])
+
   return (
-    <div className="flex flex-col gap-6">
-      <p className="text-gray-400 text-sm">Contacts at companies that have purchased staffing services. <span className="inline-flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-green-500" /> = current buyer (timesheet approver).</span></p>
-      <BuyerCandidateTable
-        rows={rows}
-        emptyMessage="No past buyers found."
-        loading={loading}
-        showBuyerDot
-        table="past_buyers"
-        onDeleteRow={id => setRows(prev => prev.filter(r => r.id !== id))}
-      />
+    <div className="flex flex-col gap-3">
+      <p className="text-gray-400 text-sm">Contacts at companies that have purchased staffing services.</p>
+      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <ColumnFilterDropdown colKey="person_name"      label="Full Name"        allValues={allValues.person_name}      activeValues={filters.person_name}      onApply={setFilter} className="w-[20%]" />
+              <ColumnFilterDropdown colKey="current_title"    label="Current Role"     allValues={allValues.current_title}    activeValues={filters.current_title}    onApply={setFilter} className="w-[28%]" />
+              <ColumnFilterDropdown colKey="current_company"  label="Current Company"  allValues={allValues.current_company}  activeValues={filters.current_company}  onApply={setFilter} className="w-[27%]" />
+              <ColumnFilterDropdown colKey="current_location" label="Current Location" allValues={allValues.current_location} activeValues={filters.current_location} onApply={setFilter} className="w-[25%]" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {loading ? (
+              <tr><td colSpan={4} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm">Loading…</p></td></tr>
+            ) : filtered.length === 0 ? (
+              <tr><td colSpan={4} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">No past buyers found.</p></td></tr>
+            ) : filtered.map((row, i) => {
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              const isExpanded = expandedIds.has(row.id)
+              const companyChanged = pastBuyerCompanyChanged(row)
+              const roleChanged = pastBuyerRoleChanged(row)
+              return (
+                <Fragment key={row.id}>
+                  <tr
+                    onClick={() => toggleRow(row.id)}
+                    className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
+                  >
+                    <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {row.person_name || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      <span className="inline-flex flex-wrap items-center gap-1.5">
+                        <span>{row.current_title || '—'}</span>
+                        {roleChanged && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 whitespace-nowrap">
+                            Role Changed
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      <span className="inline-flex flex-wrap items-center gap-1.5">
+                        <span>{row.current_company || '—'}</span>
+                        {companyChanged && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-orange-500/20 text-orange-300 border border-orange-500/30 whitespace-nowrap">
+                            Company Changed
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {row.current_location || '—'}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr>
+                      <td colSpan={4} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Original Company</span>
+                            <span className="text-sm text-gray-200">{row.original_company || '—'}</span>
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Original Title</span>
+                            <span className="text-sm text-gray-200">{row.original_title || '—'}</span>
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Email</span>
+                            {row.original_email
+                              ? <a href={`mailto:${row.original_email}`} onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline">{row.original_email}</a>
+                              : <span className="text-sm text-gray-500">—</span>}
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Phone</span>
+                            {row.phone
+                              ? <a href={`tel:${row.phone}`} onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline">{row.phone}</a>
+                              : <span className="text-sm text-gray-500">—</span>}
+                          </div>
+                          <div className="flex flex-col gap-1 sm:col-span-2">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">LinkedIn</span>
+                            {row.linkedin_url
+                              ? <a href={row.linkedin_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline break-all">{row.linkedin_url}</a>
+                              : <span className="text-sm text-gray-500">—</span>}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
