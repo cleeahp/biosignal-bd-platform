@@ -66,11 +66,31 @@ function formatPhaseLabel(raw) {
   return s
 }
 
+const SHORT_MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
 function formatDate(dateStr) {
   if (!dateStr) return '—'
-  const d = new Date(dateStr)
-  if (isNaN(d)) return '—'
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  const s = String(dateStr).trim()
+  if (!s) return '—'
+  const isoDateOnly = s.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (isoDateOnly) {
+    const monthIdx = parseInt(isoDateOnly[2], 10) - 1
+    if (monthIdx >= 0 && monthIdx <= 11) {
+      return `${SHORT_MONTH_NAMES[monthIdx]} ${parseInt(isoDateOnly[3], 10)}, ${isoDateOnly[1]}`
+    }
+  }
+  const isoDateTime = s.match(/^(\d{4})-(\d{2})-(\d{2})T/)
+  if (isoDateTime && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+    const monthIdx = parseInt(isoDateTime[2], 10) - 1
+    if (monthIdx >= 0 && monthIdx <= 11) {
+      return `${SHORT_MONTH_NAMES[monthIdx]} ${parseInt(isoDateTime[3], 10)}, ${isoDateTime[1]}`
+    }
+  }
+  const d = new Date(s)
+  if (!isNaN(d)) {
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  }
+  return s
 }
 
 function daysAgo(dateStr) {
@@ -305,6 +325,11 @@ function parseDateValue(raw) {
   if (raw instanceof Date) return isNaN(raw) ? null : raw
   const s = String(raw).trim()
   if (!s) return null
+  const isoDateOnly = s.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (isoDateOnly) {
+    const dt = new Date(parseInt(isoDateOnly[1], 10), parseInt(isoDateOnly[2], 10) - 1, parseInt(isoDateOnly[3], 10))
+    return isNaN(dt) ? null : dt
+  }
   for (const c of [s, s.replace(/\s+at\s+/i, ' ')]) {
     const d = new Date(c)
     if (!isNaN(d)) return d
@@ -1197,11 +1222,11 @@ const MAIN_NAV = [
   { key: 'dashboard',      label: 'Dashboard',              icon: 'grid' },
   { key: 'madison_leads',  label: 'Madison Leads',          icon: 'clipboard', countKey: 'madison_leads' },
   { key: 'jim_leads',      label: 'Jim Leads',              icon: 'clipboard', countKey: 'jim_leads' },
-  { key: 'clinical_new',   label: 'Clinical Trials - NEW',  icon: 'flask',     countKey: 'clinical_new' },
-  { key: 'ma_funding_new', label: 'M&A - NEW',              icon: 'trending',  countKey: 'ma_funding_new' },
-  { key: 'funding_new',    label: 'Funding - NEW',          icon: 'dollar',    countKey: 'funding_new' },
-  { key: 'jobs_new',       label: 'Jobs - NEW',             icon: 'briefcase', countKey: 'jobs_new' },
-  { key: 'competitor_jobs_new', label: 'Competitor Jobs - NEW', icon: 'users', countKey: 'competitor_jobs_new' },
+  { key: 'clinical_new',   label: 'Clinical Trials',        icon: 'flask',     countKey: 'clinical_new' },
+  { key: 'ma_funding_new', label: 'M&A',                    icon: 'trending',  countKey: 'ma_funding_new' },
+  { key: 'funding_new',    label: 'Funding',                icon: 'dollar',    countKey: 'funding_new' },
+  { key: 'jobs_new',       label: 'Jobs',                   icon: 'briefcase', countKey: 'jobs_new' },
+  { key: 'competitor_jobs_new', label: 'Competitor Jobs',   icon: 'users',     countKey: 'competitor_jobs_new' },
   { key: 'news',           label: 'News',                   icon: 'file-text', countKey: 'news' },
   { key: 'buyers',         label: 'Past Buyers',            icon: 'users' },
   { key: 'candidates',     label: 'Past Candidates',        icon: 'user' },
@@ -1278,13 +1303,22 @@ function Sidebar({ activePage, setActivePage, tabCounts }) {
 // ─── TopBar ───────────────────────────────────────────────────────────────────
 
 const PAGE_TITLES = {
-  dashboard:  'Dashboard',
-  buyers:     'Past Buyers',
-  candidates: 'Past Candidates',
-  settings:   'Settings',
+  dashboard:       'Dashboard',
+  madison_leads:   'Madison Leads',
+  jim_leads:       'Jim Leads',
+  clinical_new:    'Clinical Trials',
+  ma_funding_new:  'M&A',
+  funding_new:     'Funding',
+  jobs_new:        'Jobs',
+  competitor_jobs_new: 'Competitor Jobs',
+  news:            'News',
+  buyers:          'Past Buyers',
+  candidates:      'Past Candidates',
+  contacts:        'Other Contacts',
+  settings:        'Settings',
 }
 
-function TopBar({ activePage, loading, agentRunning, repName, onRefresh, onRunAgents, onShowNameModal }) {
+function TopBar({ activePage, repName, onShowNameModal }) {
   return (
     <div className="bg-[#1f2937] border-b border-[#374151] px-6 py-3 flex items-center justify-between gap-4 sticky top-0 z-30">
       {/* Page title */}
@@ -1294,36 +1328,6 @@ function TopBar({ activePage, loading, agentRunning, repName, onRefresh, onRunAg
 
       {/* Right actions */}
       <div className="flex items-center gap-2 shrink-0">
-        {/* Refresh */}
-        <button
-          onClick={onRefresh}
-          disabled={loading}
-          title="Refresh signals"
-          className="p-1.5 rounded bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white disabled:opacity-40 transition-colors"
-        >
-          <svg
-            className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`}
-            viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-            strokeLinecap="round" strokeLinejoin="round"
-          >
-            <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-        </button>
-
-        {/* Run Agents */}
-        <button
-          onClick={onRunAgents}
-          disabled={agentRunning}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold transition-colors whitespace-nowrap"
-        >
-          {agentRunning ? (
-            <>
-              <span className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />
-              Running…
-            </>
-          ) : 'Run Agents'}
-        </button>
-
         {/* Rep identity — opens name modal */}
         {repName ? (
           <button
@@ -1828,8 +1832,8 @@ function ClinicalTrialsNewPage() {
       const aPast = isPastClient(a) ? 1 : 0
       const bPast = isPastClient(b) ? 1 : 0
       if (bPast !== aPast) return bPast - aPast
-      const da = new Date(a.study_start_date || 0).getTime()
-      const db = new Date(b.study_start_date || 0).getTime()
+      const da = parseDateValue(a.study_start_date)?.getTime() || 0
+      const db = parseDateValue(b.study_start_date)?.getTime() || 0
       return db - da
     })
     return arr
@@ -2018,8 +2022,8 @@ function MAFundingNewPage() {
       const aPast = isPastClient(a) ? 1 : 0
       const bPast = isPastClient(b) ? 1 : 0
       if (bPast !== aPast) return bPast - aPast
-      const da = new Date(a.filing_date || 0).getTime()
-      const db = new Date(b.filing_date || 0).getTime()
+      const da = parseDateValue(a.filing_date)?.getTime() || 0
+      const db = parseDateValue(b.filing_date)?.getTime() || 0
       return db - da
     })
     return arr
@@ -2186,8 +2190,8 @@ function FundingNewPage() {
       const aPast = isPastClient(a) ? 1 : 0
       const bPast = isPastClient(b) ? 1 : 0
       if (bPast !== aPast) return bPast - aPast
-      const da = new Date(a.award_notice_date || 0).getTime()
-      const db = new Date(b.award_notice_date || 0).getTime()
+      const da = parseDateValue(a.award_notice_date)?.getTime() || 0
+      const db = parseDateValue(b.award_notice_date)?.getTime() || 0
       return db - da
     })
     return arr
@@ -2297,6 +2301,13 @@ function formatClayDate(raw) {
   if (!raw) return '—'
   const s = String(raw).trim()
   if (!s) return '—'
+  const isoDateOnly = s.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (isoDateOnly) {
+    const monthIdx = parseInt(isoDateOnly[2], 10) - 1
+    if (monthIdx >= 0 && monthIdx <= 11) {
+      return `${SHORT_MONTH_NAMES[monthIdx]} ${parseInt(isoDateOnly[3], 10)}, ${isoDateOnly[1]}`
+    }
+  }
   const candidates = [s, s.replace(/\s+at\s+/i, ' ')]
   for (const c of candidates) {
     const d = new Date(c)
@@ -2843,7 +2854,11 @@ function NewsPage() {
       const aHas = a.date ? 1 : 0
       const bHas = b.date ? 1 : 0
       if (aHas !== bHas) return bHas - aHas
-      if (a.date && b.date) return new Date(b.date) - new Date(a.date)
+      if (a.date && b.date) {
+        const da = parseDateValue(a.date)?.getTime() || 0
+        const db = parseDateValue(b.date)?.getTime() || 0
+        return db - da
+      }
       return new Date(b.created_at || 0) - new Date(a.created_at || 0)
     })
     return arr
@@ -3119,7 +3134,9 @@ function MadisonLeadsPage() {
       const ap = isPastClient(getTrialDisplayName(a)) ? 1 : 0
       const bp = isPastClient(getTrialDisplayName(b)) ? 1 : 0
       if (bp !== ap) return bp - ap
-      return new Date(b.study_start_date || 0) - new Date(a.study_start_date || 0)
+      const da = parseDateValue(a.study_start_date)?.getTime() || 0
+      const db = parseDateValue(b.study_start_date)?.getTime() || 0
+      return db - da
     })
     return arr
   }, [data.clinicalTrials, isPastClient, getTrialDisplayName])
@@ -3155,7 +3172,9 @@ function MadisonLeadsPage() {
       const ap = isPastClient(getFilingDisplayName(a)) ? 1 : 0
       const bp = isPastClient(getFilingDisplayName(b)) ? 1 : 0
       if (bp !== ap) return bp - ap
-      return new Date(b.filing_date || 0) - new Date(a.filing_date || 0)
+      const da = parseDateValue(a.filing_date)?.getTime() || 0
+      const db = parseDateValue(b.filing_date)?.getTime() || 0
+      return db - da
     })
     return arr
   }, [data.filings, isPastClient, getFilingDisplayName])
@@ -3191,7 +3210,9 @@ function MadisonLeadsPage() {
       const ap = isPastClient(getFundingDisplayName(a)) ? 1 : 0
       const bp = isPastClient(getFundingDisplayName(b)) ? 1 : 0
       if (bp !== ap) return bp - ap
-      return new Date(b.award_notice_date || 0) - new Date(a.award_notice_date || 0)
+      const da = parseDateValue(a.award_notice_date)?.getTime() || 0
+      const db = parseDateValue(b.award_notice_date)?.getTime() || 0
+      return db - da
     })
     return arr
   }, [data.fundingProjects, isPastClient, getFundingDisplayName])
@@ -3275,7 +3296,11 @@ function MadisonLeadsPage() {
       const aHas = a.date ? 1 : 0
       const bHas = b.date ? 1 : 0
       if (aHas !== bHas) return bHas - aHas
-      if (a.date && b.date) return new Date(b.date) - new Date(a.date)
+      if (a.date && b.date) {
+        const da = parseDateValue(a.date)?.getTime() || 0
+        const db = parseDateValue(b.date)?.getTime() || 0
+        return db - da
+      }
       return new Date(b.created_at || 0) - new Date(a.created_at || 0)
     })
     return arr
@@ -3871,7 +3896,9 @@ function JimLeadsPage() {
       const ap = isPastClient(getTrialDisplayName(a)) ? 1 : 0
       const bp = isPastClient(getTrialDisplayName(b)) ? 1 : 0
       if (bp !== ap) return bp - ap
-      return new Date(b.study_start_date || 0) - new Date(a.study_start_date || 0)
+      const da = parseDateValue(a.study_start_date)?.getTime() || 0
+      const db = parseDateValue(b.study_start_date)?.getTime() || 0
+      return db - da
     })
     return arr
   }, [data.clinicalTrials, isPastClient, getTrialDisplayName])
@@ -3907,7 +3934,9 @@ function JimLeadsPage() {
       const ap = isPastClient(getFilingDisplayName(a)) ? 1 : 0
       const bp = isPastClient(getFilingDisplayName(b)) ? 1 : 0
       if (bp !== ap) return bp - ap
-      return new Date(b.filing_date || 0) - new Date(a.filing_date || 0)
+      const da = parseDateValue(a.filing_date)?.getTime() || 0
+      const db = parseDateValue(b.filing_date)?.getTime() || 0
+      return db - da
     })
     return arr
   }, [data.filings, isPastClient, getFilingDisplayName])
@@ -3943,7 +3972,9 @@ function JimLeadsPage() {
       const ap = isPastClient(getFundingDisplayName(a)) ? 1 : 0
       const bp = isPastClient(getFundingDisplayName(b)) ? 1 : 0
       if (bp !== ap) return bp - ap
-      return new Date(b.award_notice_date || 0) - new Date(a.award_notice_date || 0)
+      const da = parseDateValue(a.award_notice_date)?.getTime() || 0
+      const db = parseDateValue(b.award_notice_date)?.getTime() || 0
+      return db - da
     })
     return arr
   }, [data.fundingProjects, isPastClient, getFundingDisplayName])
@@ -4027,7 +4058,11 @@ function JimLeadsPage() {
       const aHas = a.date ? 1 : 0
       const bHas = b.date ? 1 : 0
       if (aHas !== bHas) return bHas - aHas
-      if (a.date && b.date) return new Date(b.date) - new Date(a.date)
+      if (a.date && b.date) {
+        const da = parseDateValue(a.date)?.getTime() || 0
+        const db = parseDateValue(b.date)?.getTime() || 0
+        return db - da
+      }
       return new Date(b.created_at || 0) - new Date(a.created_at || 0)
     })
     return arr
@@ -4834,7 +4869,6 @@ export default function Home() {
   const [expandedRows, setExpandedRows] = useState(new Set())
   const [notes, setNotes]               = useState({})
   const [savingNotes, setSavingNotes]   = useState(new Set())
-  const [agentRunning, setAgentRunning] = useState(false)
   const [toast, setToast]               = useState(null)
   const [dismissTarget, setDismissTarget] = useState(null) // { signal, tabKey }
   const [sidebarCounts, setSidebarCounts] = useState({})
@@ -5101,35 +5135,6 @@ export default function Home() {
     }
   }
 
-  const runAgents = async () => {
-    setAgentRunning(true)
-    setToast(null)
-    try {
-      const token = process.env.NEXT_PUBLIC_AGENT_SECRET_TOKEN
-      const res = await fetch('/api/agents/orchestrator', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        setToast({ type: 'error', message: data.error || `HTTP ${res.status}` })
-      } else {
-        const total =
-          data.totalSignals ??
-          data.signalsFound ??
-          Object.values(data.results || {}).reduce((sum, r) => sum + (r.signalsFound || 0), 0)
-        setToast({ type: 'success', message: `Agents complete — ${total} new signals found` })
-        fetchSignals()
-        fetchAgentRuns()
-      }
-    } catch (err) {
-      setToast({ type: 'error', message: err.message })
-    } finally {
-      setAgentRunning(false)
-      setTimeout(() => setToast(null), 6000)
-    }
-  }
-
   const saveRepName = (name) => {
     setRepName(name)
     localStorage.setItem('biosignal_rep_name', name)
@@ -5144,11 +5149,7 @@ export default function Home() {
       <div className="flex-1 lg:ml-[220px] ml-16 min-w-0 flex flex-col">
         <TopBar
           activePage={activePage}
-          loading={loading}
-          agentRunning={agentRunning}
           repName={repName}
-          onRefresh={fetchSignals}
-          onRunAgents={runAgents}
           onShowNameModal={() => setShowNameModal(true)}
         />
 
