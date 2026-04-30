@@ -4551,6 +4551,8 @@ function PastBuyersPage() {
     person_name: r => r.person_name || '',
     current_title: r => r.current_title || '',
     current_company: r => r.current_company || '',
+    original_title: r => r.original_title || '',
+    original_company: r => r.original_company || '',
     current_location: r => r.current_location || '',
   }), [])
 
@@ -4558,6 +4560,8 @@ function PastBuyersPage() {
     person_name: rows.map(r => r.person_name || ''),
     current_title: rows.map(r => r.current_title || ''),
     current_company: rows.map(r => r.current_company || ''),
+    original_title: rows.map(r => r.original_title || ''),
+    original_company: rows.map(r => r.original_company || ''),
     current_location: rows.map(r => r.current_location || ''),
   }), [rows])
 
@@ -4582,17 +4586,19 @@ function PastBuyersPage() {
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
-              <ColumnFilterDropdown colKey="person_name"      label="Full Name"        allValues={allValues.person_name}      activeValues={filters.person_name}      onApply={setFilter} className="w-[20%]" />
-              <ColumnFilterDropdown colKey="current_title"    label="Current Role"     allValues={allValues.current_title}    activeValues={filters.current_title}    onApply={setFilter} className="w-[28%]" />
-              <ColumnFilterDropdown colKey="current_company"  label="Current Company"  allValues={allValues.current_company}  activeValues={filters.current_company}  onApply={setFilter} className="w-[27%]" />
-              <ColumnFilterDropdown colKey="current_location" label="Current Location" allValues={allValues.current_location} activeValues={filters.current_location} onApply={setFilter} className="w-[25%]" />
+              <ColumnFilterDropdown colKey="person_name"      label="Full Name"        allValues={allValues.person_name}      activeValues={filters.person_name}      onApply={setFilter} className="w-[15%]" />
+              <ColumnFilterDropdown colKey="current_title"    label="Current Role"     allValues={allValues.current_title}    activeValues={filters.current_title}    onApply={setFilter} className="w-[17%]" />
+              <ColumnFilterDropdown colKey="current_company"  label="Current Company"  allValues={allValues.current_company}  activeValues={filters.current_company}  onApply={setFilter} className="w-[15%]" />
+              <ColumnFilterDropdown colKey="original_title"   label="Former Role"      allValues={allValues.original_title}   activeValues={filters.original_title}   onApply={setFilter} className="w-[17%]" />
+              <ColumnFilterDropdown colKey="original_company" label="Former Company"   allValues={allValues.original_company} activeValues={filters.original_company} onApply={setFilter} className="w-[13%]" />
+              <ColumnFilterDropdown colKey="current_location" label="Current Location" allValues={allValues.current_location} activeValues={filters.current_location} onApply={setFilter} className="w-[13%]" />
             </tr>
           </thead>
           <tbody className="divide-y divide-[#374151]">
             {loading ? (
-              <tr><td colSpan={4} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm">Loading…</p></td></tr>
+              <tr><td colSpan={6} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm">Loading…</p></td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={4} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">No past buyers found.</p></td></tr>
+              <tr><td colSpan={6} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">No past buyers found.</p></td></tr>
             ) : filtered.map((row, i) => {
               const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
               const isExpanded = expandedIds.has(row.id)
@@ -4604,49 +4610,47 @@ function PastBuyersPage() {
                     onClick={() => toggleRow(row.id)}
                     className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
                   >
-                    <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                    <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word', overflowWrap: 'anywhere' }}>
                       {row.person_name || '—'}
                     </td>
-                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
-                      <span className="inline-flex flex-wrap items-center gap-1.5">
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word', overflowWrap: 'anywhere' }}>
+                      <div className="flex flex-wrap items-start gap-1.5">
                         <span>{row.current_title || '—'}</span>
                         {roleChanged && (
                           <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 whitespace-nowrap">
                             Role Changed
                           </span>
                         )}
-                      </span>
+                      </div>
                     </td>
-                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
-                      <span className="inline-flex flex-wrap items-center gap-1.5">
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word', overflowWrap: 'anywhere' }}>
+                      <div className="flex flex-wrap items-start gap-1.5">
                         <span>{row.current_company || '—'}</span>
                         {companyChanged && (
                           <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-orange-500/20 text-orange-300 border border-orange-500/30 whitespace-nowrap">
                             Company Changed
                           </span>
                         )}
-                      </span>
+                      </div>
                     </td>
-                    <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word', overflowWrap: 'anywhere' }}>
+                      {row.original_title || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word', overflowWrap: 'anywhere' }}>
+                      {row.original_company || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word', overflowWrap: 'anywhere' }}>
                       {row.current_location || '—'}
                     </td>
                   </tr>
                   {isExpanded && (
                     <tr>
-                      <td colSpan={4} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                      <td colSpan={6} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
-                          <div className="flex flex-col gap-1">
-                            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Original Company</span>
-                            <span className="text-sm text-gray-200">{row.original_company || '—'}</span>
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Original Title</span>
-                            <span className="text-sm text-gray-200">{row.original_title || '—'}</span>
-                          </div>
                           <div className="flex flex-col gap-1">
                             <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Email</span>
                             {row.original_email
-                              ? <a href={`mailto:${row.original_email}`} onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline">{row.original_email}</a>
+                              ? <a href={`mailto:${row.original_email}`} onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline break-all">{row.original_email}</a>
                               : <span className="text-sm text-gray-500">—</span>}
                           </div>
                           <div className="flex flex-col gap-1">
