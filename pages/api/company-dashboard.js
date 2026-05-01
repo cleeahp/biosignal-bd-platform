@@ -19,9 +19,12 @@ async function fetchAll(table, select, queryFn) {
   return rows
 }
 
-function bumpCount(map, name) {
+function bump(map, name, isNew) {
   if (!name) return
-  map.set(name, (map.get(name) || 0) + 1)
+  const cur = map.get(name) || { count: 0, new: 0 }
+  cur.count += 1
+  if (isNew) cur.new += 1
+  map.set(name, cur)
 }
 
 export default async function handler(req, res) {
@@ -30,6 +33,16 @@ export default async function handler(req, res) {
   }
 
   try {
+    const now = new Date()
+    const startOfTodayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    const startOfYesterdayUtc = startOfTodayUtc - 86_400_000
+    const isYesterdayUtc = createdAt => {
+      if (!createdAt) return false
+      const t = new Date(createdAt).getTime()
+      if (Number.isNaN(t)) return false
+      return t >= startOfYesterdayUtc && t < startOfTodayUtc
+    }
+
     const [
       trials,
       eightK,
@@ -41,13 +54,13 @@ export default async function handler(req, res) {
       directory,
       clientRows,
     ] = await Promise.all([
-      fetchAll('clinical_trials', 'matched_name', q => q.not('matched_name', 'is', null)),
-      fetchAll('eight_k_filings', 'matched_name, items', q => q.not('matched_name', 'is', null)),
-      fetchAll('s1_filings', 'matched_name', q => q.not('matched_name', 'is', null)),
-      fetchAll('funding_projects', 'matched_name', q => q.not('matched_name', 'is', null)),
-      fetchAll('fiercebio_news', 'matched_names', q => q.not('matched_names', 'is', null)),
-      fetchAll('biospace_news', 'matched_names', q => q.not('matched_names', 'is', null)),
-      fetchAll('endpoint_news', 'matched_names', q => q.not('matched_names', 'is', null)),
+      fetchAll('clinical_trials', 'matched_name, created_at', q => q.not('matched_name', 'is', null)),
+      fetchAll('eight_k_filings', 'matched_name, items, created_at', q => q.not('matched_name', 'is', null)),
+      fetchAll('s1_filings', 'matched_name, created_at', q => q.not('matched_name', 'is', null)),
+      fetchAll('funding_projects', 'matched_name, created_at', q => q.not('matched_name', 'is', null)),
+      fetchAll('fiercebio_news', 'matched_names, created_at', q => q.not('matched_names', 'is', null)),
+      fetchAll('biospace_news', 'matched_names, created_at', q => q.not('matched_names', 'is', null)),
+      fetchAll('endpoint_news', 'matched_names, created_at', q => q.not('matched_names', 'is', null)),
       fetchAll('companies_directory', 'name, company_size'),
       (async () => {
         const { data, error } = await supabase
@@ -80,23 +93,24 @@ export default async function handler(req, res) {
     }
 
     const trialCounts = new Map()
-    for (const r of trials) bumpCount(trialCounts, r.matched_name)
+    for (const r of trials) bump(trialCounts, r.matched_name, isYesterdayUtc(r.created_at))
 
     const maCounts = new Map()
     for (const r of eightK) {
       if (!Array.isArray(r.items) || !r.items.includes('1.01')) continue
-      bumpCount(maCounts, r.matched_name)
+      bump(maCounts, r.matched_name, isYesterdayUtc(r.created_at))
     }
-    for (const r of s1) bumpCount(maCounts, r.matched_name)
+    for (const r of s1) bump(maCounts, r.matched_name, isYesterdayUtc(r.created_at))
 
     const fundingCounts = new Map()
-    for (const r of funding) bumpCount(fundingCounts, r.matched_name)
+    for (const r of funding) bump(fundingCounts, r.matched_name, isYesterdayUtc(r.created_at))
 
     const newsCounts = new Map()
     for (const list of [fierce, biospace, endpoints]) {
       for (const r of list) {
         if (!Array.isArray(r.matched_names)) continue
-        for (const name of r.matched_names) bumpCount(newsCounts, name)
+        const isNew = isYesterdayUtc(r.created_at)
+        for (const name of r.matched_names) bump(newsCounts, name, isNew)
       }
     }
 
@@ -107,6 +121,8 @@ export default async function handler(req, res) {
       ...newsCounts.keys(),
     ])
 
+    const empty = { count: 0, new: 0 }
+
     const companies = [...allCompanies]
       .filter(name => {
         if (isPastClientName(name)) return true
@@ -114,23 +130,36 @@ export default async function handler(req, res) {
         return !LARGE_COMPANY_SIZES.has(size)
       })
       .map(name => {
-        const clinical = trialCounts.get(name) || 0
-        const ma = maCounts.get(name) || 0
-        const fundingCount = fundingCounts.get(name) || 0
-        const news = newsCounts.get(name) || 0
+        const clinical = trialCounts.get(name) || empty
+        const ma = maCounts.get(name) || empty
+        const fundingEntry = fundingCounts.get(name) || empty
+        const news = newsCounts.get(name) || empty
+        const total = clinical.count + ma.count + fundingEntry.count + news.count
+        const totalNew = clinical.new + ma.new + fundingEntry.new + news.new
         return {
           company_name: name,
-          clinical_trials_count: clinical,
-          ma_count: ma,
-          funding_count: fundingCount,
-          news_count: news,
-          total_count: clinical + ma + fundingCount + news,
+          clinical_trials_count: clinical.count,
+          clinical_trials_new: clinical.new,
+          ma_count: ma.count,
+          ma_new: ma.new,
+          funding_count: fundingEntry.count,
+          funding_new: fundingEntry.new,
+          news_count: news.count,
+          news_new: news.new,
+          total_count: total,
+          total_new: totalNew,
         }
       })
 
     companies.sort((a, b) => b.total_count - a.total_count)
 
-    return res.status(200).json({ companies, pastClients })
+    const summary = {
+      total_companies: companies.length,
+      total_signals: companies.reduce((s, c) => s + c.total_count, 0),
+      total_new_signals: companies.reduce((s, c) => s + c.total_new, 0),
+    }
+
+    return res.status(200).json({ companies, pastClients, summary })
   } catch (err) {
     return res.status(500).json({ error: err.message })
   }

@@ -1487,9 +1487,15 @@ function AddToLeadsButton({ companyName }) {
   )
 }
 
-function CompanyRankingTable({ companies, pastClients, onSelect }) {
+function NewCountBadge({ value }) {
+  if (!value || value <= 0) return null
+  return <span className="ml-1.5 text-green-400 text-xs font-semibold tabular-nums">↑{value}</span>
+}
+
+function CompanyRankingTable({ companies, pastClients, summary, onSelect }) {
   const [sortKey, setSortKey] = useState('total_count')
   const [sortDir, setSortDir] = useState('desc')
+  const [signalView, setSignalView] = useState('all') // 'all' | 'new'
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
   const isPastClient = usePastClientChecker(pastClients)
 
@@ -1527,7 +1533,12 @@ function CompanyRankingTable({ companies, pastClients, onSelect }) {
     return arr
   }, [companies, sortKey, sortDir])
 
-  const filtered = useMemo(() => applyFilters(sorted, extractors), [sorted, applyFilters, extractors])
+  const filtered = useMemo(() => {
+    const colFiltered = applyFilters(sorted, extractors)
+    return signalView === 'new'
+      ? colFiltered.filter(r => (r.total_new || 0) > 0)
+      : colFiltered
+  }, [sorted, applyFilters, extractors, signalView])
 
   const SortableTh = ({ colKey, label, className }) => {
     const active = sortKey === colKey
@@ -1545,9 +1556,51 @@ function CompanyRankingTable({ companies, pastClients, onSelect }) {
     )
   }
 
+  const stat = summary || { total_companies: 0, total_signals: 0, total_new_signals: 0 }
+
   return (
-    <div className="flex flex-col gap-2">
-      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+          <div className="text-xs uppercase tracking-wider text-gray-500">Companies</div>
+          <div className="text-2xl font-bold text-white tabular-nums">{stat.total_companies.toLocaleString()}</div>
+        </div>
+        <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+          <div className="text-xs uppercase tracking-wider text-gray-500">Total Signals</div>
+          <div className="text-2xl font-bold text-white tabular-nums">{stat.total_signals.toLocaleString()}</div>
+        </div>
+        <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+          <div className="text-xs uppercase tracking-wider text-gray-500">New Signals (Yesterday)</div>
+          <div className="text-2xl font-bold text-green-400 tabular-nums">↑{stat.total_new_signals.toLocaleString()}</div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <div className="inline-flex rounded-md border border-[#374151] overflow-hidden">
+          <button
+            onClick={() => setSignalView('all')}
+            className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+              signalView === 'all'
+                ? 'bg-blue-600/30 text-blue-300'
+                : 'bg-[#1f2937] text-gray-400 hover:text-white hover:bg-[#263045]'
+            }`}
+          >
+            All Signals
+          </button>
+          <button
+            onClick={() => setSignalView('new')}
+            className={`px-3 py-1.5 text-xs font-semibold border-l border-[#374151] transition-colors ${
+              signalView === 'new'
+                ? 'bg-green-600/30 text-green-300'
+                : 'bg-[#1f2937] text-gray-400 hover:text-white hover:bg-[#263045]'
+            }`}
+          >
+            New Signals
+          </button>
+        </div>
+        <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      </div>
+
       <div className="rounded-lg border border-[#374151] overflow-hidden">
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
@@ -1562,7 +1615,7 @@ function CompanyRankingTable({ companies, pastClients, onSelect }) {
           </thead>
           <tbody className="divide-y divide-[#374151]">
             {filtered.length === 0 ? (
-              <tr><td colSpan={6} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">No companies with signals yet.</p></td></tr>
+              <tr><td colSpan={6} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">{signalView === 'new' ? 'No companies with new signals from yesterday.' : 'No companies with signals yet.'}</p></td></tr>
             ) : filtered.map((row, i) => {
               const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
               const isClient = isPastClient(row.company_name)
@@ -1581,11 +1634,21 @@ function CompanyRankingTable({ companies, pastClients, onSelect }) {
                       </span>
                     </span>
                   </td>
-                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.clinical_trials_count}</td>
-                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.ma_count}</td>
-                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.funding_count}</td>
-                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.news_count}</td>
-                  <td className="px-3 py-3 text-sm text-white text-right tabular-nums font-bold">{row.total_count}</td>
+                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">
+                    {row.clinical_trials_count}<NewCountBadge value={row.clinical_trials_new} />
+                  </td>
+                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">
+                    {row.ma_count}<NewCountBadge value={row.ma_new} />
+                  </td>
+                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">
+                    {row.funding_count}<NewCountBadge value={row.funding_new} />
+                  </td>
+                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">
+                    {row.news_count}<NewCountBadge value={row.news_new} />
+                  </td>
+                  <td className="px-3 py-3 text-sm text-white text-right tabular-nums font-bold">
+                    {row.total_count}<NewCountBadge value={row.total_new} />
+                  </td>
                 </tr>
               )
             })}
@@ -2380,6 +2443,7 @@ function CompanyDetailView({ company, onBack }) {
 function CompanyDashboardPage() {
   const [companies, setCompanies] = useState([])
   const [pastClients, setPastClients] = useState([])
+  const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(true)
   const [selectedCompany, setSelectedCompany] = useState(null)
 
@@ -2389,6 +2453,7 @@ function CompanyDashboardPage() {
       .then(data => {
         setCompanies(data.companies || [])
         setPastClients(data.pastClients || [])
+        setSummary(data.summary || null)
         setLoading(false)
       })
       .catch(() => setLoading(false))
@@ -2410,6 +2475,7 @@ function CompanyDashboardPage() {
     <CompanyRankingTable
       companies={companies}
       pastClients={pastClients}
+      summary={summary}
       onSelect={name => setSelectedCompany(name)}
     />
   )
