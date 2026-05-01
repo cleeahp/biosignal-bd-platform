@@ -1,15 +1,12 @@
 /**
  * BioSpace Scan
  *
- * Scrapes the BioSpace drug-development feed and stores new articles in the
- * biospace_news Supabase table. Dedups by article_url.
+ * Paginates through https://www.biospace.com/search-press-releases and stores
+ * new articles in the biospace_news Supabase table. Dedups by article_url.
  *
  * Usage:
- *   node scripts/biospaceScan.js --mode daily
- *   node scripts/biospaceScan.js --mode manual
- *
- * Both modes scrape the same page and insert any articles not already in
- * the database.
+ *   node scripts/biospaceScan.js --mode daily   # stops once an article is older than 3 days
+ *   node scripts/biospaceScan.js --mode manual  # stops once an article is older than 30 days
  */
 
 import { createClient } from '@supabase/supabase-js'
@@ -25,14 +22,10 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
-const URLS = [
-  'https://www.biospace.com/drug-development',
-  'https://www.biospace.com/deals',
-  'https://www.biospace.com/cell-and-gene-therapy',
-  'https://www.biospace.com/cancer',
-]
+const PRESS_RELEASES_BASE = 'https://www.biospace.com/search-press-releases'
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const FETCH_DELAY_MS = 2000
+const MAX_PAGES = 1000
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -242,32 +235,68 @@ async function batchInsert(rows) {
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
-async function main() {
-  console.log(`[BioSpaceScan] Mode: ${mode}, URLs: ${URLS.length}`)
+function formatYMD(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
-  // Scrape each URL and dedupe by article_url across pages
+async function main() {
+  const daysBack = mode === 'daily' ? 3 : 30
+  const cutoff = new Date()
+  cutoff.setHours(0, 0, 0, 0)
+  cutoff.setDate(cutoff.getDate() - daysBack)
+  const cutoffStr = formatYMD(cutoff)
+  console.log(`[BioSpaceScan] Mode: ${mode}, Date cutoff: ${cutoffStr}`)
+
   const seenUrls = new Set()
   const articles = []
 
-  for (let i = 0; i < URLS.length; i++) {
-    const url = URLS[i]
-    if (i > 0) await sleep(FETCH_DELAY_MS)
+  let page = 1
+  let keepGoing = true
 
-    console.log(`[BioSpaceScan] Scraping: ${url}`)
+  while (keepGoing && page <= MAX_PAGES) {
+    if (page > 1) await sleep(FETCH_DELAY_MS)
+
+    const url = page === 1 ? PRESS_RELEASES_BASE : `${PRESS_RELEASES_BASE}?p=${page}`
+    console.log(`[BioSpaceScan] Scraping page ${page}: ${url}`)
+
     let html
     try {
       html = await fetchPage(url)
     } catch (err) {
       console.error(`[BioSpaceScan] Fetch error for ${url}: ${err.message}`)
-      continue
+      break
     }
 
     const pageArticles = extractArticles(html)
+    if (pageArticles.length === 0) {
+      console.log(`[BioSpaceScan] Page ${page}: 0 articles found, stopping`)
+      break
+    }
+
+    const datedSorted = pageArticles
+      .map(a => a.article_date)
+      .filter(Boolean)
+      .sort()
+    const oldestDate = datedSorted.length > 0 ? datedSorted[0] : 'unknown'
+    console.log(`[BioSpaceScan] Page ${page}: ${pageArticles.length} articles found, oldest date: ${oldestDate}`)
+
     for (const article of pageArticles) {
       if (seenUrls.has(article.article_url)) continue
       seenUrls.add(article.article_url)
       articles.push(article)
     }
+
+    const triggerArticle = pageArticles.find(a => a.article_date && a.article_date < cutoffStr)
+    if (triggerArticle) {
+      console.log(`[BioSpaceScan] Stopping: found article older than cutoff (${triggerArticle.article_date})`)
+      keepGoing = false
+    }
+
+    page++
+  }
+
+  if (keepGoing && page > MAX_PAGES) {
+    console.warn(`[BioSpaceScan] Reached safety cap of ${MAX_PAGES} pages, stopping`)
   }
 
   const [existingUrls, companyNames, alternateNames] = await Promise.all([
