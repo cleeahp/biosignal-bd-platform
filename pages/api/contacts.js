@@ -15,7 +15,7 @@ export default async function handler(req, res) {
 
     let query = supabase.from(table).select('*')
 
-    if (table === 'past_buyers') {
+    if (table === 'past_buyers' || table === 'past_candidates') {
       query = query.order('person_name', { ascending: true })
     } else {
       query = query.order('last_name', { ascending: true })
