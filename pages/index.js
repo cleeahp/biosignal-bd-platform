@@ -1368,6 +1368,125 @@ function usePastClientChecker(pastClients) {
   }, [matchedSet, nameSet])
 }
 
+function AddToLeadsButton({ companyName }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+  const [status, setStatus] = useState('idle') // idle | pending | added | duplicate | error
+  const btnRef = useRef(null)
+  const dropdownRef = useRef(null)
+  const resetTimerRef = useRef(null)
+
+  useEffect(() => () => {
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current)
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    const handleClick = (e) => {
+      if (
+        dropdownRef.current && !dropdownRef.current.contains(e.target) &&
+        btnRef.current && !btnRef.current.contains(e.target)
+      ) {
+        setOpen(false)
+      }
+    }
+    const handleKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [open])
+
+  const handleOpen = (e) => {
+    e.stopPropagation()
+    if (btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      setPos({
+        top: rect.bottom + 4,
+        left: Math.max(4, Math.min(rect.left, window.innerWidth - 220)),
+      })
+    }
+    setOpen(true)
+  }
+
+  const setTransientStatus = (next) => {
+    setStatus(next)
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current)
+    resetTimerRef.current = setTimeout(() => setStatus('idle'), 2000)
+  }
+
+  const submit = async (route, e) => {
+    e.stopPropagation()
+    setOpen(false)
+    setStatus('pending')
+    try {
+      const res = await fetch(route, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ company_name: companyName }),
+      })
+      if (res.ok) {
+        setTransientStatus('added')
+        return
+      }
+      const body = await res.json().catch(() => ({}))
+      const msg = String(body.error || '').toLowerCase()
+      if (msg.includes('duplicate') || msg.includes('unique')) {
+        setTransientStatus('duplicate')
+      } else {
+        setTransientStatus('error')
+      }
+    } catch {
+      setTransientStatus('error')
+    }
+  }
+
+  let label = '+'
+  let title = 'Add to leads'
+  let className = 'text-gray-400 hover:text-blue-300 hover:bg-blue-600/20'
+  if (status === 'pending') { label = '…'; title = 'Adding…'; className = 'text-gray-400' }
+  else if (status === 'added') { label = '✓'; title = 'Added'; className = 'text-green-400 bg-green-600/20' }
+  else if (status === 'duplicate') { label = '✓'; title = 'Already added'; className = 'text-amber-400 bg-amber-600/20' }
+  else if (status === 'error') { label = '!'; title = 'Failed to add'; className = 'text-red-400 bg-red-600/20' }
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={handleOpen}
+        title={title}
+        className={`shrink-0 w-5 h-5 inline-flex items-center justify-center rounded text-xs font-bold leading-none transition-colors ${className}`}
+      >
+        {label}
+      </button>
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={dropdownRef}
+          onClick={e => e.stopPropagation()}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 1000 }}
+          className="w-52 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl py-1"
+        >
+          <button
+            onClick={e => submit('/api/madison-leads', e)}
+            className="w-full text-left px-3 py-2 text-xs text-gray-200 hover:bg-blue-600/20 hover:text-white transition-colors"
+          >
+            Add to Madison Leads
+          </button>
+          <button
+            onClick={e => submit('/api/jim-leads', e)}
+            className="w-full text-left px-3 py-2 text-xs text-gray-200 hover:bg-blue-600/20 hover:text-white transition-colors"
+          >
+            Add to Jim Leads
+          </button>
+        </div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
 function CompanyRankingTable({ companies, pastClients, onSelect }) {
   const [sortKey, setSortKey] = useState('total_count')
   const [sortDir, setSortDir] = useState('desc')
@@ -1454,8 +1573,13 @@ function CompanyRankingTable({ companies, pastClients, onSelect }) {
                   className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
                 >
                   <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
-                    {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
-                    {row.company_name}
+                    <span className="inline-flex items-start gap-2">
+                      <AddToLeadsButton companyName={row.company_name} />
+                      <span>
+                        {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                        {row.company_name}
+                      </span>
+                    </span>
                   </td>
                   <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.clinical_trials_count}</td>
                   <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.ma_count}</td>
