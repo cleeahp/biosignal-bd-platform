@@ -38,15 +38,17 @@ export default async function handler(req, res) {
       fierce,
       biospace,
       endpoints,
+      directory,
       clientRows,
     ] = await Promise.all([
-      fetchAll('clinical_trials', 'matched_name, company_size', q => q.not('matched_name', 'is', null)),
-      fetchAll('eight_k_filings', 'matched_name, company_size, items', q => q.not('matched_name', 'is', null)),
-      fetchAll('s1_filings', 'matched_name, company_size', q => q.not('matched_name', 'is', null)),
-      fetchAll('funding_projects', 'matched_name, company_size', q => q.not('matched_name', 'is', null)),
+      fetchAll('clinical_trials', 'matched_name', q => q.not('matched_name', 'is', null)),
+      fetchAll('eight_k_filings', 'matched_name, items', q => q.not('matched_name', 'is', null)),
+      fetchAll('s1_filings', 'matched_name', q => q.not('matched_name', 'is', null)),
+      fetchAll('funding_projects', 'matched_name', q => q.not('matched_name', 'is', null)),
       fetchAll('fiercebio_news', 'matched_names', q => q.not('matched_names', 'is', null)),
       fetchAll('biospace_news', 'matched_names', q => q.not('matched_names', 'is', null)),
       fetchAll('endpoint_news', 'matched_names', q => q.not('matched_names', 'is', null)),
+      fetchAll('companies_directory', 'name, company_size'),
       (async () => {
         const { data, error } = await supabase
           .from('past_clients')
@@ -71,53 +73,30 @@ export default async function handler(req, res) {
       return pastClientLowerSet.has(String(name).toLowerCase())
     }
 
-    const isLargeNonClient = row => (
-      LARGE_COMPANY_SIZES.has(row.company_size) && !isPastClientName(row.matched_name)
-    )
+    const directorySize = new Map()
+    for (const row of directory) {
+      if (!row.name) continue
+      directorySize.set(row.name.toLowerCase(), row.company_size || null)
+    }
 
     const trialCounts = new Map()
-    for (const r of trials) {
-      if (isLargeNonClient(r)) continue
-      bumpCount(trialCounts, r.matched_name)
-    }
+    for (const r of trials) bumpCount(trialCounts, r.matched_name)
 
     const maCounts = new Map()
     for (const r of eightK) {
       if (!Array.isArray(r.items) || !r.items.includes('1.01')) continue
-      if (isLargeNonClient(r)) continue
       bumpCount(maCounts, r.matched_name)
     }
-    for (const r of s1) {
-      if (isLargeNonClient(r)) continue
-      bumpCount(maCounts, r.matched_name)
-    }
+    for (const r of s1) bumpCount(maCounts, r.matched_name)
 
     const fundingCounts = new Map()
-    for (const r of funding) {
-      if (isLargeNonClient(r)) continue
-      bumpCount(fundingCounts, r.matched_name)
-    }
-
-    // News tables don't carry company_size, so per-row size filtering isn't possible.
-    // Fall back to: drop companies that are flagged 10,001+ in any size-bearing source AND not a past client.
-    const largeNonClientCompanies = new Set()
-    for (const list of [trials, eightK, s1, funding]) {
-      for (const r of list) {
-        if (LARGE_COMPANY_SIZES.has(r.company_size) && !isPastClientName(r.matched_name)) {
-          largeNonClientCompanies.add(String(r.matched_name).toLowerCase())
-        }
-      }
-    }
+    for (const r of funding) bumpCount(fundingCounts, r.matched_name)
 
     const newsCounts = new Map()
     for (const list of [fierce, biospace, endpoints]) {
       for (const r of list) {
         if (!Array.isArray(r.matched_names)) continue
-        for (const name of r.matched_names) {
-          if (!name) continue
-          if (largeNonClientCompanies.has(String(name).toLowerCase())) continue
-          bumpCount(newsCounts, name)
-        }
+        for (const name of r.matched_names) bumpCount(newsCounts, name)
       }
     }
 
@@ -128,20 +107,26 @@ export default async function handler(req, res) {
       ...newsCounts.keys(),
     ])
 
-    const companies = [...allCompanies].map(name => {
-      const clinical = trialCounts.get(name) || 0
-      const ma = maCounts.get(name) || 0
-      const fundingCount = fundingCounts.get(name) || 0
-      const news = newsCounts.get(name) || 0
-      return {
-        company_name: name,
-        clinical_trials_count: clinical,
-        ma_count: ma,
-        funding_count: fundingCount,
-        news_count: news,
-        total_count: clinical + ma + fundingCount + news,
-      }
-    })
+    const companies = [...allCompanies]
+      .filter(name => {
+        if (isPastClientName(name)) return true
+        const size = directorySize.get(name.toLowerCase())
+        return !LARGE_COMPANY_SIZES.has(size)
+      })
+      .map(name => {
+        const clinical = trialCounts.get(name) || 0
+        const ma = maCounts.get(name) || 0
+        const fundingCount = fundingCounts.get(name) || 0
+        const news = newsCounts.get(name) || 0
+        return {
+          company_name: name,
+          clinical_trials_count: clinical,
+          ma_count: ma,
+          funding_count: fundingCount,
+          news_count: news,
+          total_count: clinical + ma + fundingCount + news,
+        }
+      })
 
     companies.sort((a, b) => b.total_count - a.total_count)
 
