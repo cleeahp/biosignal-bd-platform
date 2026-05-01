@@ -12,7 +12,10 @@ export default async function handler(req, res) {
   if (clientErr) return res.status(500).json({ error: clientErr.message })
 
   const pastClients = (clientRows || []).map(r => ({ name: r.name, matched_name: r.matched_name }))
-  const pastClientsLower = new Set(pastClients.map(c => c.name.toLowerCase()))
+  const pastClientsLower = new Set([
+    ...pastClients.map(c => c.name.toLowerCase()),
+    ...pastClients.filter(c => c.matched_name).map(c => c.matched_name.toLowerCase()),
+  ])
 
   const all = []
   const PAGE = 1000
