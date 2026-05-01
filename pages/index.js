@@ -1219,7 +1219,7 @@ function NavIcon({ type, className = 'w-5 h-5' }) {
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 const MAIN_NAV = [
-  { key: 'dashboard',      label: 'Dashboard',              icon: 'grid' },
+  { key: 'dashboard',      label: 'Company Dashboard',      icon: 'grid' },
   { key: 'madison_leads',  label: 'Madison Leads',          icon: 'clipboard', countKey: 'madison_leads' },
   { key: 'jim_leads',      label: 'Jim Leads',              icon: 'clipboard', countKey: 'jim_leads' },
   { key: 'clinical_new',   label: 'Clinical Trials',        icon: 'flask',     countKey: 'clinical_new' },
@@ -1303,7 +1303,7 @@ function Sidebar({ activePage, setActivePage, tabCounts }) {
 // ─── TopBar ───────────────────────────────────────────────────────────────────
 
 const PAGE_TITLES = {
-  dashboard:       'Dashboard',
+  dashboard:       'Company Dashboard',
   madison_leads:   'Madison Leads',
   jim_leads:       'Jim Leads',
   clinical_new:    'Clinical Trials',
@@ -1352,94 +1352,796 @@ function TopBar({ activePage, repName, onShowNameModal }) {
   )
 }
 
-// ─── Dashboard Page ───────────────────────────────────────────────────────────
+// ─── Company Dashboard ────────────────────────────────────────────────────────
 
-const AGENT_DISPLAY = {
-  clinical_trial_monitor:     'Clinical Trial Monitor',
-  funding_ma_agent:           'Funding & M&A Agent',
-  competitor_job_board_agent: 'Competitor Job Board',
-  stale_job_tracker:          'Stale Job Tracker',
+function usePastClientChecker(pastClients) {
+  const matchedSet = useMemo(
+    () => new Set((pastClients || []).map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())),
+    [pastClients],
+  )
+  const nameSet = useMemo(
+    () => new Set((pastClients || []).map(c => c.name).filter(Boolean).map(n => n.toLowerCase())),
+    [pastClients],
+  )
+  return useCallback(name => {
+    if (!name) return false
+    const lower = String(name).toLowerCase()
+    return matchedSet.has(lower) || nameSet.has(lower)
+  }, [matchedSet, nameSet])
 }
 
-function DashboardPage({ signals, agentRuns }) {
-  const clinicalNew  = signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'clinical' && s.status === 'new').length
-  const fundingNew   = signals.filter(s => SIGNAL_TYPE_CONFIG[s.signal_type]?.tab === 'funding'  && s.status === 'new').length
-  const competitorNew = signals.filter(s => s.signal_type === 'competitor_job_posting' && s.status === 'new').length
-  const staleNew     = signals.filter(s => ['stale_job_posting', 'target_company_job'].includes(s.signal_type) && s.status === 'new').length
+function CompanyRankingTable({ companies, pastClients, onSelect }) {
+  const [sortKey, setSortKey] = useState('total_count')
+  const [sortDir, setSortDir] = useState('desc')
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const isPastClient = usePastClientChecker(pastClients)
 
-  const summaryCards = [
-    { label: 'Clinical Trials',  count: clinicalNew,   icon: 'beaker',    accent: 'text-blue-400',  iconBg: 'bg-blue-600/20' },
-    { label: 'Funding & M&A',    count: fundingNew,    icon: 'trending',  accent: 'text-green-400', iconBg: 'bg-green-600/20' },
-    { label: 'Competitor Jobs',  count: competitorNew, icon: 'briefcase', accent: 'text-red-400',   iconBg: 'bg-red-600/20' },
-    { label: 'Stale Roles',      count: staleNew,      icon: 'clock',     accent: 'text-amber-400', iconBg: 'bg-amber-600/20' },
-  ]
+  const extractors = useMemo(() => ({
+    company: c => c.company_name || '',
+  }), [])
 
-  // Group agentRuns by agent_name, take most recent per agent
-  const latestRuns = {}
-  for (const run of agentRuns) {
-    if (!latestRuns[run.agent_name] || new Date(run.started_at) > new Date(latestRuns[run.agent_name].started_at)) {
-      latestRuns[run.agent_name] = run
+  const allValues = useMemo(() => ({
+    company: companies.map(c => c.company_name || ''),
+  }), [companies])
+
+  const cycleSort = key => {
+    if (sortKey !== key) {
+      setSortKey(key)
+      setSortDir('desc')
+      return
+    }
+    if (sortDir === 'desc') {
+      setSortKey('total_count')
+      setSortDir('desc')
+    } else {
+      setSortDir('desc')
     }
   }
 
-  return (
-    <div className="flex flex-col gap-8">
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        {summaryCards.map(card => (
-          <div key={card.label} className="bg-[#1f2937] border border-[#374151] rounded-xl p-6">
-            <div className="flex items-center justify-between mb-4">
-              <span className="text-sm font-medium text-gray-400">{card.label}</span>
-              <div className={`w-9 h-9 rounded-lg ${card.iconBg} flex items-center justify-center`}>
-                <NavIcon type={card.icon} className={`w-4 h-4 ${card.accent}`} />
-              </div>
-            </div>
-            <div className="text-4xl font-bold text-white">{card.count}</div>
-            <div className="text-xs text-gray-500 mt-1">new signals</div>
-          </div>
-        ))}
-      </div>
+  const sorted = useMemo(() => {
+    const arr = [...companies]
+    arr.sort((a, b) => {
+      const av = a[sortKey] ?? 0
+      const bv = b[sortKey] ?? 0
+      const diff = bv - av
+      if (diff !== 0) return sortDir === 'desc' ? diff : -diff
+      return (a.company_name || '').localeCompare(b.company_name || '')
+    })
+    return arr
+  }, [companies, sortKey, sortDir])
 
-      {/* Agent Status */}
-      <div>
-        <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Agent Status</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-          {Object.entries(AGENT_DISPLAY).map(([key, label]) => {
-            const run = latestRuns[key]
-            return (
-              <div key={key} className="bg-[#1f2937] border border-[#374151] rounded-xl p-5">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${
-                    !run ? 'bg-gray-600'
-                    : run.status === 'completed' ? 'bg-green-500'
-                    : run.status === 'failed' ? 'bg-red-500'
-                    : 'bg-yellow-500'
-                  }`} />
-                  <span className="text-sm font-medium text-white truncate">{label}</span>
-                </div>
-                {run ? (
-                  <>
-                    <div className="text-xs text-gray-400 mb-1">Last run: {formatDate(run.started_at)}</div>
-                    <div className="text-xs text-gray-500">
-                      {run.signals_found != null ? `${run.signals_found} signals found` : '—'}
-                    </div>
-                    <div className={`text-xs mt-1 font-medium ${
-                      run.status === 'completed' ? 'text-green-400'
-                      : run.status === 'failed' ? 'text-red-400'
-                      : 'text-yellow-400'
-                    }`}>
-                      {run.status}
-                    </div>
-                  </>
-                ) : (
-                  <div className="text-xs text-gray-600 italic">No runs recorded</div>
-                )}
-              </div>
-            )
-          })}
-        </div>
+  const filtered = useMemo(() => applyFilters(sorted, extractors), [sorted, applyFilters, extractors])
+
+  const SortableTh = ({ colKey, label, className }) => {
+    const active = sortKey === colKey
+    const arrow = active ? (sortDir === 'desc' ? '▼' : '▲') : ''
+    return (
+      <th
+        onClick={() => cycleSort(colKey)}
+        className={`px-3 py-3 text-right text-xs font-semibold uppercase tracking-wider bg-[#1a2234] cursor-pointer select-none whitespace-nowrap ${active ? 'text-blue-300' : 'text-gray-400 hover:text-gray-200'} ${className}`}
+      >
+        <span className="inline-flex items-center gap-1.5 justify-end">
+          {label}
+          {active && <span className="text-[10px]">{arrow}</span>}
+        </span>
+      </th>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[30%]" />
+              <SortableTh colKey="clinical_trials_count" label="Clinical Trials" className="w-[12%]" />
+              <SortableTh colKey="ma_count" label="M&A" className="w-[12%]" />
+              <SortableTh colKey="funding_count" label="Funding" className="w-[12%]" />
+              <SortableTh colKey="news_count" label="News" className="w-[12%]" />
+              <SortableTh colKey="jobs_count" label="Jobs" className="w-[12%]" />
+              <SortableTh colKey="total_count" label="Total" className="w-[10%]" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {filtered.length === 0 ? (
+              <tr><td colSpan={7} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">No companies with signals yet.</p></td></tr>
+            ) : filtered.map((row, i) => {
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              const isClient = isPastClient(row.company_name)
+              return (
+                <tr
+                  key={row.company_name}
+                  onClick={() => onSelect(row.company_name)}
+                  className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
+                >
+                  <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                    {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                    {row.company_name}
+                  </td>
+                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.clinical_trials_count}</td>
+                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.ma_count}</td>
+                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.funding_count}</td>
+                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.news_count}</td>
+                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.jobs_count}</td>
+                  <td className="px-3 py-3 text-sm text-white text-right tabular-nums font-bold">{row.total_count}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
+  )
+}
+
+// ── Section components for the per-company drilldown ─────────────────────────
+
+function TrialsSection({ trials, pastClients }) {
+  const [expandedRows, setExpandedRows] = useState(new Set())
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const dateCol = useDateColumn()
+
+  const isPastClient = usePastClientChecker(pastClients)
+  const getDisplayName = useCallback(t => t.matched_name || t.lead_sponsor_name || '', [])
+  const getCategory = useCallback(t => {
+    const drug = t.is_fda_regulated_drug
+    const device = t.is_fda_regulated_device
+    if (drug && device) return 'Drug / Device'
+    if (drug) return 'Drug'
+    if (device) return 'Device'
+    return ''
+  }, [])
+
+  const toggleRow = useCallback(id => {
+    setExpandedRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }, [])
+
+  const extractors = useMemo(() => ({
+    nct_id: t => t.nct_id || '',
+    company: t => getDisplayName(t),
+    title: t => t.brief_title || '',
+    phase: t => t.phase || '',
+    category: t => getCategory(t),
+  }), [getDisplayName, getCategory])
+
+  const allValues = useMemo(() => ({
+    nct_id: trials.map(t => t.nct_id || ''),
+    company: trials.map(t => getDisplayName(t)),
+    title: trials.map(t => t.brief_title || ''),
+    phase: trials.map(t => t.phase || ''),
+    category: trials.map(t => getCategory(t)),
+  }), [trials, getDisplayName, getCategory])
+
+  const allRawDates = useMemo(() => trials.map(t => t.study_start_date), [trials])
+  const getRawDate = useCallback(t => t.study_start_date, [])
+
+  const defaultSorted = useMemo(() => {
+    const arr = [...trials]
+    arr.sort((a, b) => {
+      const da = parseDateValue(a.study_start_date)?.getTime() || 0
+      const db = parseDateValue(b.study_start_date)?.getTime() || 0
+      return db - da
+    })
+    return arr
+  }, [trials])
+
+  const sorted = useMemo(() => (
+    dateCol.sortDir === null ? defaultSorted : sortRowsByDate(defaultSorted, getRawDate, dateCol.sortDir)
+  ), [defaultSorted, dateCol.sortDir, getRawDate])
+
+  const filtered = useMemo(() => (
+    filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+      />
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <ColumnFilterDropdown colKey="nct_id" label="NCT ID" allValues={allValues.nct_id} activeValues={filters.nct_id} onApply={setFilter} className="w-[12%]" />
+              <ColumnFilterDropdown colKey="company" label="Company Name" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[22%]" />
+              <ColumnFilterDropdown colKey="title" label="Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
+              <ColumnFilterDropdown colKey="phase" label="Phase" allValues={allValues.phase} activeValues={filters.phase} onApply={setFilter} className="w-[10%]" />
+              <ColumnFilterDropdown colKey="category" label="Category" allValues={allValues.category} activeValues={filters.category} onApply={setFilter} className="w-[12%]" />
+              <HierarchicalDateFilter label="Start Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[14%]" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {filtered.map((trial, i) => {
+              const rowKey = trial.id || trial.nct_id
+              const isExpanded = expandedRows.has(rowKey)
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              const displayName = getDisplayName(trial)
+              const isClient = isPastClient(displayName)
+              const category = getCategory(trial)
+              const contacts = Array.isArray(trial.central_contacts) ? trial.central_contacts : []
+              return (
+                <Fragment key={rowKey}>
+                  <tr
+                    onClick={() => toggleRow(rowKey)}
+                    className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
+                  >
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{trial.nct_id || '—'}</td>
+                    <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                      {displayName || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-white" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{trial.brief_title || '—'}</td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{trial.phase || '—'}</td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{category || '—'}</td>
+                    <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(trial.study_start_date)}</td>
+                  </tr>
+                  {isExpanded && (
+                    <tr>
+                      <td colSpan={6} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                        <div className="flex flex-col gap-4">
+                          <div>
+                            <a href={trial.source_url} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-400 hover:text-blue-300 font-medium">
+                              View on ClinicalTrials.gov &#8599;
+                            </a>
+                          </div>
+                          <div>
+                            <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Contact Information</h4>
+                            {contacts.length > 0 ? (
+                              <div className="flex flex-col gap-2">
+                                {contacts.map((c, ci) => (
+                                  <div key={ci} className="text-sm text-gray-300 flex flex-wrap gap-x-4 gap-y-1">
+                                    {c.name && <span>{c.name}</span>}
+                                    {c.email && <a href={`mailto:${c.email}`} className="text-blue-400 hover:text-blue-300" onClick={e => e.stopPropagation()}>{c.email}</a>}
+                                    {c.phone && <a href={`tel:${c.phone}`} className="text-blue-400 hover:text-blue-300" onClick={e => e.stopPropagation()}>{c.phone}</a>}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-gray-500 italic">No contact information available</p>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function FilingsSection({ filings, pastClients }) {
+  const [expandedRows, setExpandedRows] = useState(new Set())
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const dateCol = useDateColumn()
+
+  const isPastClient = usePastClientChecker(pastClients)
+  const getDisplayName = useCallback(f => f.matched_name || f.company_name || '', [])
+
+  const toggleRow = useCallback(id => {
+    setExpandedRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }, [])
+
+  const extractors = useMemo(() => ({
+    company: f => getDisplayName(f),
+    transaction: f => f._transaction || '',
+  }), [getDisplayName])
+
+  const allValues = useMemo(() => ({
+    company: filings.map(f => getDisplayName(f)),
+    transaction: filings.map(f => f._transaction || ''),
+  }), [filings, getDisplayName])
+
+  const allRawDates = useMemo(() => filings.map(f => f.filing_date), [filings])
+  const getRawDate = useCallback(f => f.filing_date, [])
+
+  const defaultSorted = useMemo(() => {
+    const arr = [...filings]
+    arr.sort((a, b) => {
+      const da = parseDateValue(a.filing_date)?.getTime() || 0
+      const db = parseDateValue(b.filing_date)?.getTime() || 0
+      return db - da
+    })
+    return arr
+  }, [filings])
+
+  const sorted = useMemo(() => (
+    dateCol.sortDir === null ? defaultSorted : sortRowsByDate(defaultSorted, getRawDate, dateCol.sortDir)
+  ), [defaultSorted, dateCol.sortDir, getRawDate])
+
+  const filtered = useMemo(() => (
+    filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+      />
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <ColumnFilterDropdown colKey="company" label="Company Name" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[30%]" />
+              <ColumnFilterDropdown colKey="transaction" label="Transaction" allValues={allValues.transaction} activeValues={filters.transaction} onApply={setFilter} className="w-[20%]" />
+              <HierarchicalDateFilter label="Filing Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[20%]" />
+              <Th className="w-[30%]">Filing Link</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {filtered.map((filing, i) => {
+              const rowKey = filing.id || filing.accession_number
+              const isExpanded = expandedRows.has(rowKey)
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              const displayName = getDisplayName(filing)
+              const isClient = isPastClient(displayName)
+              const hasExpandContent = filing._source === '8-K' && filing.agreement_summary
+              return (
+                <Fragment key={rowKey}>
+                  <tr
+                    onClick={() => hasExpandContent && toggleRow(rowKey)}
+                    className={`${rowBg} hover:bg-[#263045] ${hasExpandContent ? 'cursor-pointer' : ''} transition-colors`}
+                  >
+                    <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                      {displayName || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{filing._transaction || '—'}</td>
+                    <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(filing.filing_date)}</td>
+                    <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
+                      {filing.filing_url ? (
+                        <a href={filing.filing_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Filing &#8599;</a>
+                      ) : <span className="text-gray-600">—</span>}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr>
+                      <td colSpan={4} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                        <div>
+                          <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Agreement Summary</h4>
+                          <p className="text-sm text-gray-300 leading-relaxed" style={{ whiteSpace: 'pre-wrap' }}>{filing.agreement_summary}</p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function FundingSection({ projects, pastClients }) {
+  const [expandedRows, setExpandedRows] = useState(new Set())
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const dateCol = useDateColumn()
+
+  const isPastClient = usePastClientChecker(pastClients)
+  const getDisplayName = useCallback(p => p.matched_name || '', [])
+
+  const toggleRow = useCallback(id => {
+    setExpandedRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }, [])
+
+  const extractors = useMemo(() => ({
+    company: p => getDisplayName(p),
+    title: p => p.project_title || '',
+  }), [getDisplayName])
+
+  const allValues = useMemo(() => ({
+    company: projects.map(p => getDisplayName(p)),
+    title: projects.map(p => p.project_title || ''),
+  }), [projects, getDisplayName])
+
+  const allRawDates = useMemo(() => projects.map(p => p.award_notice_date), [projects])
+  const getRawDate = useCallback(p => p.award_notice_date, [])
+
+  const defaultSorted = useMemo(() => {
+    const arr = [...projects]
+    arr.sort((a, b) => {
+      const da = parseDateValue(a.award_notice_date)?.getTime() || 0
+      const db = parseDateValue(b.award_notice_date)?.getTime() || 0
+      return db - da
+    })
+    return arr
+  }, [projects])
+
+  const sorted = useMemo(() => (
+    dateCol.sortDir === null ? defaultSorted : sortRowsByDate(defaultSorted, getRawDate, dateCol.sortDir)
+  ), [defaultSorted, dateCol.sortDir, getRawDate])
+
+  const filtered = useMemo(() => (
+    filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+      />
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <ColumnFilterDropdown colKey="company" label="Company Name" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[30%]" />
+              <ColumnFilterDropdown colKey="title" label="Project Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
+              <Th className="w-[15%]">Award</Th>
+              <HierarchicalDateFilter label="Award Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
+              <Th className="w-[15%]">Project Link</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {filtered.map((project, i) => {
+              const rowKey = project.id || project.appl_id
+              const hasExpandContent = !!(project.public_health_relevance && project.public_health_relevance.trim())
+              const isExpanded = expandedRows.has(rowKey)
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              const displayName = getDisplayName(project)
+              const isClient = isPastClient(displayName)
+              return (
+                <Fragment key={rowKey}>
+                  <tr
+                    onClick={() => hasExpandContent && toggleRow(rowKey)}
+                    className={`${rowBg} hover:bg-[#263045] ${hasExpandContent ? 'cursor-pointer' : ''} transition-colors`}
+                  >
+                    <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                      {displayName || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-white" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{project.project_title || '—'}</td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatAward(project.award_amount)}</td>
+                    <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(project.award_notice_date)}</td>
+                    <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
+                      {project.project_url ? (
+                        <a href={project.project_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Project &#8599;</a>
+                      ) : <span className="text-gray-600">—</span>}
+                    </td>
+                  </tr>
+                  {isExpanded && hasExpandContent && (
+                    <tr>
+                      <td colSpan={5} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                        <div>
+                          <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Summary:</h4>
+                          <p className="text-sm text-gray-300 leading-relaxed" style={{ whiteSpace: 'pre-wrap' }}>{project.public_health_relevance}</p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function NewsSection({ articles, pastClients }) {
+  const { filters, setFilter, clearAll, hasActiveFilters } = useColumnFilters()
+  const dateCol = useDateColumn()
+
+  const isPastClient = usePastClientChecker(pastClients)
+
+  const allValues = useMemo(() => {
+    const companySet = new Set()
+    for (const a of articles) {
+      if (Array.isArray(a.matched_names)) {
+        for (const n of a.matched_names) if (n) companySet.add(n)
+      }
+    }
+    return {
+      company: [...companySet],
+      title: articles.map(a => a.title || ''),
+      source: articles.map(a => a._source || ''),
+    }
+  }, [articles])
+
+  const allRawDates = useMemo(() => articles.map(a => a.date), [articles])
+  const getRawDate = useCallback(a => a.date, [])
+
+  const defaultSorted = useMemo(() => {
+    const arr = [...articles]
+    arr.sort((a, b) => {
+      const aHas = a.date ? 1 : 0
+      const bHas = b.date ? 1 : 0
+      if (aHas !== bHas) return bHas - aHas
+      if (a.date && b.date) {
+        const da = parseDateValue(a.date)?.getTime() || 0
+        const db = parseDateValue(b.date)?.getTime() || 0
+        return db - da
+      }
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0)
+    })
+    return arr
+  }, [articles])
+
+  const sorted = useMemo(() => (
+    dateCol.sortDir === null ? defaultSorted : sortRowsByDate(defaultSorted, getRawDate, dateCol.sortDir)
+  ), [defaultSorted, dateCol.sortDir, getRawDate])
+
+  const filtered = useMemo(() => {
+    const colFiltered = !hasActiveFilters ? sorted : sorted.filter(a => {
+      for (const [colKey, allowedValues] of Object.entries(filters)) {
+        if (!allowedValues || allowedValues.length === 0) continue
+        const allowedLower = allowedValues.map(v => String(v).toLowerCase())
+        if (colKey === 'company') {
+          const names = Array.isArray(a.matched_names) ? a.matched_names : []
+          if (!names.some(n => allowedLower.includes(String(n).toLowerCase()))) return false
+        } else if (colKey === 'title') {
+          if (!allowedLower.includes(String(a.title || '').toLowerCase())) return false
+        } else if (colKey === 'source') {
+          if (!allowedLower.includes(String(a._source || '').toLowerCase())) return false
+        }
+      }
+      return true
+    })
+    return filterRowsByDateKeys(colFiltered, getRawDate, dateCol.dateFilter)
+  }, [sorted, filters, hasActiveFilters, getRawDate, dateCol.dateFilter])
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+      />
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[20%]" />
+              <ColumnFilterDropdown colKey="title" label="Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[35%]" />
+              <HierarchicalDateFilter label="Date" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[15%]" />
+              <ColumnFilterDropdown colKey="source" label="Source" allValues={allValues.source} activeValues={filters.source} onApply={setFilter} className="w-[15%]" />
+              <Th className="w-[15%]">Link</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {filtered.map((article, i) => {
+              const rowKey = article.url
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              const names = Array.isArray(article.matched_names) ? article.matched_names : []
+              return (
+                <tr key={rowKey} className={`${rowBg} transition-colors`}>
+                  <td className="px-3 py-3 text-sm text-gray-200 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                    <div className="flex flex-col gap-1">
+                      {names.length === 0 && <span className="text-gray-600">—</span>}
+                      {names.map(n => (
+                        <span key={n} className="text-gray-100">
+                          {isPastClient(n) && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                          {n}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{article.title || '—'}</td>
+                  <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{article.date ? formatDate(article.date) : '—'}</td>
+                  <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{article._source || '—'}</td>
+                  <td className="px-3 py-3 text-sm align-top">
+                    {article.url ? (
+                      <a href={article.url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">Read Article &#8599;</a>
+                    ) : <span className="text-gray-600">—</span>}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function JobsSection({ jobs, pastClients }) {
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const dateCol = useDateColumn()
+
+  const isPastClient = usePastClientChecker(pastClients)
+  const getDisplayName = useCallback(j => j.matched_name || j.company_name || '', [])
+
+  const extractors = useMemo(() => ({
+    company: j => getDisplayName(j),
+    title: j => j.job_title || '',
+    location: j => j.location || '',
+  }), [getDisplayName])
+
+  const allValues = useMemo(() => ({
+    company: jobs.map(j => getDisplayName(j)),
+    title: jobs.map(j => j.job_title || ''),
+    location: jobs.map(j => j.location || ''),
+  }), [jobs, getDisplayName])
+
+  const allRawDates = useMemo(() => jobs.map(j => j.date_posted), [jobs])
+  const getRawDate = useCallback(j => j.date_posted, [])
+
+  const defaultSorted = useMemo(() => {
+    const arr = [...jobs]
+    arr.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+    return arr
+  }, [jobs])
+
+  const sorted = useMemo(() => (
+    dateCol.sortDir === null ? defaultSorted : sortRowsByDate(defaultSorted, getRawDate, dateCol.sortDir)
+  ), [defaultSorted, dateCol.sortDir, getRawDate])
+
+  const filtered = useMemo(() => (
+    filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
+  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+      />
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[20%]" />
+              <ColumnFilterDropdown colKey="title" label="Job Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
+              <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[15%]" />
+              <Th className="w-[10%]">Domain</Th>
+              <HierarchicalDateFilter label="Date Posted" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
+              <Th className="w-[15%]">Link</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {filtered.map((job, i) => {
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              const displayName = getDisplayName(job)
+              const isClient = isPastClient(displayName)
+              return (
+                <tr key={job.id} className={`${rowBg} transition-colors`}>
+                  <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                    {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                    {displayName || '—'}
+                  </td>
+                  <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.job_title || '—'}</td>
+                  <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.location || '—'}</td>
+                  <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.company_domain || '—'}</td>
+                  <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatClayDate(job.date_posted)}</td>
+                  <td className="px-3 py-3 text-sm align-top">
+                    {job.job_url ? (
+                      <a href={job.job_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Job &#8599;</a>
+                    ) : <span className="text-gray-600">—</span>}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function CompanyDetailView({ company, onBack }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    setLoading(true)
+    setError(null)
+    fetch(`/api/company-detail?company=${encodeURIComponent(company)}`)
+      .then(r => r.json().then(d => ({ ok: r.ok, body: d })))
+      .then(({ ok, body }) => {
+        if (!ok) throw new Error(body.error || 'Failed to load')
+        setData(body)
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false))
+  }, [company])
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onBack}
+          className="text-sm text-blue-400 hover:text-blue-300 font-medium px-3 py-1.5 rounded bg-blue-900/30 hover:bg-blue-900/50 transition-colors"
+        >
+          ← Back to Dashboard
+        </button>
+      </div>
+      <h1 className="text-2xl font-bold text-white">{company}</h1>
+
+      {loading && (
+        <div className="flex items-center justify-center py-20">
+          <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
+      {error && (
+        <div className="text-sm text-red-400">{error}</div>
+      )}
+      {!loading && !error && data && (
+        <>
+          {data.clinicalTrials.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <h2 className="text-white text-base font-semibold">Clinical Trials ({data.clinicalTrials.length})</h2>
+              <TrialsSection trials={data.clinicalTrials} pastClients={data.pastClients} />
+            </div>
+          )}
+          {data.filings.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <h2 className="text-white text-base font-semibold">M&A and Filings ({data.filings.length})</h2>
+              <FilingsSection filings={data.filings} pastClients={data.pastClients} />
+            </div>
+          )}
+          {data.fundingProjects.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <h2 className="text-white text-base font-semibold">Funding Projects ({data.fundingProjects.length})</h2>
+              <FundingSection projects={data.fundingProjects} pastClients={data.pastClients} />
+            </div>
+          )}
+          {data.newsArticles.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <h2 className="text-white text-base font-semibold">News ({data.newsArticles.length})</h2>
+              <NewsSection articles={data.newsArticles} pastClients={data.pastClients} />
+            </div>
+          )}
+          {data.jobs.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <h2 className="text-white text-base font-semibold">Jobs ({data.jobs.length})</h2>
+              <JobsSection jobs={data.jobs} pastClients={data.pastClients} />
+            </div>
+          )}
+          {data.clinicalTrials.length === 0 && data.filings.length === 0 && data.fundingProjects.length === 0 && data.newsArticles.length === 0 && data.jobs.length === 0 && (
+            <EmptyState message={`No signals found for ${company}.`} />
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function CompanyDashboardPage() {
+  const [companies, setCompanies] = useState([])
+  const [pastClients, setPastClients] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [selectedCompany, setSelectedCompany] = useState(null)
+
+  useEffect(() => {
+    fetch('/api/company-dashboard')
+      .then(r => r.json())
+      .then(data => {
+        setCompanies(data.companies || [])
+        setPastClients(data.pastClients || [])
+        setLoading(false)
+      })
+      .catch(() => setLoading(false))
+  }, [])
+
+  if (selectedCompany) {
+    return <CompanyDetailView company={selectedCompany} onBack={() => setSelectedCompany(null)} />
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  return (
+    <CompanyRankingTable
+      companies={companies}
+      pastClients={pastClients}
+      onSelect={name => setSelectedCompany(name)}
+    />
   )
 }
 
@@ -5137,7 +5839,6 @@ export default function Home() {
   const [activePage, setActivePage]     = useState('dashboard')
   const [signals, setSignals]           = useState([])
   const [loading, setLoading]           = useState(true)
-  const [agentRuns, setAgentRuns]       = useState([])
   const [repName, setRepName]           = useState('')
   const [showNameModal, setShowNameModal] = useState(false)
   const [expandedRows, setExpandedRows] = useState(new Set())
@@ -5160,20 +5861,6 @@ export default function Home() {
     }
   }, [])
 
-  const fetchAgentRuns = useCallback(async () => {
-    if (!supabase) return
-    try {
-      const { data } = await supabase
-        .from('agent_runs')
-        .select('agent_name, started_at, completed_at, status, signals_found')
-        .order('started_at', { ascending: false })
-        .limit(40)
-      if (data) setAgentRuns(data)
-    } catch (err) {
-      console.error('Error fetching agent runs:', err)
-    }
-  }, [])
-
   const fetchSidebarCounts = useCallback(async () => {
     try {
       const res = await fetch('/api/sidebar-counts', { cache: 'no-store' })
@@ -5193,9 +5880,8 @@ export default function Home() {
       setShowNameModal(true)
     }
     fetchSignals()
-    fetchAgentRuns()
     fetchSidebarCounts()
-  }, [fetchSignals, fetchAgentRuns, fetchSidebarCounts])
+  }, [fetchSignals, fetchSidebarCounts])
 
   useEffect(() => {
     if (!supabase) return
@@ -5435,9 +6121,7 @@ export default function Home() {
             </div>
           ) : (
             <>
-              {activePage === 'dashboard'  && (
-                <DashboardPage signals={signals} agentRuns={agentRuns} />
-              )}
+              {activePage === 'dashboard'  && <CompanyDashboardPage />}
               {activePage === 'clinical_new' && <ClinicalTrialsNewPage />}
               {activePage === 'ma_funding_new' && <MAFundingNewPage />}
               {activePage === 'funding_new' && <FundingNewPage />}
