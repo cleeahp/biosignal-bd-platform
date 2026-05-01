@@ -1,6 +1,6 @@
 import { supabase } from '../../lib/supabase.js'
 
-const ALLOWED_TABLES = ['past_buyers', 'past_candidates', 'other_contacts']
+const ALLOWED_TABLES = ['past_buyers', 'past_candidates']
 
 function isValidTable(table) {
   return ALLOWED_TABLES.includes(table)
@@ -10,16 +10,10 @@ export default async function handler(req, res) {
   if (req.method === 'GET') {
     const { table } = req.query
     if (!table || !isValidTable(table)) {
-      return res.status(400).json({ error: 'Invalid or missing table parameter. Must be one of: past_buyers, past_candidates, other_contacts' })
+      return res.status(400).json({ error: 'Invalid or missing table parameter. Must be one of: past_buyers, past_candidates' })
     }
 
-    let query = supabase.from(table).select('*')
-
-    if (table === 'past_buyers' || table === 'past_candidates') {
-      query = query.order('person_name', { ascending: true })
-    } else {
-      query = query.order('last_name', { ascending: true })
-    }
+    const query = supabase.from(table).select('*').order('person_name', { ascending: true })
 
     const { data, error } = await query
     if (error) return res.status(500).json({ error: error.message })

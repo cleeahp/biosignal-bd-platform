@@ -1230,7 +1230,6 @@ const MAIN_NAV = [
   { key: 'news',           label: 'News',                   icon: 'file-text', countKey: 'news' },
   { key: 'buyers',         label: 'Past Buyers',            icon: 'users' },
   { key: 'candidates',     label: 'Past Candidates',        icon: 'user' },
-  { key: 'contacts',       label: 'Other Contacts',         icon: 'user' },
 ]
 
 function Sidebar({ activePage, setActivePage, tabCounts }) {
@@ -1314,7 +1313,6 @@ const PAGE_TITLES = {
   news:            'News',
   buyers:          'Past Buyers',
   candidates:      'Past Candidates',
-  contacts:        'Other Contacts',
   settings:        'Settings',
 }
 
@@ -1436,17 +1434,16 @@ function CompanyRankingTable({ companies, pastClients, onSelect }) {
           <thead>
             <tr>
               <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[30%]" />
-              <SortableTh colKey="clinical_trials_count" label="Clinical Trials" className="w-[12%]" />
-              <SortableTh colKey="ma_count" label="M&A" className="w-[12%]" />
-              <SortableTh colKey="funding_count" label="Funding" className="w-[12%]" />
-              <SortableTh colKey="news_count" label="News" className="w-[12%]" />
-              <SortableTh colKey="jobs_count" label="Jobs" className="w-[12%]" />
+              <SortableTh colKey="clinical_trials_count" label="Clinical Trials" className="w-[15%]" />
+              <SortableTh colKey="ma_count" label="M&A" className="w-[15%]" />
+              <SortableTh colKey="funding_count" label="Funding" className="w-[15%]" />
+              <SortableTh colKey="news_count" label="News" className="w-[15%]" />
               <SortableTh colKey="total_count" label="Total" className="w-[10%]" />
             </tr>
           </thead>
           <tbody className="divide-y divide-[#374151]">
             {filtered.length === 0 ? (
-              <tr><td colSpan={7} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">No companies with signals yet.</p></td></tr>
+              <tr><td colSpan={6} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">No companies with signals yet.</p></td></tr>
             ) : filtered.map((row, i) => {
               const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
               const isClient = isPastClient(row.company_name)
@@ -1464,7 +1461,6 @@ function CompanyRankingTable({ companies, pastClients, onSelect }) {
                   <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.ma_count}</td>
                   <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.funding_count}</td>
                   <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.news_count}</td>
-                  <td className="px-3 py-3 text-sm text-gray-300 text-right tabular-nums">{row.jobs_count}</td>
                   <td className="px-3 py-3 text-sm text-white text-right tabular-nums font-bold">{row.total_count}</td>
                 </tr>
               )
@@ -2028,6 +2024,144 @@ function JobsSection({ jobs, pastClients }) {
   )
 }
 
+function PastContactsSection({ rows, emailField, emptyLabel }) {
+  const [expandedIds, setExpandedIds] = useState(new Set())
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+
+  const toggleRow = useCallback(id => {
+    setExpandedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }, [])
+
+  const extractors = useMemo(() => ({
+    person_name: r => r.person_name || '',
+    current_title: r => r.current_title || '',
+    current_company: r => r.current_company || '',
+    original_title: r => r.original_title || '',
+    original_company: r => r.original_company || '',
+    current_location: r => r.current_location || '',
+  }), [])
+
+  const allValues = useMemo(() => ({
+    person_name: rows.map(r => r.person_name || ''),
+    current_title: rows.map(r => r.current_title || ''),
+    current_company: rows.map(r => r.current_company || ''),
+    original_title: rows.map(r => r.original_title || ''),
+    original_company: rows.map(r => r.original_company || ''),
+    current_location: rows.map(r => r.current_location || ''),
+  }), [rows])
+
+  const sorted = useMemo(() => {
+    const arr = [...rows]
+    arr.sort((a, b) => {
+      const aRank = pastBuyerCompanyChanged(a) ? 0 : pastBuyerRoleChanged(a) ? 1 : 2
+      const bRank = pastBuyerCompanyChanged(b) ? 0 : pastBuyerRoleChanged(b) ? 1 : 2
+      if (aRank !== bRank) return aRank - bRank
+      return (a.person_name || '').localeCompare(b.person_name || '')
+    })
+    return arr
+  }, [rows])
+
+  const filtered = useMemo(() => applyFilters(sorted, extractors), [sorted, applyFilters, extractors])
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <ColumnFilterDropdown colKey="person_name"      label="Full Name"        allValues={allValues.person_name}      activeValues={filters.person_name}      onApply={setFilter} className="w-[15%]" />
+              <ColumnFilterDropdown colKey="current_title"    label="Current Role"     allValues={allValues.current_title}    activeValues={filters.current_title}    onApply={setFilter} className="w-[17%]" />
+              <ColumnFilterDropdown colKey="current_company"  label="Current Company"  allValues={allValues.current_company}  activeValues={filters.current_company}  onApply={setFilter} className="w-[15%]" />
+              <ColumnFilterDropdown colKey="original_title"   label="Former Role"      allValues={allValues.original_title}   activeValues={filters.original_title}   onApply={setFilter} className="w-[17%]" />
+              <ColumnFilterDropdown colKey="original_company" label="Former Company"   allValues={allValues.original_company} activeValues={filters.original_company} onApply={setFilter} className="w-[13%]" />
+              <ColumnFilterDropdown colKey="current_location" label="Current Location" allValues={allValues.current_location} activeValues={filters.current_location} onApply={setFilter} className="w-[13%]" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {filtered.length === 0 ? (
+              <tr><td colSpan={6} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">{emptyLabel}</p></td></tr>
+            ) : filtered.map((row, i) => {
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              const isExpanded = expandedIds.has(row.id)
+              const companyChanged = pastBuyerCompanyChanged(row)
+              const roleChanged = pastBuyerRoleChanged(row)
+              const email = row[emailField]
+              return (
+                <Fragment key={row.id}>
+                  <tr
+                    onClick={() => toggleRow(row.id)}
+                    className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
+                  >
+                    <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word', overflowWrap: 'anywhere' }}>
+                      {row.person_name || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word', overflowWrap: 'anywhere' }}>
+                      <div className="flex flex-wrap items-start gap-1.5">
+                        <span>{row.current_title || '—'}</span>
+                        {roleChanged && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 whitespace-nowrap">
+                            Role Changed
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word', overflowWrap: 'anywhere' }}>
+                      <div className="flex flex-wrap items-start gap-1.5">
+                        <span>{row.current_company || '—'}</span>
+                        {companyChanged && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-orange-500/20 text-orange-300 border border-orange-500/30 whitespace-nowrap">
+                            Company Changed
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word', overflowWrap: 'anywhere' }}>
+                      {row.original_title || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word', overflowWrap: 'anywhere' }}>
+                      {row.original_company || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word', overflowWrap: 'anywhere' }}>
+                      {row.current_location || '—'}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr>
+                      <td colSpan={6} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Email</span>
+                            {email
+                              ? <a href={`mailto:${email}`} onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline break-all">{email}</a>
+                              : <span className="text-sm text-gray-500">—</span>}
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Phone</span>
+                            {row.phone
+                              ? <a href={`tel:${row.phone}`} onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline">{row.phone}</a>
+                              : <span className="text-sm text-gray-500">—</span>}
+                          </div>
+                          <div className="flex flex-col gap-1 sm:col-span-2">
+                            <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">LinkedIn</span>
+                            {row.linkedin_url
+                              ? <a href={row.linkedin_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline break-all">{row.linkedin_url}</a>
+                              : <span className="text-sm text-gray-500">—</span>}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function CompanyDetailView({ company, onBack }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -2098,7 +2232,19 @@ function CompanyDetailView({ company, onBack }) {
               <JobsSection jobs={data.jobs} pastClients={data.pastClients} />
             </div>
           )}
-          {data.clinicalTrials.length === 0 && data.filings.length === 0 && data.fundingProjects.length === 0 && data.newsArticles.length === 0 && data.jobs.length === 0 && (
+          {(data.pastBuyers || []).length > 0 && (
+            <div className="flex flex-col gap-2">
+              <h2 className="text-white text-base font-semibold">Past Buyers ({data.pastBuyers.length})</h2>
+              <PastContactsSection rows={data.pastBuyers} emailField="original_email" emptyLabel="No past buyers found." />
+            </div>
+          )}
+          {(data.pastCandidates || []).length > 0 && (
+            <div className="flex flex-col gap-2">
+              <h2 className="text-white text-base font-semibold">Past Candidates ({data.pastCandidates.length})</h2>
+              <PastContactsSection rows={data.pastCandidates} emailField="email" emptyLabel="No past candidates found." />
+            </div>
+          )}
+          {data.clinicalTrials.length === 0 && data.filings.length === 0 && data.fundingProjects.length === 0 && data.newsArticles.length === 0 && data.jobs.length === 0 && (data.pastBuyers || []).length === 0 && (data.pastCandidates || []).length === 0 && (
             <EmptyState message={`No signals found for ${company}.`} />
           )}
         </>
@@ -5536,46 +5682,6 @@ function PastCandidatesPage() {
 }
 
 
-function OtherContactsPage() {
-  const [rows, setRows] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  const loadContacts = () => {
-    setLoading(true)
-    fetch('/api/contacts?table=other_contacts')
-      .then(r => r.json())
-      .then(data => { setRows(Array.isArray(data) ? data : []); setLoading(false) })
-      .catch(() => setLoading(false))
-  }
-
-  useEffect(() => { loadContacts() }, [])
-
-  const handleMove = async (id, toTable) => {
-    const res = await fetch('/api/contacts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, from_table: 'other_contacts', to_table: toTable }),
-    })
-    if (res.ok) {
-      setRows(prev => prev.filter(r => r.id !== id))
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-6">
-      <p className="text-gray-400 text-sm">Uncategorized contacts. Use the action buttons to move them to Past Buyers or Past Candidates.</p>
-      <ContactsTable
-        rows={rows}
-        columns={['Name', 'Company', 'Title', 'Email', 'Phone']}
-        emptyMessage="No other contacts found."
-        loading={loading}
-        showActions
-        onAction={handleMove}
-      />
-    </div>
-  )
-}
-
 function SettingsPage() {
   const [rules, setRules] = useState([])
   const [rulesLoading, setRulesLoading] = useState(true)
@@ -6132,7 +6238,6 @@ export default function Home() {
               {activePage === 'jim_leads' && <JimLeadsPage />}
               {activePage === 'buyers'     && <PastBuyersPage />}
               {activePage === 'candidates' && <PastCandidatesPage />}
-              {activePage === 'contacts'   && <OtherContactsPage />}
               {activePage === 'settings'   && <SettingsPage />}
             </>
           )}

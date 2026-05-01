@@ -32,7 +32,7 @@ export default async function handler(req, res) {
       { table: 'endpoint_news', source: 'Endpoints News', select: 'title, article_url, article_date, matched_names, created_at' },
     ]
 
-    const [trials, eightKRaw, s1Raw, funding, jobs, fierce, biospace, endpoints, clientRows] = await Promise.all([
+    const [trials, eightKRaw, s1Raw, funding, jobs, fierce, biospace, endpoints, pastBuyers, pastCandidates, clientRows] = await Promise.all([
       fetchAll(supabase.from('clinical_trials').select('*').eq('matched_name', company)),
       fetchAll(supabase.from('eight_k_filings').select('*').eq('matched_name', company)),
       fetchAll(supabase.from('s1_filings').select('*').eq('matched_name', company)),
@@ -41,6 +41,8 @@ export default async function handler(req, res) {
       fetchAll(supabase.from(NEWS_SOURCES[0].table).select(NEWS_SOURCES[0].select).contains('matched_names', [company])),
       fetchAll(supabase.from(NEWS_SOURCES[1].table).select(NEWS_SOURCES[1].select).contains('matched_names', [company])),
       fetchAll(supabase.from(NEWS_SOURCES[2].table).select(NEWS_SOURCES[2].select).contains('matched_names', [company])),
+      fetchAll(supabase.from('past_buyers').select('*').ilike('original_company', company)),
+      fetchAll(supabase.from('past_candidates').select('*').ilike('original_company', company)),
       (async () => {
         const { data, error } = await supabase
           .from('past_clients')
@@ -90,6 +92,8 @@ export default async function handler(req, res) {
       fundingProjects: funding,
       newsArticles,
       jobs,
+      pastBuyers,
+      pastCandidates,
       pastClients,
     })
   } catch (err) {
