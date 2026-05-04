@@ -22,43 +22,36 @@ async function fetchAll(table, select, queryFn) {
   return rows
 }
 
-function bump(map, name, isNew) {
+function bumpScalar(map, name) {
   if (!name) return
-  const cur = map.get(name) || { count: 0, new: 0 }
-  cur.count += 1
-  if (isNew) cur.new += 1
-  map.set(name, cur)
+  map.set(name, (map.get(name) || 0) + 1)
 }
 
 async function buildDashboard() {
-  const now = new Date()
-  const startOfTodayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
-  const startOfYesterdayUtc = startOfTodayUtc - 86_400_000
-  const isYesterdayUtc = createdAt => {
-    if (!createdAt) return false
-    const t = new Date(createdAt).getTime()
-    if (Number.isNaN(t)) return false
-    return t >= startOfYesterdayUtc && t < startOfTodayUtc
-  }
+  const startOfTodayUtc = new Date()
+  startOfTodayUtc.setUTCHours(0, 0, 0, 0)
+  const todayIso = startOfTodayUtc.toISOString()
 
   const [
-    trials,
-    eightK,
-    s1,
-    funding,
-    fierce,
-    biospace,
-    endpoints,
+    aggResult,
+    trialsToday,
+    eightKToday,
+    s1Today,
+    fundingToday,
+    fierceToday,
+    biospaceToday,
+    endpointsToday,
     directory,
     clientRows,
   ] = await Promise.all([
-    fetchAll('clinical_trials', 'matched_name, created_at', q => q.not('matched_name', 'is', null)),
-    fetchAll('eight_k_filings', 'matched_name, items, created_at', q => q.not('matched_name', 'is', null)),
-    fetchAll('s1_filings', 'matched_name, created_at', q => q.not('matched_name', 'is', null)),
-    fetchAll('funding_projects', 'matched_name, created_at', q => q.not('matched_name', 'is', null)),
-    fetchAll('fiercebio_news', 'matched_names, created_at', q => q.not('matched_names', 'is', null)),
-    fetchAll('biospace_news', 'matched_names, created_at', q => q.not('matched_names', 'is', null)),
-    fetchAll('endpoint_news', 'matched_names, created_at', q => q.not('matched_names', 'is', null)),
+    supabase.rpc('get_company_signal_counts'),
+    fetchAll('clinical_trials', 'matched_name', q => q.not('matched_name', 'is', null).gte('created_at', todayIso)),
+    fetchAll('eight_k_filings', 'matched_name, items', q => q.not('matched_name', 'is', null).gte('created_at', todayIso)),
+    fetchAll('s1_filings', 'matched_name', q => q.not('matched_name', 'is', null).gte('created_at', todayIso)),
+    fetchAll('funding_projects', 'matched_name', q => q.not('matched_name', 'is', null).gte('created_at', todayIso)),
+    fetchAll('fiercebio_news', 'matched_names', q => q.not('matched_names', 'is', null).gte('created_at', todayIso)),
+    fetchAll('biospace_news', 'matched_names', q => q.not('matched_names', 'is', null).gte('created_at', todayIso)),
+    fetchAll('endpoint_news', 'matched_names', q => q.not('matched_names', 'is', null).gte('created_at', todayIso)),
     fetchAll('companies_directory', 'name, company_size'),
     (async () => {
       const { data, error } = await supabase
@@ -69,6 +62,9 @@ async function buildDashboard() {
       return data || []
     })(),
   ])
+
+  if (aggResult.error) throw new Error(`get_company_signal_counts: ${aggResult.error.message}`)
+  const aggRows = aggResult.data || []
 
   const pastClients = clientRows
     .filter(r => r.name)
@@ -90,62 +86,55 @@ async function buildDashboard() {
     directorySize.set(row.name.toLowerCase(), row.company_size || null)
   }
 
-  const trialCounts = new Map()
-  for (const r of trials) bump(trialCounts, r.matched_name, isYesterdayUtc(r.created_at))
+  // Build "new today" maps from the small same-day result sets
+  const trialNew = new Map()
+  for (const r of trialsToday) bumpScalar(trialNew, r.matched_name)
 
-  const maCounts = new Map()
-  for (const r of eightK) {
+  const maNew = new Map()
+  for (const r of eightKToday) {
     if (!Array.isArray(r.items) || !r.items.includes('1.01')) continue
-    bump(maCounts, r.matched_name, isYesterdayUtc(r.created_at))
+    bumpScalar(maNew, r.matched_name)
   }
-  for (const r of s1) bump(maCounts, r.matched_name, isYesterdayUtc(r.created_at))
+  for (const r of s1Today) bumpScalar(maNew, r.matched_name)
 
-  const fundingCounts = new Map()
-  for (const r of funding) bump(fundingCounts, r.matched_name, isYesterdayUtc(r.created_at))
+  const fundingNew = new Map()
+  for (const r of fundingToday) bumpScalar(fundingNew, r.matched_name)
 
-  const newsCounts = new Map()
-  for (const list of [fierce, biospace, endpoints]) {
+  const newsNew = new Map()
+  for (const list of [fierceToday, biospaceToday, endpointsToday]) {
     for (const r of list) {
       if (!Array.isArray(r.matched_names)) continue
-      const isNew = isYesterdayUtc(r.created_at)
-      for (const name of r.matched_names) bump(newsCounts, name, isNew)
+      for (const name of r.matched_names) bumpScalar(newsNew, name)
     }
   }
 
-  const allCompanies = new Set([
-    ...trialCounts.keys(),
-    ...maCounts.keys(),
-    ...fundingCounts.keys(),
-    ...newsCounts.keys(),
-  ])
-
-  const empty = { count: 0, new: 0 }
-
-  const companies = [...allCompanies]
-    .filter(name => {
+  const companies = aggRows
+    .filter(row => {
+      const name = row.company_name
+      if (!name) return false
       if (isPastClientName(name)) return true
       const size = directorySize.get(name.toLowerCase())
       return !LARGE_COMPANY_SIZES.has(size)
     })
-    .map(name => {
-      const clinical = trialCounts.get(name) || empty
-      const ma = maCounts.get(name) || empty
-      const fundingEntry = fundingCounts.get(name) || empty
-      const news = newsCounts.get(name) || empty
-      const total = clinical.count + ma.count + fundingEntry.count + news.count
-      const totalNew = clinical.new + ma.new + fundingEntry.new + news.new
+    .map(row => {
+      const name = row.company_name
+      const clinicalNew = trialNew.get(name) || 0
+      const ma_new = maNew.get(name) || 0
+      const funding_new = fundingNew.get(name) || 0
+      const news_new = newsNew.get(name) || 0
+      const total_new = clinicalNew + ma_new + funding_new + news_new
       return {
         company_name: name,
-        clinical_trials_count: clinical.count,
-        clinical_trials_new: clinical.new,
-        ma_count: ma.count,
-        ma_new: ma.new,
-        funding_count: fundingEntry.count,
-        funding_new: fundingEntry.new,
-        news_count: news.count,
-        news_new: news.new,
-        total_count: total,
-        total_new: totalNew,
+        clinical_trials_count: Number(row.clinical_trials_count) || 0,
+        clinical_trials_new: clinicalNew,
+        ma_count: Number(row.ma_count) || 0,
+        ma_new,
+        funding_count: Number(row.funding_count) || 0,
+        funding_new,
+        news_count: Number(row.news_count) || 0,
+        news_new,
+        total_count: Number(row.total_count) || 0,
+        total_new,
       }
     })
 

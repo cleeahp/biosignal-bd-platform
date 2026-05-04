@@ -1578,7 +1578,7 @@ function CompanyRankingTable({ companies, pastClients, summary, onSelect, onRefr
           <div className="text-2xl font-bold text-white tabular-nums">{stat.total_signals.toLocaleString()}</div>
         </div>
         <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
-          <div className="text-xs uppercase tracking-wider text-gray-500">New Signals (Yesterday)</div>
+          <div className="text-xs uppercase tracking-wider text-gray-500">New Signals (Today)</div>
           <div className="text-2xl font-bold text-green-400 tabular-nums">↑{stat.total_new_signals.toLocaleString()}</div>
         </div>
       </div>
@@ -1635,7 +1635,7 @@ function CompanyRankingTable({ companies, pastClients, summary, onSelect, onRefr
           </thead>
           <tbody className="divide-y divide-[#374151]">
             {filtered.length === 0 ? (
-              <tr><td colSpan={6} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">{signalView === 'new' ? 'No companies with new signals from yesterday.' : 'No companies with signals yet.'}</p></td></tr>
+              <tr><td colSpan={6} className="px-3 py-12 text-center"><p className="text-gray-500 text-sm italic">{signalView === 'new' ? 'No companies with new signals today.' : 'No companies with signals yet.'}</p></td></tr>
             ) : filtered.map((row, i) => {
               const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
               const isClient = isPastClient(row.company_name)
