@@ -41,8 +41,8 @@ export default async function handler(req, res) {
       fetchAll(supabase.from(NEWS_SOURCES[0].table).select(NEWS_SOURCES[0].select).contains('matched_names', [company])),
       fetchAll(supabase.from(NEWS_SOURCES[1].table).select(NEWS_SOURCES[1].select).contains('matched_names', [company])),
       fetchAll(supabase.from(NEWS_SOURCES[2].table).select(NEWS_SOURCES[2].select).contains('matched_names', [company])),
-      fetchAll(supabase.from('past_buyers').select('*').ilike('original_company', company)),
-      fetchAll(supabase.from('past_candidates').select('*').ilike('original_company', company)),
+      fetchAll(supabase.from('past_buyers').select('*').ilike('current_company', company)),
+      fetchAll(supabase.from('past_candidates').select('*').ilike('current_company', company)),
       (async () => {
         const { data, error } = await supabase
           .from('past_clients')
