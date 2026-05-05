@@ -2460,39 +2460,24 @@ function CompanyDetailView({ company, onBack }) {
   )
 }
 
-function CompanyDashboardPage() {
-  const [companies, setCompanies] = useState([])
-  const [pastClients, setPastClients] = useState([])
-  const [summary, setSummary] = useState(null)
-  const [loading, setLoading] = useState(true)
+function CompanyDashboardPage({ data, onRefresh }) {
   const [refreshing, setRefreshing] = useState(false)
   const [selectedCompany, setSelectedCompany] = useState(null)
 
-  const loadData = useCallback((forceRefresh = false) => {
-    if (forceRefresh) setRefreshing(true)
-    else setLoading(true)
-    const url = forceRefresh ? '/api/company-dashboard?refresh=true' : '/api/company-dashboard'
-    fetch(url)
-      .then(r => r.json())
-      .then(data => {
-        setCompanies(data.companies || [])
-        setPastClients(data.pastClients || [])
-        setSummary(data.summary || null)
-      })
-      .catch(() => {})
-      .finally(() => {
-        setLoading(false)
-        setRefreshing(false)
-      })
-  }, [])
-
-  useEffect(() => { loadData(false) }, [loadData])
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true)
+    try {
+      await onRefresh()
+    } finally {
+      setRefreshing(false)
+    }
+  }, [onRefresh])
 
   if (selectedCompany) {
     return <CompanyDetailView company={selectedCompany} onBack={() => setSelectedCompany(null)} />
   }
 
-  if (loading) {
+  if (!data) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -2502,11 +2487,11 @@ function CompanyDashboardPage() {
 
   return (
     <CompanyRankingTable
-      companies={companies}
-      pastClients={pastClients}
-      summary={summary}
+      companies={data.companies || []}
+      pastClients={data.pastClients || []}
+      summary={data.summary || null}
       onSelect={name => setSelectedCompany(name)}
-      onRefresh={() => loadData(true)}
+      onRefresh={handleRefresh}
       refreshing={refreshing}
     />
   )
@@ -6936,6 +6921,19 @@ export default function Home() {
   const [toast, setToast]               = useState(null)
   const [dismissTarget, setDismissTarget] = useState(null) // { signal, tabKey }
   const [sidebarCounts, setSidebarCounts] = useState({})
+  const [dashboardData, setDashboardData] = useState(null)
+
+  const fetchDashboardData = useCallback(async (forceRefresh = false) => {
+    try {
+      const url = forceRefresh ? '/api/company-dashboard?refresh=true' : '/api/company-dashboard'
+      const res = await fetch(url, { cache: 'no-store' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      setDashboardData(data)
+    } catch (err) {
+      console.error('Error fetching company dashboard:', err)
+    }
+  }, [])
 
   const fetchSignals = useCallback(async () => {
     try {
@@ -6970,7 +6968,8 @@ export default function Home() {
     }
     fetchSignals()
     fetchSidebarCounts()
-  }, [fetchSignals, fetchSidebarCounts])
+    fetchDashboardData()
+  }, [fetchSignals, fetchSidebarCounts, fetchDashboardData])
 
   useEffect(() => {
     if (!supabase) return
@@ -7211,7 +7210,12 @@ export default function Home() {
             </div>
           ) : (
             <>
-              {activePage === 'dashboard'  && <CompanyDashboardPage />}
+              {activePage === 'dashboard'  && (
+                <CompanyDashboardPage
+                  data={dashboardData}
+                  onRefresh={() => fetchDashboardData(true)}
+                />
+              )}
               {activePage === 'clinical_new' && <ClinicalTrialsNewPage />}
               {activePage === 'ma_funding_new' && <MAFundingNewPage />}
               {activePage === 'funding_new' && <FundingNewPage />}

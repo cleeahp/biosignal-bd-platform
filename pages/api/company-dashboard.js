@@ -14,6 +14,7 @@ async function fetchAll(table, select, queryFn) {
     if (error) throw new Error(`${table}: ${error.message}`)
     if (!data || data.length === 0) break
     rows.push(...data)
+    if (data.length < PAGE) break
     offset += PAGE
   }
   return rows
@@ -35,18 +36,19 @@ async function fetchSummaryView() {
     if (error) throw new Error(`company_signal_summary: ${error.message}`)
     if (!data || data.length === 0) break
     rows.push(...data)
+    if (data.length < PAGE) break
     offset += PAGE
   }
   return rows
 }
 
-async function buildDashboard() {
-  const startOfTodayUtc = new Date()
-  startOfTodayUtc.setUTCHours(0, 0, 0, 0)
-  const todayIso = startOfTodayUtc.toISOString()
+// Fetches today's matched rows for each signal source. All queries run in parallel
+// via Promise.all, and each is filtered by created_at so we never re-scan full tables.
+async function fetchNewTodayBuckets(todayIso) {
+  const sinceToday = q => q.not('matched_name', 'is', null).gte('created_at', todayIso)
+  const sinceTodayArr = q => q.not('matched_names', 'is', null).gte('created_at', todayIso)
 
   const [
-    aggRows,
     trialsToday,
     eightKToday,
     s1Today,
@@ -54,47 +56,15 @@ async function buildDashboard() {
     fierceToday,
     biospaceToday,
     endpointsToday,
-    directory,
-    clientRows,
   ] = await Promise.all([
-    fetchSummaryView(),
-    fetchAll('clinical_trials', 'matched_name', q => q.not('matched_name', 'is', null).gte('created_at', todayIso)),
-    fetchAll('eight_k_filings', 'matched_name, items', q => q.not('matched_name', 'is', null).gte('created_at', todayIso)),
-    fetchAll('s1_filings', 'matched_name', q => q.not('matched_name', 'is', null).gte('created_at', todayIso)),
-    fetchAll('funding_projects', 'matched_name', q => q.not('matched_name', 'is', null).gte('created_at', todayIso)),
-    fetchAll('fiercebio_news', 'matched_names', q => q.not('matched_names', 'is', null).gte('created_at', todayIso)),
-    fetchAll('biospace_news', 'matched_names', q => q.not('matched_names', 'is', null).gte('created_at', todayIso)),
-    fetchAll('endpoint_news', 'matched_names', q => q.not('matched_names', 'is', null).gte('created_at', todayIso)),
-    fetchAll('companies_directory', 'name, company_size'),
-    (async () => {
-      const { data, error } = await supabase
-        .from('past_clients')
-        .select('name, matched_name')
-        .eq('is_active', true)
-      if (error) throw new Error(`past_clients: ${error.message}`)
-      return data || []
-    })(),
+    fetchAll('clinical_trials', 'matched_name', sinceToday),
+    fetchAll('eight_k_filings', 'matched_name, items', sinceToday),
+    fetchAll('s1_filings', 'matched_name', sinceToday),
+    fetchAll('funding_projects', 'matched_name', sinceToday),
+    fetchAll('fiercebio_news', 'matched_names', sinceTodayArr),
+    fetchAll('biospace_news', 'matched_names', sinceTodayArr),
+    fetchAll('endpoint_news', 'matched_names', sinceTodayArr),
   ])
-
-  const pastClients = clientRows
-    .filter(r => r.name)
-    .map(r => ({ name: r.name, matched_name: r.matched_name }))
-
-  const pastClientLowerSet = new Set()
-  for (const c of pastClients) {
-    if (c.name) pastClientLowerSet.add(c.name.toLowerCase())
-    if (c.matched_name) pastClientLowerSet.add(c.matched_name.toLowerCase())
-  }
-  const isPastClientName = name => {
-    if (!name) return false
-    return pastClientLowerSet.has(String(name).toLowerCase())
-  }
-
-  const directorySize = new Map()
-  for (const row of directory) {
-    if (!row.name) continue
-    directorySize.set(row.name.toLowerCase(), row.company_size || null)
-  }
 
   const trialNew = new Map()
   for (const r of trialsToday) bumpScalar(trialNew, r.matched_name)
@@ -115,6 +85,50 @@ async function buildDashboard() {
       if (!Array.isArray(r.matched_names)) continue
       for (const name of r.matched_names) bumpScalar(newsNew, name)
     }
+  }
+
+  return { trialNew, maNew, fundingNew, newsNew }
+}
+
+async function buildDashboard() {
+  const startOfTodayUtc = new Date()
+  startOfTodayUtc.setUTCHours(0, 0, 0, 0)
+  const todayIso = startOfTodayUtc.toISOString()
+
+  const [aggRows, newToday, directory, clientRows] = await Promise.all([
+    fetchSummaryView(),
+    fetchNewTodayBuckets(todayIso),
+    fetchAll('companies_directory', 'name, company_size'),
+    (async () => {
+      const { data, error } = await supabase
+        .from('past_clients')
+        .select('name, matched_name')
+        .eq('is_active', true)
+      if (error) throw new Error(`past_clients: ${error.message}`)
+      return data || []
+    })(),
+  ])
+
+  const { trialNew, maNew, fundingNew, newsNew } = newToday
+
+  const pastClients = clientRows
+    .filter(r => r.name)
+    .map(r => ({ name: r.name, matched_name: r.matched_name }))
+
+  const pastClientLowerSet = new Set()
+  for (const c of pastClients) {
+    if (c.name) pastClientLowerSet.add(c.name.toLowerCase())
+    if (c.matched_name) pastClientLowerSet.add(c.matched_name.toLowerCase())
+  }
+  const isPastClientName = name => {
+    if (!name) return false
+    return pastClientLowerSet.has(String(name).toLowerCase())
+  }
+
+  const directorySize = new Map()
+  for (const row of directory) {
+    if (!row.name) continue
+    directorySize.set(row.name.toLowerCase(), row.company_size || null)
   }
 
   const companies = aggRows
