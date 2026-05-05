@@ -343,6 +343,14 @@ async function main() {
   if (insertResult.errors > 0) {
     console.warn(`[EndpointsScan] ${insertResult.errors} insert errors`)
   }
+
+  console.log(`[EndpointsScan] Refreshing company signal summary...`)
+  const { error: refreshError } = await supabase.rpc('refresh_company_signal_summary')
+  if (refreshError) {
+    console.error(`[EndpointsScan] Failed to refresh company signal summary: ${refreshError.message}`)
+  } else {
+    console.log(`[EndpointsScan] Company signal summary refreshed.`)
+  }
 }
 
 main().catch((err) => {

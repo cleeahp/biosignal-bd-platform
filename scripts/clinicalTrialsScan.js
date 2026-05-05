@@ -768,6 +768,14 @@ async function main() {
   console.log(`[ClinicalTrialsScan] Updated:        ${updated}`)
   console.log(`[ClinicalTrialsScan] Errors:         ${errors}`)
 
+  console.log(`\n[ClinicalTrialsScan] Refreshing company signal summary...`)
+  const { error: refreshError } = await supabase.rpc('refresh_company_signal_summary')
+  if (refreshError) {
+    console.error(`[ClinicalTrialsScan] Failed to refresh company signal summary: ${refreshError.message}`)
+  } else {
+    console.log(`[ClinicalTrialsScan] Company signal summary refreshed.`)
+  }
+
   console.log(`\n[ClinicalTrialsScan] === ALL DONE ===`)
 }
 

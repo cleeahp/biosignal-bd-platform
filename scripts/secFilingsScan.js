@@ -885,6 +885,14 @@ async function main() {
     console.log(`[SECFilingsScan] Alternate names: ${altResult.inserted} inserted, ${altResult.errors} errors`)
   }
 
+  console.log(`\n[SECFilingsScan] Refreshing company signal summary...`)
+  const { error: refreshError } = await supabase.rpc('refresh_company_signal_summary')
+  if (refreshError) {
+    console.error(`[SECFilingsScan] Failed to refresh company signal summary: ${refreshError.message}`)
+  } else {
+    console.log(`[SECFilingsScan] Company signal summary refreshed.`)
+  }
+
   console.log(`\n[SECFilingsScan] === ALL DONE ===`)
   console.log(`[SECFilingsScan] 8-K: ${results8K.totalFetched} fetched, ${results8K.matched} matched, ${results8K.filteredOut} filtered, ${insert8K.inserted} inserted`)
   console.log(`[SECFilingsScan] S-1: ${resultsS1.totalFetched} fetched, ${resultsS1.matched} matched, ${resultsS1.filteredOut} filtered, ${insertS1.inserted} inserted`)

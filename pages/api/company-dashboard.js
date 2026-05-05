@@ -2,9 +2,6 @@ import { supabase } from '../../lib/supabase.js'
 
 const PAGE = 1000
 const LARGE_COMPANY_SIZES = new Set(['10,001+', '10,001+ employees'])
-const CACHE_TTL_MS = 300_000 // 5 minutes
-
-let cache = { data: null, timestamp: 0 }
 
 async function fetchAll(table, select, queryFn) {
   const rows = []
@@ -27,13 +24,29 @@ function bumpScalar(map, name) {
   map.set(name, (map.get(name) || 0) + 1)
 }
 
+async function fetchSummaryView() {
+  const rows = []
+  let offset = 0
+  while (true) {
+    const { data, error } = await supabase
+      .from('company_signal_summary')
+      .select('*')
+      .range(offset, offset + PAGE - 1)
+    if (error) throw new Error(`company_signal_summary: ${error.message}`)
+    if (!data || data.length === 0) break
+    rows.push(...data)
+    offset += PAGE
+  }
+  return rows
+}
+
 async function buildDashboard() {
   const startOfTodayUtc = new Date()
   startOfTodayUtc.setUTCHours(0, 0, 0, 0)
   const todayIso = startOfTodayUtc.toISOString()
 
   const [
-    aggResult,
+    aggRows,
     trialsToday,
     eightKToday,
     s1Today,
@@ -44,7 +57,7 @@ async function buildDashboard() {
     directory,
     clientRows,
   ] = await Promise.all([
-    supabase.rpc('get_company_signal_counts'),
+    fetchSummaryView(),
     fetchAll('clinical_trials', 'matched_name', q => q.not('matched_name', 'is', null).gte('created_at', todayIso)),
     fetchAll('eight_k_filings', 'matched_name, items', q => q.not('matched_name', 'is', null).gte('created_at', todayIso)),
     fetchAll('s1_filings', 'matched_name', q => q.not('matched_name', 'is', null).gte('created_at', todayIso)),
@@ -62,9 +75,6 @@ async function buildDashboard() {
       return data || []
     })(),
   ])
-
-  if (aggResult.error) throw new Error(`get_company_signal_counts: ${aggResult.error.message}`)
-  const aggRows = aggResult.data || []
 
   const pastClients = clientRows
     .filter(r => r.name)
@@ -86,7 +96,6 @@ async function buildDashboard() {
     directorySize.set(row.name.toLowerCase(), row.company_size || null)
   }
 
-  // Build "new today" maps from the small same-day result sets
   const trialNew = new Map()
   for (const r of trialsToday) bumpScalar(trialNew, r.matched_name)
 
@@ -156,14 +165,13 @@ export default async function handler(req, res) {
 
   const refresh = req.query.refresh === 'true' || req.query.refresh === '1'
 
-  if (!refresh && cache.data && Date.now() - cache.timestamp < CACHE_TTL_MS) {
-    return res.status(200).json({ ...cache.data, cached: true, cached_at: cache.timestamp })
-  }
-
   try {
+    if (refresh) {
+      const { error: refreshError } = await supabase.rpc('refresh_company_signal_summary')
+      if (refreshError) throw new Error(`refresh_company_signal_summary: ${refreshError.message}`)
+    }
     const result = await buildDashboard()
-    cache = { data: result, timestamp: Date.now() }
-    return res.status(200).json({ ...result, cached: false, cached_at: cache.timestamp })
+    return res.status(200).json(result)
   } catch (err) {
     return res.status(500).json({ error: err.message })
   }

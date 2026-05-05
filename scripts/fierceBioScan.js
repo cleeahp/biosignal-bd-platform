@@ -318,6 +318,14 @@ async function main() {
   if (insertResult.errors > 0) {
     console.warn(`[FierceBioScan] ${insertResult.errors} insert errors`)
   }
+
+  console.log(`[FierceBioScan] Refreshing company signal summary...`)
+  const { error: refreshError } = await supabase.rpc('refresh_company_signal_summary')
+  if (refreshError) {
+    console.error(`[FierceBioScan] Failed to refresh company signal summary: ${refreshError.message}`)
+  } else {
+    console.log(`[FierceBioScan] Company signal summary refreshed.`)
+  }
 }
 
 main().catch((err) => {

@@ -466,6 +466,14 @@ async function main() {
     console.log(`[NIHFundingScan] Alternate names: ${altResult.inserted} inserted, ${altResult.errors} errors`)
   }
 
+  console.log(`\n[NIHFundingScan] Refreshing company signal summary...`)
+  const { error: refreshError } = await supabase.rpc('refresh_company_signal_summary')
+  if (refreshError) {
+    console.error(`[NIHFundingScan] Failed to refresh company signal summary: ${refreshError.message}`)
+  } else {
+    console.log(`[NIHFundingScan] Company signal summary refreshed.`)
+  }
+
   console.log(`\n[NIHFundingScan] Scan complete: ${totalFetched} fetched, ${totalMatched} matched, ${totalUnmatched} unmatched, ${insertResult.inserted} inserted, ${totalSkipped} already existed`)
 }
 

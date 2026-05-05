@@ -336,6 +336,14 @@ async function main() {
   if (insertResult.errors > 0) {
     console.warn(`[BioSpaceScan] ${insertResult.errors} insert errors`)
   }
+
+  console.log(`[BioSpaceScan] Refreshing company signal summary...`)
+  const { error: refreshError } = await supabase.rpc('refresh_company_signal_summary')
+  if (refreshError) {
+    console.error(`[BioSpaceScan] Failed to refresh company signal summary: ${refreshError.message}`)
+  } else {
+    console.log(`[BioSpaceScan] Company signal summary refreshed.`)
+  }
 }
 
 main().catch((err) => {
