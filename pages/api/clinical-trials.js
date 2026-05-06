@@ -13,7 +13,7 @@ export default async function handler(req, res) {
   while (true) {
     const { data, error } = await supabase
       .from('clinical_trials')
-      .select('*')
+      .select('id, nct_id, brief_title, phase, matched_name, company_size, lead_sponsor_name, is_fda_regulated_drug, is_fda_regulated_device, study_start_date, source_url, central_contacts, created_at')
       .range(offset, offset + PAGE - 1)
 
     if (error) return res.status(500).json({ error: error.message })

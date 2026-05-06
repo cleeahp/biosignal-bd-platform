@@ -73,7 +73,7 @@ export default async function handler(req, res) {
   while (true) {
     const { data, error } = await supabase
       .from('clinical_trials')
-      .select('*')
+      .select('id, nct_id, brief_title, phase, matched_name, company_size, lead_sponsor_name, is_fda_regulated_drug, is_fda_regulated_device, study_start_date, source_url, central_contacts, created_at')
       .in('matched_name', trackedCompanies)
       .range(offset, offset + PAGE - 1)
 
@@ -99,7 +99,7 @@ export default async function handler(req, res) {
   while (true) {
     const { data, error } = await supabase
       .from('eight_k_filings')
-      .select('*')
+      .select('id, company_name, matched_name, company_size, filing_date, filing_url, items, accession_number, agreement_type, agreement_summary, created_at')
       .in('matched_name', trackedCompanies)
       .range(offset, offset + PAGE - 1)
 
@@ -131,7 +131,7 @@ export default async function handler(req, res) {
   while (true) {
     const { data, error } = await supabase
       .from('s1_filings')
-      .select('*')
+      .select('id, company_name, matched_name, company_size, filing_date, filing_url, accession_number, created_at')
       .in('matched_name', trackedCompanies)
       .range(offset, offset + PAGE - 1)
 
@@ -162,7 +162,7 @@ export default async function handler(req, res) {
   while (true) {
     const { data, error } = await supabase
       .from('funding_projects')
-      .select('*')
+      .select('id, appl_id, org_name, matched_name, company_size, project_title, award_amount, award_notice_date, project_url, public_health_relevance, created_at')
       .in('matched_name', trackedCompanies)
       .range(offset, offset + PAGE - 1)
 
@@ -221,7 +221,7 @@ export default async function handler(req, res) {
   while (true) {
     const { data, error } = await supabase
       .from('clay_jobs')
-      .select('*')
+      .select('id, job_title, company_name, location, company_domain, job_url, date_posted, matched_name, company_size, created_at')
       .in('matched_name', trackedCompanies)
       .range(offset, offset + PAGE - 1)
 

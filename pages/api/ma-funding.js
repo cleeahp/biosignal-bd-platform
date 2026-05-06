@@ -27,7 +27,7 @@ export default async function handler(req, res) {
   while (true) {
     const { data, error } = await supabase
       .from('eight_k_filings')
-      .select('*')
+      .select('id, company_name, matched_name, company_size, filing_date, filing_url, items, accession_number, agreement_type, agreement_summary, created_at')
       .range(offset, offset + PAGE - 1)
 
     if (error) return res.status(500).json({ error: error.message })
@@ -59,7 +59,7 @@ export default async function handler(req, res) {
   while (true) {
     const { data, error } = await supabase
       .from('s1_filings')
-      .select('*')
+      .select('id, company_name, matched_name, company_size, filing_date, filing_url, accession_number, created_at')
       .range(offset, offset + PAGE - 1)
 
     if (error) return res.status(500).json({ error: error.message })

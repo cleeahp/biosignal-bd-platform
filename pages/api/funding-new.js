@@ -27,7 +27,7 @@ export default async function handler(req, res) {
   while (true) {
     const { data, error } = await supabase
       .from('funding_projects')
-      .select('*')
+      .select('id, appl_id, org_name, matched_name, company_size, project_title, award_amount, award_notice_date, project_url, public_health_relevance, created_at')
       .range(offset, offset + PAGE - 1)
 
     if (error) return res.status(500).json({ error: error.message })

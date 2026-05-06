@@ -23,7 +23,7 @@ export default async function handler(req, res) {
   while (true) {
     const { data, error } = await supabase
       .from('clay_jobs')
-      .select('*')
+      .select('id, job_title, company_name, location, company_domain, job_url, date_posted, matched_name, company_size, created_at')
       .range(offset, offset + PAGE - 1)
     if (error) return res.status(500).json({ error: error.message })
     if (!data || data.length === 0) break

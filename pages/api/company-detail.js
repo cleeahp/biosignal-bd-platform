@@ -33,16 +33,16 @@ export default async function handler(req, res) {
     ]
 
     const [trials, eightKRaw, s1Raw, funding, jobs, fierce, biospace, endpoints, pastBuyers, pastCandidates, clientRows] = await Promise.all([
-      fetchAll(supabase.from('clinical_trials').select('*').eq('matched_name', company)),
-      fetchAll(supabase.from('eight_k_filings').select('*').eq('matched_name', company)),
-      fetchAll(supabase.from('s1_filings').select('*').eq('matched_name', company)),
-      fetchAll(supabase.from('funding_projects').select('*').eq('matched_name', company)),
-      fetchAll(supabase.from('clay_jobs').select('*').eq('matched_name', company)),
+      fetchAll(supabase.from('clinical_trials').select('id, nct_id, brief_title, phase, matched_name, company_size, lead_sponsor_name, is_fda_regulated_drug, is_fda_regulated_device, study_start_date, source_url, central_contacts, created_at').eq('matched_name', company)),
+      fetchAll(supabase.from('eight_k_filings').select('id, company_name, matched_name, company_size, filing_date, filing_url, items, accession_number, agreement_type, agreement_summary, created_at').eq('matched_name', company)),
+      fetchAll(supabase.from('s1_filings').select('id, company_name, matched_name, company_size, filing_date, filing_url, accession_number, created_at').eq('matched_name', company)),
+      fetchAll(supabase.from('funding_projects').select('id, appl_id, org_name, matched_name, company_size, project_title, award_amount, award_notice_date, project_url, public_health_relevance, created_at').eq('matched_name', company)),
+      fetchAll(supabase.from('clay_jobs').select('id, job_title, company_name, location, company_domain, job_url, date_posted, matched_name, company_size, created_at').eq('matched_name', company)),
       fetchAll(supabase.from(NEWS_SOURCES[0].table).select(NEWS_SOURCES[0].select).contains('matched_names', [company])),
       fetchAll(supabase.from(NEWS_SOURCES[1].table).select(NEWS_SOURCES[1].select).contains('matched_names', [company])),
       fetchAll(supabase.from(NEWS_SOURCES[2].table).select(NEWS_SOURCES[2].select).contains('matched_names', [company])),
-      fetchAll(supabase.from('past_buyers').select('*').ilike('current_company', company)),
-      fetchAll(supabase.from('past_candidates').select('*').ilike('current_company', company)),
+      fetchAll(supabase.from('past_buyers').select('id, person_name, current_title, current_company, original_title, original_company, current_location, original_email, phone, linkedin_url').ilike('current_company', company)),
+      fetchAll(supabase.from('past_candidates').select('id, person_name, current_title, current_company, original_title, original_company, current_location, email, phone, linkedin_url').ilike('current_company', company)),
       (async () => {
         const { data, error } = await supabase
           .from('past_clients')
