@@ -90,10 +90,22 @@ async function fetchNewTodayBuckets(todayIso) {
   return { trialNew, maNew, fundingNew, newsNew }
 }
 
+// Returns ISO timestamp for midnight EST (UTC-5) of "today" in EST.
+// Midnight EST = 5:00 AM UTC. If current UTC time is before 5 AM, it's still
+// yesterday in EST, so subtract one day so the cutoff sits at the most recent
+// midnight-EST that has already passed.
+function midnightEstIso() {
+  const now = new Date()
+  const cutoff = new Date(now)
+  cutoff.setUTCHours(5, 0, 0, 0)
+  if (now.getUTCHours() < 5) {
+    cutoff.setUTCDate(cutoff.getUTCDate() - 1)
+  }
+  return cutoff.toISOString()
+}
+
 async function buildDashboard() {
-  const startOfTodayUtc = new Date()
-  startOfTodayUtc.setUTCHours(0, 0, 0, 0)
-  const todayIso = startOfTodayUtc.toISOString()
+  const todayIso = midnightEstIso()
 
   const [aggRows, newToday, directory, clientRows] = await Promise.all([
     fetchSummaryView(),

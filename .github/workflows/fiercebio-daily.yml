@@ -2,7 +2,7 @@ name: Daily FierceBiotech Scan
 
 on:
   schedule:
-    - cron: '0 15 * * *'   # 10:00 AM EST (3:00 PM UTC) every day
+    - cron: '0 9 * * *'   # 4:00 AM EST (9:00 AM UTC) every day
   workflow_dispatch:        # Manual trigger
 
 jobs:

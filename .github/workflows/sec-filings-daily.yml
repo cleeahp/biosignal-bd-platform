@@ -2,7 +2,7 @@ name: Daily SEC Filings Scan
 
 on:
   schedule:
-    - cron: '0 9 * * *'   # 4:00 AM EST (9:00 AM UTC) every day
+    - cron: '0 7 * * *'   # 2:00 AM EST (7:00 AM UTC) every day
   workflow_dispatch:        # Manual trigger
 
 jobs:

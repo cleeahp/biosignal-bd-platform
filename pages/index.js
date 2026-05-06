@@ -1318,7 +1318,7 @@ const PAGE_TITLES = {
   settings:        'Settings',
 }
 
-function TopBar({ activePage, repName, onShowNameModal }) {
+function TopBar({ activePage, repName, onShowNameModal, onRefresh, refreshing }) {
   return (
     <div className="bg-[#1f2937] border-b border-[#374151] px-6 py-3 flex items-center justify-between gap-4 sticky top-0 z-30">
       {/* Page title */}
@@ -1328,6 +1328,17 @@ function TopBar({ activePage, repName, onShowNameModal }) {
 
       {/* Right actions */}
       <div className="flex items-center gap-2 shrink-0">
+        {onRefresh && (
+          <button
+            onClick={onRefresh}
+            disabled={refreshing}
+            title="Refresh all data"
+            aria-label="Refresh all data"
+            className="w-8 h-8 inline-flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:cursor-wait transition-colors text-gray-300 hover:text-white"
+          >
+            <span className={`text-base leading-none ${refreshing ? 'animate-spin inline-block' : ''}`}>↻</span>
+          </button>
+        )}
         {/* Rep identity — opens name modal */}
         {repName ? (
           <button
@@ -1500,7 +1511,7 @@ function NewCountBadge({ value }) {
   return <span className="ml-1.5 text-green-400 text-xs font-semibold tabular-nums">↑{value}</span>
 }
 
-function CompanyRankingTable({ companies, pastClients, summary, onSelect, onRefresh, refreshing }) {
+function CompanyRankingTable({ companies, pastClients, summary, onSelect }) {
   const [sortKey, setSortKey] = useState('total_count')
   const [sortDir, setSortDir] = useState('desc')
   const [signalView, setSignalView] = useState('all') // 'all' | 'new'
@@ -1582,18 +1593,6 @@ function CompanyRankingTable({ companies, pastClients, summary, onSelect, onRefr
           <div className="text-2xl font-bold text-green-400 tabular-nums">↑{stat.total_new_signals.toLocaleString()}</div>
         </div>
       </div>
-
-      {onRefresh && (
-        <div className="flex justify-end">
-          <button
-            onClick={onRefresh}
-            disabled={refreshing}
-            className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50 disabled:cursor-wait font-medium"
-          >
-            {refreshing ? 'Refreshing…' : '↻ Refresh'}
-          </button>
-        </div>
-      )}
 
       <div className="flex items-center gap-2">
         <div className="inline-flex rounded-md border border-[#374151] overflow-hidden">
@@ -2460,18 +2459,8 @@ function CompanyDetailView({ company, onBack }) {
   )
 }
 
-function CompanyDashboardPage({ data, onRefresh }) {
-  const [refreshing, setRefreshing] = useState(false)
+function CompanyDashboardPage({ data }) {
   const [selectedCompany, setSelectedCompany] = useState(null)
-
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true)
-    try {
-      await onRefresh()
-    } finally {
-      setRefreshing(false)
-    }
-  }, [onRefresh])
 
   if (selectedCompany) {
     return <CompanyDetailView company={selectedCompany} onBack={() => setSelectedCompany(null)} />
@@ -2491,8 +2480,6 @@ function CompanyDashboardPage({ data, onRefresh }) {
       pastClients={data.pastClients || []}
       summary={data.summary || null}
       onSelect={name => setSelectedCompany(name)}
-      onRefresh={handleRefresh}
-      refreshing={refreshing}
     />
   )
 }
@@ -2811,24 +2798,12 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot, table,
 
 // ─── Clinical Trials NEW Page ────────────────────────────────────────────────
 
-function ClinicalTrialsNewPage() {
-  const [trials, setTrials] = useState([])
-  const [pastClients, setPastClients] = useState([])
-  const [loading, setLoading] = useState(true)
+function ClinicalTrialsNewPage({ data }) {
+  const trials = data?.trials || []
+  const pastClients = data?.pastClients || []
   const [expandedRows, setExpandedRows] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
   const dateCol = useDateColumn()
-
-  useEffect(() => {
-    fetch('/api/clinical-trials')
-      .then(r => r.json())
-      .then(data => {
-        setTrials(data.trials || [])
-        setPastClients(data.pastClients || [])
-        setLoading(false)
-      })
-      .catch(() => setLoading(false))
-  }, [])
 
   const pastClientMatchedNames = useMemo(() => new Set(pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
   const pastClientNames = useMemo(() => new Set(pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
@@ -2899,7 +2874,7 @@ function ClinicalTrialsNewPage() {
     filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
   ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
-  if (loading) {
+  if (!data) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -3016,24 +2991,12 @@ function ClinicalTrialsNewPage() {
 
 // ─── M&A and Funding NEW Page ────────────────────────────────────────────────
 
-function MAFundingNewPage() {
-  const [filings, setFilings] = useState([])
-  const [pastClients, setPastClients] = useState([])
-  const [loading, setLoading] = useState(true)
+function MAFundingNewPage({ data }) {
+  const filings = data?.filings || []
+  const pastClients = data?.pastClients || []
   const [expandedRows, setExpandedRows] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
   const dateCol = useDateColumn()
-
-  useEffect(() => {
-    fetch('/api/ma-funding')
-      .then(r => r.json())
-      .then(data => {
-        setFilings(data.filings || [])
-        setPastClients(data.pastClients || [])
-        setLoading(false)
-      })
-      .catch(() => setLoading(false))
-  }, [])
 
   const pastClientMatchedNames = useMemo(() => new Set(pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
   const pastClientNames = useMemo(() => new Set(pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
@@ -3089,7 +3052,7 @@ function MAFundingNewPage() {
     filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
   ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
-  if (loading) {
+  if (!data) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -3184,24 +3147,12 @@ function formatAward(amount) {
   return `$${Math.round(n).toLocaleString('en-US')}`
 }
 
-function FundingNewPage() {
-  const [projects, setProjects] = useState([])
-  const [pastClients, setPastClients] = useState([])
-  const [loading, setLoading] = useState(true)
+function FundingNewPage({ data }) {
+  const projects = data?.projects || []
+  const pastClients = data?.pastClients || []
   const [expandedRows, setExpandedRows] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
   const dateCol = useDateColumn()
-
-  useEffect(() => {
-    fetch('/api/funding-new')
-      .then(r => r.json())
-      .then(data => {
-        setProjects(data.projects || [])
-        setPastClients(data.pastClients || [])
-        setLoading(false)
-      })
-      .catch(() => setLoading(false))
-  }, [])
 
   const pastClientMatchedNames = useMemo(() => new Set(pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
   const pastClientNames = useMemo(() => new Set(pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
@@ -3257,7 +3208,7 @@ function FundingNewPage() {
     filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
   ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
-  if (loading) {
+  if (!data) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -3370,23 +3321,11 @@ function formatClayDate(raw) {
   return s
 }
 
-function JobsNewPage() {
-  const [jobs, setJobs] = useState([])
-  const [pastClients, setPastClients] = useState([])
-  const [loading, setLoading] = useState(true)
+function JobsNewPage({ data }) {
+  const jobs = data?.jobs || []
+  const pastClients = data?.pastClients || []
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
   const dateCol = useDateColumn()
-
-  useEffect(() => {
-    fetch('/api/jobs-new')
-      .then(r => r.json())
-      .then(data => {
-        setJobs(data.jobs || [])
-        setPastClients(data.pastClients || [])
-        setLoading(false)
-      })
-      .catch(() => setLoading(false))
-  }, [])
 
   const pastClientMatchedNames = useMemo(() => new Set(pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
   const pastClientNames = useMemo(() => new Set(pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
@@ -3434,7 +3373,7 @@ function JobsNewPage() {
     filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
   ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
-  if (loading) {
+  if (!data) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -3504,21 +3443,10 @@ function JobsNewPage() {
 
 // ─── Competitor Jobs - NEW Page ──────────────────────────────────────────────
 
-function CompetitorJobsNewPage() {
-  const [jobs, setJobs] = useState([])
-  const [loading, setLoading] = useState(true)
+function CompetitorJobsNewPage({ data }) {
+  const jobs = data?.jobs || []
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
   const dateCol = useDateColumn()
-
-  useEffect(() => {
-    fetch('/api/competitor-jobs-new')
-      .then(r => r.json())
-      .then(data => {
-        setJobs(data.jobs || [])
-        setLoading(false)
-      })
-      .catch(() => setLoading(false))
-  }, [])
 
   const extractors = useMemo(() => ({
     company: j => j.company_name || '',
@@ -3549,7 +3477,7 @@ function CompetitorJobsNewPage() {
     filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
   ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
 
-  if (loading) {
+  if (!data) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -3848,24 +3776,12 @@ function AssignCompanyModal({ article, onClose, onSaved }) {
   )
 }
 
-function NewsPage() {
-  const [articles, setArticles] = useState([])
-  const [pastClients, setPastClients] = useState([])
-  const [loading, setLoading] = useState(true)
+function NewsPage({ data, setData }) {
+  const articles = data?.articles || []
+  const pastClients = data?.pastClients || []
   const [assignArticle, setAssignArticle] = useState(null)
   const { filters, setFilter, clearAll, hasActiveFilters } = useColumnFilters()
   const dateCol = useDateColumn()
-
-  useEffect(() => {
-    fetch('/api/news')
-      .then(r => r.json())
-      .then(data => {
-        setArticles(data.articles || [])
-        setPastClients(data.pastClients || [])
-        setLoading(false)
-      })
-      .catch(() => setLoading(false))
-  }, [])
 
   const pastClientMatchedNames = useMemo(() => new Set(pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
   const pastClientNames = useMemo(() => new Set(pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
@@ -3940,14 +3856,17 @@ function NewsPage() {
   }, [sorted, filters, hasActiveFilters, getRawDate, dateCol.dateFilter])
 
   const updateArticleMatches = useCallback((url, newMatches) => {
-    setArticles(prev => prev.map(a =>
-      a.url === url
-        ? { ...a, matched_names: newMatches && newMatches.length > 0 ? newMatches : null }
-        : a
-    ))
-  }, [])
+    setData(prev => prev ? ({
+      ...prev,
+      articles: (prev.articles || []).map(a =>
+        a.url === url
+          ? { ...a, matched_names: newMatches && newMatches.length > 0 ? newMatches : null }
+          : a
+      ),
+    }) : prev)
+  }, [setData])
 
-  if (loading) {
+  if (!data) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -4038,9 +3957,10 @@ function NewsPage() {
 
 // ─── Madison Leads Page ──────────────────────────────────────────────────────
 
-function MadisonLeadsPage() {
-  const [data, setData] = useState({ trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [] })
-  const [loading, setLoading] = useState(true)
+function MadisonLeadsPage(props) {
+  const { setData, onRefresh } = props
+  const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [] }
+  const loading = !props.data
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searchOpen, setSearchOpen] = useState(false)
@@ -4063,16 +3983,6 @@ function MadisonLeadsPage() {
   const fundingDateCol = useDateColumn()
   const jobsDateCol = useDateColumn()
   const newsDateCol = useDateColumn()
-
-  const loadData = useCallback(() => {
-    setLoading(true)
-    fetch('/api/madison-leads')
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
-
-  useEffect(() => { loadData() }, [loadData])
 
   // Search debounce
   useEffect(() => {
@@ -4115,7 +4025,7 @@ function MadisonLeadsPage() {
     })
     setSearchQuery('')
     setSearchOpen(false)
-    loadData()
+    if (onRefresh) await onRefresh()
   }
 
   const removeCompany = async (name) => {
@@ -4124,7 +4034,7 @@ function MadisonLeadsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ company_name: name }),
     })
-    loadData()
+    if (onRefresh) await onRefresh()
   }
 
   const pastClientMatchedNames = useMemo(() => new Set(data.pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [data.pastClients])
@@ -4382,15 +4292,15 @@ function MadisonLeadsPage() {
   }, [sortedNews, newsFilter.filters, newsFilter.hasActiveFilters, getNewsDate, newsDateCol.dateFilter])
 
   const updateNewsMatches = useCallback((url, newMatches) => {
-    setData(prev => ({
+    setData(prev => prev ? ({
       ...prev,
       newsArticles: (prev.newsArticles || []).map(a =>
         a.url === url
           ? { ...a, matched_names: newMatches && newMatches.length > 0 ? newMatches : null }
           : a
       ),
-    }))
-  }, [])
+    }) : prev)
+  }, [setData])
 
   // Filter search results to exclude already-tracked companies
   const availableResults = searchResults.filter(r => !data.trackedCompanies.includes(r.name))
@@ -4800,9 +4710,10 @@ function MadisonLeadsPage() {
 
 // ─── Jim Leads Page ──────────────────────────────────────────────────────────
 
-function JimLeadsPage() {
-  const [data, setData] = useState({ trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [] })
-  const [loading, setLoading] = useState(true)
+function JimLeadsPage(props) {
+  const { setData, onRefresh } = props
+  const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [] }
+  const loading = !props.data
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searchOpen, setSearchOpen] = useState(false)
@@ -4825,16 +4736,6 @@ function JimLeadsPage() {
   const fundingDateCol = useDateColumn()
   const jobsDateCol = useDateColumn()
   const newsDateCol = useDateColumn()
-
-  const loadData = useCallback(() => {
-    setLoading(true)
-    fetch('/api/jim-leads')
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
-
-  useEffect(() => { loadData() }, [loadData])
 
   // Search debounce
   useEffect(() => {
@@ -4877,7 +4778,7 @@ function JimLeadsPage() {
     })
     setSearchQuery('')
     setSearchOpen(false)
-    loadData()
+    if (onRefresh) await onRefresh()
   }
 
   const removeCompany = async (name) => {
@@ -4886,7 +4787,7 @@ function JimLeadsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ company_name: name }),
     })
-    loadData()
+    if (onRefresh) await onRefresh()
   }
 
   const pastClientMatchedNames = useMemo(() => new Set(data.pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [data.pastClients])
@@ -5144,15 +5045,15 @@ function JimLeadsPage() {
   }, [sortedNews, newsFilter.filters, newsFilter.hasActiveFilters, getNewsDate, newsDateCol.dateFilter])
 
   const updateNewsMatches = useCallback((url, newMatches) => {
-    setData(prev => ({
+    setData(prev => prev ? ({
       ...prev,
       newsArticles: (prev.newsArticles || []).map(a =>
         a.url === url
           ? { ...a, matched_names: newMatches && newMatches.length > 0 ? newMatches : null }
           : a
       ),
-    }))
-  }, [])
+    }) : prev)
+  }, [setData])
 
   // Filter search results to exclude already-tracked companies
   const availableResults = searchResults.filter(r => !data.trackedCompanies.includes(r.name))
@@ -5562,9 +5463,10 @@ function JimLeadsPage() {
 
 // ─── Tim Leads Page ──────────────────────────────────────────────────────────
 
-function TimLeadsPage() {
-  const [data, setData] = useState({ trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [] })
-  const [loading, setLoading] = useState(true)
+function TimLeadsPage(props) {
+  const { setData, onRefresh } = props
+  const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [] }
+  const loading = !props.data
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searchOpen, setSearchOpen] = useState(false)
@@ -5587,16 +5489,6 @@ function TimLeadsPage() {
   const fundingDateCol = useDateColumn()
   const jobsDateCol = useDateColumn()
   const newsDateCol = useDateColumn()
-
-  const loadData = useCallback(() => {
-    setLoading(true)
-    fetch('/api/tim-leads')
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
-
-  useEffect(() => { loadData() }, [loadData])
 
   // Search debounce
   useEffect(() => {
@@ -5639,7 +5531,7 @@ function TimLeadsPage() {
     })
     setSearchQuery('')
     setSearchOpen(false)
-    loadData()
+    if (onRefresh) await onRefresh()
   }
 
   const removeCompany = async (name) => {
@@ -5648,7 +5540,7 @@ function TimLeadsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ company_name: name }),
     })
-    loadData()
+    if (onRefresh) await onRefresh()
   }
 
   const pastClientMatchedNames = useMemo(() => new Set(data.pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [data.pastClients])
@@ -5906,15 +5798,15 @@ function TimLeadsPage() {
   }, [sortedNews, newsFilter.filters, newsFilter.hasActiveFilters, getNewsDate, newsDateCol.dateFilter])
 
   const updateNewsMatches = useCallback((url, newMatches) => {
-    setData(prev => ({
+    setData(prev => prev ? ({
       ...prev,
       newsArticles: (prev.newsArticles || []).map(a =>
         a.url === url
           ? { ...a, matched_names: newMatches && newMatches.length > 0 ? newMatches : null }
           : a
       ),
-    }))
-  }, [])
+    }) : prev)
+  }, [setData])
 
   // Filter search results to exclude already-tracked companies
   const availableResults = searchResults.filter(r => !data.trackedCompanies.includes(r.name))
@@ -6339,18 +6231,11 @@ function pastBuyerRoleChanged(row) {
   return origTitle !== currTitle
 }
 
-function PastBuyersPage() {
-  const [rows, setRows] = useState([])
-  const [loading, setLoading] = useState(true)
+function PastBuyersPage({ data }) {
+  const rows = Array.isArray(data) ? data : []
+  const loading = !data
   const [expandedIds, setExpandedIds] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
-
-  useEffect(() => {
-    fetch('/api/contacts?table=past_buyers')
-      .then(r => r.json())
-      .then(data => { setRows(Array.isArray(data) ? data : []); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
 
   const toggleRow = useCallback(id => {
     setExpandedIds(prev => {
@@ -6493,18 +6378,11 @@ function PastBuyersPage() {
   )
 }
 
-function PastCandidatesPage() {
-  const [rows, setRows] = useState([])
-  const [loading, setLoading] = useState(true)
+function PastCandidatesPage({ data }) {
+  const rows = Array.isArray(data) ? data : []
+  const loading = !data
   const [expandedIds, setExpandedIds] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
-
-  useEffect(() => {
-    fetch('/api/contacts?table=past_candidates')
-      .then(r => r.json())
-      .then(data => { setRows(Array.isArray(data) ? data : []); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
 
   const toggleRow = useCallback(id => {
     setExpandedIds(prev => {
@@ -6909,53 +6787,80 @@ function SettingsPage() {
 
 export default function Home() {
   const [activePage, setActivePage]     = useState('dashboard')
-  const [signals, setSignals]           = useState([])
-  const [loading, setLoading]           = useState(true)
   const [repName, setRepName]           = useState('')
   const [showNameModal, setShowNameModal] = useState(false)
-  const [expandedRows, setExpandedRows] = useState(new Set())
-  const [notes, setNotes]               = useState({})
-  const [savingNotes, setSavingNotes]   = useState(new Set())
   const [toast, setToast]               = useState(null)
-  const [dismissTarget, setDismissTarget] = useState(null) // { signal, tabKey }
   const [sidebarCounts, setSidebarCounts] = useState({})
-  const [dashboardData, setDashboardData] = useState(null)
+  const [refreshing, setRefreshing]     = useState(false)
 
-  const fetchDashboardData = useCallback(async (forceRefresh = false) => {
+  // Per-page data caches. null = not loaded yet (page shows spinner).
+  const [dashboardData, setDashboardData] = useState(null)
+  const [clinicalTrialsData, setClinicalTrialsData] = useState(null)
+  const [maFundingData, setMaFundingData] = useState(null)
+  const [fundingData, setFundingData] = useState(null)
+  const [jobsData, setJobsData] = useState(null)
+  const [competitorJobsData, setCompetitorJobsData] = useState(null)
+  const [newsData, setNewsData] = useState(null)
+  const [pastBuyersData, setPastBuyersData] = useState(null)
+  const [pastCandidatesData, setPastCandidatesData] = useState(null)
+  const [madisonLeadsData, setMadisonLeadsData] = useState(null)
+  const [jimLeadsData, setJimLeadsData] = useState(null)
+  const [timLeadsData, setTimLeadsData] = useState(null)
+
+  const fetchJson = useCallback(async (url, setter, label) => {
     try {
-      const url = forceRefresh ? '/api/company-dashboard?refresh=true' : '/api/company-dashboard'
       const res = await fetch(url, { cache: 'no-store' })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      setDashboardData(data)
+      setter(await res.json())
     } catch (err) {
-      console.error('Error fetching company dashboard:', err)
+      console.error(`Error fetching ${label}:`, err)
     }
   }, [])
 
-  const fetchSignals = useCallback(async () => {
+  const fetchDashboardData = useCallback((forceRefresh = false) => {
+    const url = forceRefresh ? '/api/company-dashboard?refresh=true' : '/api/company-dashboard'
+    return fetchJson(url, setDashboardData, 'company dashboard')
+  }, [fetchJson])
+
+  const fetchSidebarCounts = useCallback(() => fetchJson('/api/sidebar-counts', setSidebarCounts, 'sidebar counts'), [fetchJson])
+  const fetchClinicalTrials = useCallback(() => fetchJson('/api/clinical-trials', setClinicalTrialsData, 'clinical trials'), [fetchJson])
+  const fetchMaFunding = useCallback(() => fetchJson('/api/ma-funding', setMaFundingData, 'M&A funding'), [fetchJson])
+  const fetchFunding = useCallback(() => fetchJson('/api/funding-new', setFundingData, 'funding'), [fetchJson])
+  const fetchJobs = useCallback(() => fetchJson('/api/jobs-new', setJobsData, 'jobs'), [fetchJson])
+  const fetchCompetitorJobs = useCallback(() => fetchJson('/api/competitor-jobs-new', setCompetitorJobsData, 'competitor jobs'), [fetchJson])
+  const fetchNews = useCallback(() => fetchJson('/api/news', setNewsData, 'news'), [fetchJson])
+  const fetchPastBuyers = useCallback(() => fetchJson('/api/contacts?table=past_buyers', setPastBuyersData, 'past buyers'), [fetchJson])
+  const fetchPastCandidates = useCallback(() => fetchJson('/api/contacts?table=past_candidates', setPastCandidatesData, 'past candidates'), [fetchJson])
+  const fetchMadisonLeads = useCallback(async () => { await fetchJson('/api/madison-leads', setMadisonLeadsData, 'madison leads'); fetchSidebarCounts() }, [fetchJson, fetchSidebarCounts])
+  const fetchJimLeads = useCallback(async () => { await fetchJson('/api/jim-leads', setJimLeadsData, 'jim leads'); fetchSidebarCounts() }, [fetchJson, fetchSidebarCounts])
+  const fetchTimLeads = useCallback(async () => { await fetchJson('/api/tim-leads', setTimLeadsData, 'tim leads'); fetchSidebarCounts() }, [fetchJson, fetchSidebarCounts])
+
+  const fetchAllData = useCallback(async (forceDashboardRefresh = false) => {
+    await Promise.all([
+      fetchDashboardData(forceDashboardRefresh),
+      fetchSidebarCounts(),
+      fetchClinicalTrials(),
+      fetchMaFunding(),
+      fetchFunding(),
+      fetchJobs(),
+      fetchCompetitorJobs(),
+      fetchNews(),
+      fetchPastBuyers(),
+      fetchPastCandidates(),
+      fetchJson('/api/madison-leads', setMadisonLeadsData, 'madison leads'),
+      fetchJson('/api/jim-leads', setJimLeadsData, 'jim leads'),
+      fetchJson('/api/tim-leads', setTimLeadsData, 'tim leads'),
+    ])
+  }, [fetchDashboardData, fetchSidebarCounts, fetchClinicalTrials, fetchMaFunding, fetchFunding, fetchJobs, fetchCompetitorJobs, fetchNews, fetchPastBuyers, fetchPastCandidates, fetchJson])
+
+  const handleGlobalRefresh = useCallback(async () => {
+    setRefreshing(true)
     try {
-      const res = await fetch('/api/signals', { cache: 'no-store' })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      setSignals(data.signals || [])
-    } catch (err) {
-      console.error('Error fetching signals:', err)
+      await fetchAllData(true)
     } finally {
-      setLoading(false)
+      setRefreshing(false)
     }
-  }, [])
-
-  const fetchSidebarCounts = useCallback(async () => {
-    try {
-      const res = await fetch('/api/sidebar-counts', { cache: 'no-store' })
-      if (!res.ok) return
-      const data = await res.json()
-      setSidebarCounts(data || {})
-    } catch (err) {
-      console.error('Error fetching sidebar counts:', err)
-    }
-  }, [])
+  }, [fetchAllData])
 
   useEffect(() => {
     const stored = localStorage.getItem('biosignal_rep_name')
@@ -6964,21 +6869,8 @@ export default function Home() {
     } else {
       setShowNameModal(true)
     }
-    fetchSignals()
-    fetchSidebarCounts()
-    fetchDashboardData()
-  }, [fetchSignals, fetchSidebarCounts, fetchDashboardData])
-
-  useEffect(() => {
-    if (!supabase) return
-    const channel = supabase
-      .channel('signals-changes')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'signals' }, () => fetchSignals())
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'signals' }, () => fetchSignals())
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'signals' }, () => fetchSignals())
-      .subscribe()
-    return () => { supabase.removeChannel(channel) }
-  }, [fetchSignals])
+    fetchAllData()
+  }, [fetchAllData])
 
   const tabCounts = {
     madison_leads:  sidebarCounts.madison_leads || 0,
@@ -6992,195 +6884,6 @@ export default function Home() {
     news:           sidebarCounts.news || 0,
   }
 
-  const toggleRow = (id) => {
-    setExpandedRows(prev => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
-  }
-
-  const claimSignal = async (signal) => {
-    if (!repName) return
-    const claimedAt = new Date().toISOString()
-    setSignals(prev => prev.map(s => s.id === signal.id ? { ...s, claimed_by: repName, status: 'claimed' } : s))
-    try {
-      await fetch('/api/signals', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: signal.id, claimed_by: repName, status: 'claimed', claimed_at: claimedAt }),
-      })
-      fetchSignals()
-    } catch (err) {
-      console.error('Error claiming signal:', err)
-      fetchSignals()
-    }
-  }
-
-  const unclaimSignal = async (signal) => {
-    setSignals(prev => prev.map(s => s.id === signal.id ? { ...s, claimed_by: null, status: 'new' } : s))
-    try {
-      await fetch('/api/signals', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: signal.id, claimed_by: null, status: 'new' }),
-      })
-      fetchSignals()
-    } catch (err) {
-      console.error('Error unclaiming signal:', err)
-      fetchSignals()
-    }
-  }
-
-  const updateStatus = async (signal, newStatus) => {
-    setSignals(prev => prev.map(s => s.id === signal.id ? { ...s, status: newStatus } : s))
-    try {
-      await fetch('/api/signals', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: signal.id, status: newStatus }),
-      })
-      fetchSignals()
-    } catch (err) {
-      console.error('Error updating status:', err)
-      fetchSignals()
-    }
-  }
-
-  const saveNotes = async (signalId, text) => {
-    setSavingNotes(prev => new Set(prev).add(signalId))
-    setNotes(prev => ({ ...prev, [signalId]: text }))
-    try {
-      await fetch('/api/signals', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: signalId, notes: text }),
-      })
-      fetchSignals()
-    } catch (err) {
-      console.error('Error saving notes:', err)
-    } finally {
-      setSavingNotes(prev => {
-        const next = new Set(prev)
-        next.delete(signalId)
-        return next
-      })
-    }
-  }
-
-  // ─── Update inferred client ───────────────────────────────────────────────
-
-  const updateInferredClient = async (signalId, clientName) => {
-    // Optimistic local update
-    setSignals(prev => prev.map(s => {
-      if (s.id !== signalId) return s
-      const detail = typeof s.signal_detail === 'object' ? { ...s.signal_detail } : {}
-      detail.inferred_client = clientName
-      return { ...s, signal_detail: detail }
-    }))
-
-    try {
-      const res = await fetch('/api/signals', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: signalId, inferred_client: clientName }),
-      })
-      if (!res.ok) {
-        console.error('[UpdateClient] PATCH failed:', res.status)
-        fetchSignals()
-      }
-    } catch (err) {
-      console.error('[UpdateClient] Error:', err)
-      fetchSignals()
-    }
-  }
-
-  // ─── Dismiss signal flow ──────────────────────────────────────────────────
-
-  const getTabKeyForSignal = (signal) => {
-    if (SIGNAL_TYPE_CONFIG[signal.signal_type]?.tab === 'clinical') return 'clinical'
-    if (SIGNAL_TYPE_CONFIG[signal.signal_type]?.tab === 'funding') return 'funding'
-    if (signal.signal_type === 'competitor_job_posting') return 'competitor'
-    if (['stale_job_posting', 'target_company_job'].includes(signal.signal_type)) return 'stale'
-    return 'clinical'
-  }
-
-  const openDismissModal = (signal) => {
-    setDismissTarget({ signal, tabKey: getTabKeyForSignal(signal) })
-  }
-
-  const confirmDismiss = async (signal, reasonKey, reasonValue) => {
-    setDismissTarget(null)
-
-    // Optimistic removal — remove from React state immediately
-    console.log('[Dismiss] Removing signal from state:', signal.id)
-    setSignals(prev => {
-      const next = prev.filter(s => s.id !== signal.id)
-      console.log('[Dismiss] Signals count:', prev.length, '→', next.length)
-      return next
-    })
-
-    try {
-      // 1. Update signal status to dismissed + store reason in signal_detail
-      const res = await fetch('/api/signals', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: signal.id,
-          status: 'dismissed',
-          dismissal_reason: reasonKey,
-          dismissal_value: reasonValue,
-        }),
-      })
-
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}))
-        console.error('[Dismiss] PATCH failed:', res.status, errBody.error || '')
-        // Rollback — restore the signal to local state
-        setSignals(prev => [...prev, signal])
-        return
-      }
-
-      console.log('[Dismiss] PATCH succeeded for signal:', signal.id)
-
-      // 2. Upsert dismissal_rules (via Supabase client)
-      if (supabase && reasonValue) {
-        const signalType = signal.signal_type
-        const { data: existing } = await supabase
-          .from('dismissal_rules')
-          .select('id, dismiss_count')
-          .eq('rule_type', reasonKey)
-          .eq('rule_value', reasonValue)
-          .eq('signal_type', signalType)
-          .maybeSingle()
-
-        if (existing) {
-          const newCount = (existing.dismiss_count || 0) + 1
-          await supabase
-            .from('dismissal_rules')
-            .update({
-              dismiss_count: newCount,
-              auto_exclude: newCount >= 3,
-            })
-            .eq('id', existing.id)
-        } else {
-          await supabase
-            .from('dismissal_rules')
-            .insert({
-              rule_type: reasonKey,
-              rule_value: reasonValue,
-              signal_type: signalType,
-              dismiss_count: 1,
-              auto_exclude: false,
-            })
-        }
-      }
-    } catch (err) {
-      console.error('[Dismiss] Error:', err)
-      // Rollback — restore the signal to local state
-      setSignals(prev => [...prev, signal])
-    }
-  }
 
   const saveRepName = (name) => {
     setRepName(name)
@@ -7198,52 +6901,30 @@ export default function Home() {
           activePage={activePage}
           repName={repName}
           onShowNameModal={() => setShowNameModal(true)}
+          onRefresh={handleGlobalRefresh}
+          refreshing={refreshing}
         />
 
         <main className="flex-1 p-6">
-          {loading ? (
-            <div className="flex flex-col items-center justify-center py-24 gap-3">
-              <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-              <span className="text-gray-400 text-sm">Loading signals...</span>
-            </div>
-          ) : (
-            <>
-              {activePage === 'dashboard'  && (
-                <CompanyDashboardPage
-                  data={dashboardData}
-                  onRefresh={() => fetchDashboardData(true)}
-                />
-              )}
-              {activePage === 'clinical_new' && <ClinicalTrialsNewPage />}
-              {activePage === 'ma_funding_new' && <MAFundingNewPage />}
-              {activePage === 'funding_new' && <FundingNewPage />}
-              {activePage === 'jobs_new' && <JobsNewPage />}
-              {activePage === 'competitor_jobs_new' && <CompetitorJobsNewPage />}
-              {activePage === 'news' && <NewsPage />}
-              {activePage === 'madison_leads' && <MadisonLeadsPage />}
-              {activePage === 'jim_leads' && <JimLeadsPage />}
-              {activePage === 'tim_leads' && <TimLeadsPage />}
-              {activePage === 'buyers'     && <PastBuyersPage />}
-              {activePage === 'candidates' && <PastCandidatesPage />}
-              {activePage === 'settings'   && <SettingsPage />}
-            </>
-          )}
+          {activePage === 'dashboard'  && <CompanyDashboardPage data={dashboardData} />}
+          {activePage === 'clinical_new' && <ClinicalTrialsNewPage data={clinicalTrialsData} />}
+          {activePage === 'ma_funding_new' && <MAFundingNewPage data={maFundingData} />}
+          {activePage === 'funding_new' && <FundingNewPage data={fundingData} />}
+          {activePage === 'jobs_new' && <JobsNewPage data={jobsData} />}
+          {activePage === 'competitor_jobs_new' && <CompetitorJobsNewPage data={competitorJobsData} />}
+          {activePage === 'news' && <NewsPage data={newsData} setData={setNewsData} />}
+          {activePage === 'madison_leads' && <MadisonLeadsPage data={madisonLeadsData} setData={setMadisonLeadsData} onRefresh={fetchMadisonLeads} />}
+          {activePage === 'jim_leads' && <JimLeadsPage data={jimLeadsData} setData={setJimLeadsData} onRefresh={fetchJimLeads} />}
+          {activePage === 'tim_leads' && <TimLeadsPage data={timLeadsData} setData={setTimLeadsData} onRefresh={fetchTimLeads} />}
+          {activePage === 'buyers'     && <PastBuyersPage data={pastBuyersData} />}
+          {activePage === 'candidates' && <PastCandidatesPage data={pastCandidatesData} />}
+          {activePage === 'settings'   && <SettingsPage />}
         </main>
       </div>
 
       {/* Name modal — shown on first visit or when clicking name */}
       {showNameModal && (
         <NameModal onSave={saveRepName} />
-      )}
-
-      {/* Dismiss modal */}
-      {dismissTarget && (
-        <DismissModal
-          signal={dismissTarget.signal}
-          tabKey={dismissTarget.tabKey}
-          onConfirm={confirmDismiss}
-          onCancel={() => setDismissTarget(null)}
-        />
       )}
 
       {/* Toast notification */}

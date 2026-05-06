@@ -2,7 +2,7 @@ name: Daily Clinical Trials Scan
 
 on:
   schedule:
-    - cron: '0 7 * * *'   # 2:00 AM EST (7:00 AM UTC) every day
+    - cron: '0 6 * * *'   # 1:00 AM EST (6:00 AM UTC) every day
   workflow_dispatch:        # Manual trigger
 
 jobs:
