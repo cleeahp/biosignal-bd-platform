@@ -117,7 +117,7 @@ export default async function handler(req, res) {
     ])
     const newsCount = (fierceCount || 0) + (biospaceCount || 0) + (endpointsCount || 0)
 
-    return res.status(200).json({
+    const responseData = {
       madison_leads: madisonCount || 0,
       jim_leads: jimCount || 0,
       tim_leads: timCount || 0,
@@ -127,7 +127,10 @@ export default async function handler(req, res) {
       jobs_new: jobsNewCount,
       competitor_jobs_new: competitorJobsNewCount,
       news: newsCount,
-    })
+    }
+    const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
+    console.log(`[API] ${req.url}: ${sizeMB} MB (counts: ${JSON.stringify(responseData)})`)
+    return res.status(200).json(responseData)
   } catch (err) {
     return res.status(500).json({ error: err.message })
   }

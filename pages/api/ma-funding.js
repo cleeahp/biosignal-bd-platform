@@ -83,5 +83,8 @@ export default async function handler(req, res) {
 
   const filings = [...filtered8K, ...filteredS1]
 
-  return res.status(200).json({ filings, pastClients })
+  const responseData = { filings, pastClients }
+  const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
+  console.log(`[API] ${req.url}: ${sizeMB} MB (${filings.length} rows)`)
+  return res.status(200).json(responseData)
 }

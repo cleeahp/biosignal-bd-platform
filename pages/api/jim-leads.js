@@ -39,7 +39,7 @@ export default async function handler(req, res) {
   if (trackedCompanies.length === 0) {
     // Fetch past_clients even with no tracked companies (for star display)
     const { data: clientRows } = await supabase.from('past_clients').select('name, matched_name').eq('is_active', true)
-    return res.status(200).json({
+    const responseData = {
       trackedCompanies: [],
       clinicalTrials: [],
       filings: [],
@@ -47,7 +47,10 @@ export default async function handler(req, res) {
       newsArticles: [],
       clayJobs: [],
       pastClients: (clientRows || []).map(r => ({ name: r.name, matched_name: r.matched_name })),
-    })
+    }
+    const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
+    console.log(`[API] ${req.url}: ${sizeMB} MB (0 rows)`)
+    return res.status(200).json(responseData)
   }
 
   // Fetch past_clients
@@ -239,7 +242,7 @@ export default async function handler(req, res) {
     return true
   })
 
-  return res.status(200).json({
+  const responseData = {
     trackedCompanies,
     clinicalTrials: filteredTrials,
     filings,
@@ -247,5 +250,9 @@ export default async function handler(req, res) {
     newsArticles,
     clayJobs,
     pastClients,
-  })
+  }
+  const totalRows = filteredTrials.length + filings.length + filteredFunding.length + newsArticles.length + clayJobs.length
+  const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
+  console.log(`[API] ${req.url}: ${sizeMB} MB (${totalRows} rows)`)
+  return res.status(200).json(responseData)
 }

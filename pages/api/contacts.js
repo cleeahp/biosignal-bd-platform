@@ -17,7 +17,10 @@ export default async function handler(req, res) {
 
     const { data, error } = await query
     if (error) return res.status(500).json({ error: error.message })
-    return res.status(200).json(data)
+    const rows = data || []
+    const sizeMB = (Buffer.byteLength(JSON.stringify(rows), 'utf8') / (1024 * 1024)).toFixed(2)
+    console.log(`[API] ${req.url}: ${sizeMB} MB (${rows.length} rows)`)
+    return res.status(200).json(rows)
   }
 
   if (req.method === 'POST') {

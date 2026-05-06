@@ -39,5 +39,8 @@ export default async function handler(req, res) {
     return true
   })
 
-  return res.status(200).json({ jobs, pastClients })
+  const responseData = { jobs, pastClients }
+  const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
+  console.log(`[API] ${req.url}: ${sizeMB} MB (${jobs.length} rows)`)
+  return res.status(200).json(responseData)
 }

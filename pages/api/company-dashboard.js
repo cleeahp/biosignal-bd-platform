@@ -185,6 +185,8 @@ export default async function handler(req, res) {
       if (refreshError) throw new Error(`refresh_company_signal_summary: ${refreshError.message}`)
     }
     const result = await buildDashboard()
+    const sizeMB = (Buffer.byteLength(JSON.stringify(result), 'utf8') / (1024 * 1024)).toFixed(2)
+    console.log(`[API] ${req.url}: ${sizeMB} MB (${result.companies.length} rows)`)
     return res.status(200).json(result)
   } catch (err) {
     return res.status(500).json({ error: err.message })

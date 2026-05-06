@@ -85,7 +85,7 @@ export default async function handler(req, res) {
       .filter(r => r.name)
       .map(r => ({ name: r.name, matched_name: r.matched_name }))
 
-    return res.status(200).json({
+    const responseData = {
       company,
       clinicalTrials: trials,
       filings,
@@ -95,7 +95,11 @@ export default async function handler(req, res) {
       pastBuyers,
       pastCandidates,
       pastClients,
-    })
+    }
+    const totalRows = trials.length + filings.length + funding.length + newsArticles.length + jobs.length + pastBuyers.length + pastCandidates.length
+    const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
+    console.log(`[API] ${req.url}: ${sizeMB} MB (${company}, ${totalRows} rows)`)
+    return res.status(200).json(responseData)
   } catch (err) {
     return res.status(500).json({ error: err.message })
   }

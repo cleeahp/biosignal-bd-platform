@@ -78,7 +78,10 @@ export default async function handler(req, res) {
       return new Date(b.created_at || 0) - new Date(a.created_at || 0)
     })
 
-    return res.status(200).json({ articles, pastClients })
+    const responseData = { articles, pastClients }
+    const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
+    console.log(`[API] ${req.url}: ${sizeMB} MB (${articles.length} rows)`)
+    return res.status(200).json(responseData)
   } catch (err) {
     return res.status(500).json({ error: err.message })
   }
