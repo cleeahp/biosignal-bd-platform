@@ -34,10 +34,14 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'from_table and to_table must be different' })
     }
 
-    // Fetch the contact from source table
+    // Fetch the contact from source table.
+    // past_buyers stores email as `original_email`; past_candidates stores it as `email`.
+    const sourceEmailCol = from_table === 'past_buyers' ? 'original_email' : 'email'
+    const targetEmailCol = to_table === 'past_buyers' ? 'original_email' : 'email'
+
     const { data: contact, error: fetchErr } = await supabase
       .from(from_table)
-      .select('*')
+      .select(`person_name, linkedin_url, original_title, original_company, phone, current_title, current_company, current_location, ${sourceEmailCol}`)
       .eq('id', id)
       .single()
 
@@ -45,20 +49,16 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Contact not found' })
     }
 
-    // Prepare record for destination table
     const insertData = {
-      first_name: contact.first_name,
-      last_name: contact.last_name,
-      company: contact.company,
-      title: contact.title,
-      email: contact.email,
+      person_name: contact.person_name,
+      linkedin_url: contact.linkedin_url,
+      original_title: contact.original_title,
+      original_company: contact.original_company,
       phone: contact.phone,
-      source: contact.source,
-    }
-
-    // Add is_current_buyer if moving to past_buyers
-    if (to_table === 'past_buyers') {
-      insertData.is_current_buyer = false
+      current_title: contact.current_title,
+      current_company: contact.current_company,
+      current_location: contact.current_location,
+      [targetEmailCol]: contact[sourceEmailCol],
     }
 
     // Insert into destination table

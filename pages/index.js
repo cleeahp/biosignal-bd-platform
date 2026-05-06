@@ -2575,7 +2575,6 @@ function ContactsTable({ rows, columns, emptyMessage, showActions, onAction, loa
                 <tr key={row.id} className="hover:bg-[#111827]/50 transition-colors">
                   <td className="px-3 py-2.5 text-sm text-white whitespace-nowrap">
                     <div className="flex items-center gap-2">
-                      {row.is_current_buyer && <span className="inline-block w-2 h-2 rounded-full bg-green-500 shrink-0" title="Current buyer" />}
                       {row.first_name} {row.last_name}
                     </div>
                   </td>
@@ -2718,7 +2717,6 @@ function BuyerCandidateTable({ rows, emptyMessage, loading, showBuyerDot, table,
                   <tr onClick={() => toggleRow(row.id)} className="cursor-pointer hover:bg-[#111827]/50 transition-colors">
                     <td className="px-3 py-2.5" title={fullName} style={{ overflow: 'hidden' }}>
                       <div className="flex items-center gap-2" style={{ overflow: 'hidden' }}>
-                        {showBuyerDot && row.is_current_buyer && <span className="inline-block w-2 h-2 rounded-full bg-green-500 shrink-0" title="Current buyer" />}
                         <span className="text-xs text-white" style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{fullName || '—'}</span>
                       </div>
                     </td>
