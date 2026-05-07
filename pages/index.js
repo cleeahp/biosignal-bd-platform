@@ -3544,7 +3544,7 @@ function CompetitorJobsNewPage({ data }) {
 
 // ─── News Page ───────────────────────────────────────────────────────────────
 
-function AssignCompanyModal({ article, onClose, onSaved }) {
+function AssignCompanyModal({ article, onClose, onSaved, companyNames }) {
   const [selected, setSelected] = useState(() => {
     const names = Array.isArray(article.matched_names) ? article.matched_names : []
     return names.map(name => ({ name, alternate_name: '' }))
@@ -3555,31 +3555,26 @@ function AssignCompanyModal({ article, onClose, onSaved }) {
   const [searchPos, setSearchPos] = useState({ top: 0, left: 0, width: 0 })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
-  const debounceRef = useRef(null)
   const searchRef = useRef(null)
   const dropdownRef = useRef(null)
 
   const hadExisting = Array.isArray(article.matched_names) && article.matched_names.length > 0
 
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    const q = searchQuery.trim()
+    const q = searchQuery.trim().toLowerCase()
     if (q.length < 2) {
       setSearchResults([])
       setSearchOpen(false)
       return
     }
-    debounceRef.current = setTimeout(() => {
-      fetch(`/api/company-search?q=${encodeURIComponent(q)}`)
-        .then(r => r.json())
-        .then(results => {
-          setSearchResults(Array.isArray(results) ? results : [])
-          setSearchOpen(true)
-        })
-        .catch(() => {})
-    }, 300)
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
-  }, [searchQuery])
+    const list = Array.isArray(companyNames) ? companyNames : []
+    const matches = list
+      .filter(name => name && name.toLowerCase().includes(q))
+      .slice(0, 20)
+      .map(name => ({ name }))
+    setSearchResults(matches)
+    setSearchOpen(true)
+  }, [searchQuery, companyNames])
 
   useEffect(() => {
     if (!searchOpen) return
@@ -3710,7 +3705,7 @@ function AssignCompanyModal({ article, onClose, onSaved }) {
               }}
               className="max-h-60 overflow-y-auto bg-[#111827] border border-[#374151] rounded shadow-2xl"
             >
-              {availableResults.slice(0, 50).map(r => (
+              {availableResults.slice(0, 20).map(r => (
                 <button
                   key={r.name}
                   onClick={() => addCompany(r.name)}
@@ -3776,7 +3771,7 @@ function AssignCompanyModal({ article, onClose, onSaved }) {
   )
 }
 
-function NewsPage({ data, setData }) {
+function NewsPage({ data, setData, companyNames }) {
   const articles = data?.articles || []
   const pastClients = data?.pastClients || []
   const [assignArticle, setAssignArticle] = useState(null)
@@ -3949,6 +3944,7 @@ function NewsPage({ data, setData }) {
           article={assignArticle}
           onClose={() => setAssignArticle(null)}
           onSaved={(newMatches) => updateArticleMatches(assignArticle.url, newMatches)}
+          companyNames={companyNames}
         />
       )}
     </div>
@@ -3958,7 +3954,7 @@ function NewsPage({ data, setData }) {
 // ─── Madison Leads Page ──────────────────────────────────────────────────────
 
 function MadisonLeadsPage(props) {
-  const { setData, onRefresh } = props
+  const { setData, onRefresh, companyNames } = props
   const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [] }
   const loading = !props.data
   const [searchQuery, setSearchQuery] = useState('')
@@ -3970,7 +3966,6 @@ function MadisonLeadsPage(props) {
   const [assignArticle, setAssignArticle] = useState(null)
   const searchRef = useRef(null)
   const dropdownRef = useRef(null)
-  const debounceRef = useRef(null)
 
   const trialsFilter = useColumnFilters()
   const filingsFilter = useColumnFilters()
@@ -3984,25 +3979,22 @@ function MadisonLeadsPage(props) {
   const jobsDateCol = useDateColumn()
   const newsDateCol = useDateColumn()
 
-  // Search debounce
+  // Client-side filter against pre-loaded companyNames
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    if (!searchQuery || searchQuery.trim().length < 2) {
+    const q = (searchQuery || '').trim().toLowerCase()
+    if (q.length < 2) {
       setSearchResults([])
       setSearchOpen(false)
       return
     }
-    debounceRef.current = setTimeout(() => {
-      fetch(`/api/company-search?q=${encodeURIComponent(searchQuery.trim())}`)
-        .then(r => r.json())
-        .then(results => {
-          setSearchResults(Array.isArray(results) ? results : [])
-          setSearchOpen(true)
-        })
-        .catch(() => {})
-    }, 300)
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
-  }, [searchQuery])
+    const list = Array.isArray(companyNames) ? companyNames : []
+    const matches = list
+      .filter(name => name && name.toLowerCase().includes(q))
+      .slice(0, 20)
+      .map(name => ({ name }))
+    setSearchResults(matches)
+    setSearchOpen(true)
+  }, [searchQuery, companyNames])
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -4322,7 +4314,7 @@ function MadisonLeadsPage(props) {
               ref={dropdownRef}
               className="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl"
             >
-              {availableResults.slice(0, 50).map(r => (
+              {availableResults.slice(0, 20).map(r => (
                 <button
                   key={r.name}
                   onClick={() => addCompany(r.name)}
@@ -4702,6 +4694,7 @@ function MadisonLeadsPage(props) {
           article={assignArticle}
           onClose={() => setAssignArticle(null)}
           onSaved={(newMatches) => updateNewsMatches(assignArticle.url, newMatches)}
+          companyNames={companyNames}
         />
       )}
     </div>
@@ -4711,7 +4704,7 @@ function MadisonLeadsPage(props) {
 // ─── Jim Leads Page ──────────────────────────────────────────────────────────
 
 function JimLeadsPage(props) {
-  const { setData, onRefresh } = props
+  const { setData, onRefresh, companyNames } = props
   const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [] }
   const loading = !props.data
   const [searchQuery, setSearchQuery] = useState('')
@@ -4723,7 +4716,6 @@ function JimLeadsPage(props) {
   const [assignArticle, setAssignArticle] = useState(null)
   const searchRef = useRef(null)
   const dropdownRef = useRef(null)
-  const debounceRef = useRef(null)
 
   const trialsFilter = useColumnFilters()
   const filingsFilter = useColumnFilters()
@@ -4737,25 +4729,22 @@ function JimLeadsPage(props) {
   const jobsDateCol = useDateColumn()
   const newsDateCol = useDateColumn()
 
-  // Search debounce
+  // Client-side filter against pre-loaded companyNames
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    if (!searchQuery || searchQuery.trim().length < 2) {
+    const q = (searchQuery || '').trim().toLowerCase()
+    if (q.length < 2) {
       setSearchResults([])
       setSearchOpen(false)
       return
     }
-    debounceRef.current = setTimeout(() => {
-      fetch(`/api/company-search?q=${encodeURIComponent(searchQuery.trim())}`)
-        .then(r => r.json())
-        .then(results => {
-          setSearchResults(Array.isArray(results) ? results : [])
-          setSearchOpen(true)
-        })
-        .catch(() => {})
-    }, 300)
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
-  }, [searchQuery])
+    const list = Array.isArray(companyNames) ? companyNames : []
+    const matches = list
+      .filter(name => name && name.toLowerCase().includes(q))
+      .slice(0, 20)
+      .map(name => ({ name }))
+    setSearchResults(matches)
+    setSearchOpen(true)
+  }, [searchQuery, companyNames])
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -5075,7 +5064,7 @@ function JimLeadsPage(props) {
               ref={dropdownRef}
               className="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl"
             >
-              {availableResults.slice(0, 50).map(r => (
+              {availableResults.slice(0, 20).map(r => (
                 <button
                   key={r.name}
                   onClick={() => addCompany(r.name)}
@@ -5455,6 +5444,7 @@ function JimLeadsPage(props) {
           article={assignArticle}
           onClose={() => setAssignArticle(null)}
           onSaved={(newMatches) => updateNewsMatches(assignArticle.url, newMatches)}
+          companyNames={companyNames}
         />
       )}
     </div>
@@ -5464,7 +5454,7 @@ function JimLeadsPage(props) {
 // ─── Tim Leads Page ──────────────────────────────────────────────────────────
 
 function TimLeadsPage(props) {
-  const { setData, onRefresh } = props
+  const { setData, onRefresh, companyNames } = props
   const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [] }
   const loading = !props.data
   const [searchQuery, setSearchQuery] = useState('')
@@ -5476,7 +5466,6 @@ function TimLeadsPage(props) {
   const [assignArticle, setAssignArticle] = useState(null)
   const searchRef = useRef(null)
   const dropdownRef = useRef(null)
-  const debounceRef = useRef(null)
 
   const trialsFilter = useColumnFilters()
   const filingsFilter = useColumnFilters()
@@ -5490,25 +5479,22 @@ function TimLeadsPage(props) {
   const jobsDateCol = useDateColumn()
   const newsDateCol = useDateColumn()
 
-  // Search debounce
+  // Client-side filter against pre-loaded companyNames
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    if (!searchQuery || searchQuery.trim().length < 2) {
+    const q = (searchQuery || '').trim().toLowerCase()
+    if (q.length < 2) {
       setSearchResults([])
       setSearchOpen(false)
       return
     }
-    debounceRef.current = setTimeout(() => {
-      fetch(`/api/company-search?q=${encodeURIComponent(searchQuery.trim())}`)
-        .then(r => r.json())
-        .then(results => {
-          setSearchResults(Array.isArray(results) ? results : [])
-          setSearchOpen(true)
-        })
-        .catch(() => {})
-    }, 300)
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
-  }, [searchQuery])
+    const list = Array.isArray(companyNames) ? companyNames : []
+    const matches = list
+      .filter(name => name && name.toLowerCase().includes(q))
+      .slice(0, 20)
+      .map(name => ({ name }))
+    setSearchResults(matches)
+    setSearchOpen(true)
+  }, [searchQuery, companyNames])
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -5828,7 +5814,7 @@ function TimLeadsPage(props) {
               ref={dropdownRef}
               className="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl"
             >
-              {availableResults.slice(0, 50).map(r => (
+              {availableResults.slice(0, 20).map(r => (
                 <button
                   key={r.name}
                   onClick={() => addCompany(r.name)}
@@ -6208,6 +6194,7 @@ function TimLeadsPage(props) {
           article={assignArticle}
           onClose={() => setAssignArticle(null)}
           onSaved={(newMatches) => updateNewsMatches(assignArticle.url, newMatches)}
+          companyNames={companyNames}
         />
       )}
     </div>
@@ -6806,6 +6793,7 @@ export default function Home() {
   const [madisonLeadsData, setMadisonLeadsData] = useState(null)
   const [jimLeadsData, setJimLeadsData] = useState(null)
   const [timLeadsData, setTimLeadsData] = useState(null)
+  const [companyNames, setCompanyNames] = useState(null)
 
   const fetchJson = useCallback(async (url, setter, label) => {
     try {
@@ -6835,6 +6823,17 @@ export default function Home() {
   const fetchJimLeads = useCallback(async () => { await fetchJson('/api/jim-leads', setJimLeadsData, 'jim leads'); fetchSidebarCounts() }, [fetchJson, fetchSidebarCounts])
   const fetchTimLeads = useCallback(async () => { await fetchJson('/api/tim-leads', setTimLeadsData, 'tim leads'); fetchSidebarCounts() }, [fetchJson, fetchSidebarCounts])
 
+  const fetchCompanyNames = useCallback(async () => {
+    try {
+      const res = await fetch('/api/company-names', { cache: 'no-store' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const json = await res.json()
+      setCompanyNames(Array.isArray(json?.names) ? json.names : [])
+    } catch (err) {
+      console.error('Error fetching company names:', err)
+    }
+  }, [])
+
   const fetchAllData = useCallback(async (forceDashboardRefresh = false) => {
     await Promise.all([
       fetchDashboardData(forceDashboardRefresh),
@@ -6850,8 +6849,9 @@ export default function Home() {
       fetchJson('/api/madison-leads', setMadisonLeadsData, 'madison leads'),
       fetchJson('/api/jim-leads', setJimLeadsData, 'jim leads'),
       fetchJson('/api/tim-leads', setTimLeadsData, 'tim leads'),
+      fetchCompanyNames(),
     ])
-  }, [fetchDashboardData, fetchSidebarCounts, fetchClinicalTrials, fetchMaFunding, fetchFunding, fetchJobs, fetchCompetitorJobs, fetchNews, fetchPastBuyers, fetchPastCandidates, fetchJson])
+  }, [fetchDashboardData, fetchSidebarCounts, fetchClinicalTrials, fetchMaFunding, fetchFunding, fetchJobs, fetchCompetitorJobs, fetchNews, fetchPastBuyers, fetchPastCandidates, fetchJson, fetchCompanyNames])
 
   const handleGlobalRefresh = useCallback(async () => {
     setRefreshing(true)
@@ -6906,16 +6906,16 @@ export default function Home() {
         />
 
         <main className="flex-1 p-6">
-          {activePage === 'dashboard'  && <CompanyDashboardPage data={dashboardData} />}
+          {activePage === 'dashboard'  && <CompanyDashboardPage data={dashboardData} companyNames={companyNames} />}
           {activePage === 'clinical_new' && <ClinicalTrialsNewPage data={clinicalTrialsData} />}
           {activePage === 'ma_funding_new' && <MAFundingNewPage data={maFundingData} />}
           {activePage === 'funding_new' && <FundingNewPage data={fundingData} />}
           {activePage === 'jobs_new' && <JobsNewPage data={jobsData} />}
           {activePage === 'competitor_jobs_new' && <CompetitorJobsNewPage data={competitorJobsData} />}
-          {activePage === 'news' && <NewsPage data={newsData} setData={setNewsData} />}
-          {activePage === 'madison_leads' && <MadisonLeadsPage data={madisonLeadsData} setData={setMadisonLeadsData} onRefresh={fetchMadisonLeads} />}
-          {activePage === 'jim_leads' && <JimLeadsPage data={jimLeadsData} setData={setJimLeadsData} onRefresh={fetchJimLeads} />}
-          {activePage === 'tim_leads' && <TimLeadsPage data={timLeadsData} setData={setTimLeadsData} onRefresh={fetchTimLeads} />}
+          {activePage === 'news' && <NewsPage data={newsData} setData={setNewsData} companyNames={companyNames} />}
+          {activePage === 'madison_leads' && <MadisonLeadsPage data={madisonLeadsData} setData={setMadisonLeadsData} onRefresh={fetchMadisonLeads} companyNames={companyNames} />}
+          {activePage === 'jim_leads' && <JimLeadsPage data={jimLeadsData} setData={setJimLeadsData} onRefresh={fetchJimLeads} companyNames={companyNames} />}
+          {activePage === 'tim_leads' && <TimLeadsPage data={timLeadsData} setData={setTimLeadsData} onRefresh={fetchTimLeads} companyNames={companyNames} />}
           {activePage === 'buyers'     && <PastBuyersPage data={pastBuyersData} />}
           {activePage === 'candidates' && <PastCandidatesPage data={pastCandidatesData} />}
           {activePage === 'settings'   && <SettingsPage />}
