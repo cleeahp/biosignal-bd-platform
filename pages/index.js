@@ -4860,6 +4860,21 @@ function JimLeadsPage(props) {
     return !!t && t >= cutoffMs
   }, [cutoffMs])
 
+  const NewBadge = () => (
+    <span className="ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-green-500/20 text-green-300 border border-green-500/40 align-middle">New</span>
+  )
+  const isArticleNew = useCallback((a) => {
+    if (a?.created_at) {
+      const t = new Date(a.created_at).getTime()
+      if (!!t && t >= cutoffMs) return true
+    }
+    if (a?.date) {
+      const t = new Date(a.date).getTime()
+      return !!t && t >= cutoffMs
+    }
+    return false
+  }, [cutoffMs])
+
   const sectionNewCounts = useMemo(() => ({
     clinicalTrials: viewClinicalTrials.filter(isNewRow).length,
     filings: viewFilings.filter(isNewRow).length,
@@ -5206,15 +5221,15 @@ function JimLeadsPage(props) {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
-            <div className="text-xs uppercase tracking-wider text-gray-500">Key Accounts</div>
+            <div className="text-xs uppercase tracking-wider text-yellow-400">Key Accounts</div>
             <div className="text-2xl font-bold text-white tabular-nums">{dashStats.keyAccounts.toLocaleString()}</div>
           </div>
           <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
-            <div className="text-xs uppercase tracking-wider text-gray-500">Key Signals</div>
+            <div className="text-xs uppercase tracking-wider text-yellow-400">Key Signals</div>
             <div className="text-2xl font-bold text-white tabular-nums">{dashStats.keySignals.toLocaleString()}</div>
           </div>
           <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
-            <div className="text-xs uppercase tracking-wider text-gray-500">New Key Signals (7d)</div>
+            <div className="text-xs uppercase tracking-wider text-yellow-400">New Key Signals (7d)</div>
             <div className="text-2xl font-bold text-green-400 tabular-nums">&uarr;{dashStats.keyNew.toLocaleString()}</div>
           </div>
         </div>
@@ -5405,6 +5420,7 @@ function JimLeadsPage(props) {
                   const isClient = isPastClient(displayName)
                   const category = getCategory(trial)
                   const contacts = Array.isArray(trial.central_contacts) ? trial.central_contacts : []
+                  const rowIsNew = isNewRow(trial)
 
                   return (
                     <Fragment key={trial.id || trial.nct_id}>
@@ -5420,7 +5436,12 @@ function JimLeadsPage(props) {
                         <td className="px-3 py-3 text-sm text-white" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{trial.brief_title || '—'}</td>
                         <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{trial.phase || '—'}</td>
                         <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{category || '—'}</td>
-                        <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(trial.study_start_date)}</td>
+                        <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                          <span className="inline-flex items-center gap-1">
+                            <span>{formatDate(trial.study_start_date)}</span>
+                            {rowIsNew && <NewBadge />}
+                          </span>
+                        </td>
                       </tr>
                       {isExpanded && (
                         <tr>
@@ -5488,6 +5509,7 @@ function JimLeadsPage(props) {
                   const displayName = getFilingDisplayName(filing)
                   const isClient = isPastClient(displayName)
                   const hasExpandContent = filing._source === '8-K' && filing.agreement_summary
+                  const rowIsNew = isNewRow(filing)
 
                   return (
                     <Fragment key={rowKey}>
@@ -5502,9 +5524,12 @@ function JimLeadsPage(props) {
                         <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{filing._transaction || '—'}</td>
                         <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(filing.filing_date)}</td>
                         <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
-                          {filing.filing_url ? (
-                            <a href={filing.filing_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Filing &#8599;</a>
-                          ) : <span className="text-gray-600">—</span>}
+                          <span className="inline-flex items-center gap-1">
+                            {filing.filing_url ? (
+                              <a href={filing.filing_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Filing &#8599;</a>
+                            ) : <span className="text-gray-600">—</span>}
+                            {rowIsNew && <NewBadge />}
+                          </span>
                         </td>
                       </tr>
                       {isExpanded && (
@@ -5555,6 +5580,7 @@ function JimLeadsPage(props) {
                   const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
                   const displayName = getFundingDisplayName(project)
                   const isClient = isPastClient(displayName)
+                  const rowIsNew = isNewRow(project)
 
                   return (
                     <Fragment key={rowKey}>
@@ -5570,9 +5596,12 @@ function JimLeadsPage(props) {
                         <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatAward(project.award_amount)}</td>
                         <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(project.award_notice_date)}</td>
                         <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
-                          {project.project_url ? (
-                            <a href={project.project_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Project &#8599;</a>
-                          ) : <span className="text-gray-600">—</span>}
+                          <span className="inline-flex items-center gap-1">
+                            {project.project_url ? (
+                              <a href={project.project_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Project &#8599;</a>
+                            ) : <span className="text-gray-600">—</span>}
+                            {rowIsNew && <NewBadge />}
+                          </span>
                         </td>
                       </tr>
                       {isExpanded && hasExpandContent && (
@@ -5621,6 +5650,7 @@ function JimLeadsPage(props) {
                   const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
                   const displayName = getJobDisplayName(job)
                   const isClient = isPastClient(displayName)
+                  const rowIsNew = isNewRow(job)
                   return (
                     <tr key={job.id} className={`${rowBg} transition-colors`}>
                       <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
@@ -5632,9 +5662,12 @@ function JimLeadsPage(props) {
                       <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.company_domain || '—'}</td>
                       <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatClayDate(job.date_posted)}</td>
                       <td className="px-3 py-3 text-sm align-top">
-                        {job.job_url ? (
-                          <a href={job.job_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Job &#8599;</a>
-                        ) : <span className="text-gray-600">—</span>}
+                        <span className="inline-flex items-center gap-1">
+                          {job.job_url ? (
+                            <a href={job.job_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Job &#8599;</a>
+                          ) : <span className="text-gray-600">—</span>}
+                          {rowIsNew && <NewBadge />}
+                        </span>
                       </td>
                     </tr>
                   )
@@ -5670,6 +5703,7 @@ function JimLeadsPage(props) {
                 {filteredNews.map((article, i) => {
                   const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
                   const names = Array.isArray(article.matched_names) ? article.matched_names : []
+                  const rowIsNew = isArticleNew(article)
                   return (
                     <tr key={article.url} className={`${rowBg} transition-colors`}>
                       <td className="px-3 py-3 text-sm text-gray-200 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
@@ -5699,16 +5733,19 @@ function JimLeadsPage(props) {
                         {article._source || '—'}
                       </td>
                       <td className="px-3 py-3 text-sm align-top">
-                        {article.url ? (
-                          <a
-                            href={article.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-400 hover:text-blue-300 font-medium"
-                          >
-                            Read Article &#8599;
-                          </a>
-                        ) : <span className="text-gray-600">—</span>}
+                        <span className="inline-flex items-center gap-1">
+                          {article.url ? (
+                            <a
+                              href={article.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-400 hover:text-blue-300 font-medium"
+                            >
+                              Read Article &#8599;
+                            </a>
+                          ) : <span className="text-gray-600">—</span>}
+                          {rowIsNew && <NewBadge />}
+                        </span>
                       </td>
                     </tr>
                   )
