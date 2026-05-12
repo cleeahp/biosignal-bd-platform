@@ -4705,17 +4705,21 @@ function MadisonLeadsPage(props) {
 
 function JimLeadsPage(props) {
   const { setData, onRefresh, companyNames } = props
-  const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [] }
+  const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0 }, cutoffIso: null }
   const loading = !props.data
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState([])
-  const [searchOpen, setSearchOpen] = useState(false)
+  const [accountView, setAccountView] = useState('key')
+  const [allAccountsOpen, setAllAccountsOpen] = useState(false)
+  const [keyAccountsOpen, setKeyAccountsOpen] = useState(false)
+  const [expandedSections, setExpandedSections] = useState(new Set())
+  const [addSearchQuery, setAddSearchQuery] = useState('')
+  const [addSearchResults, setAddSearchResults] = useState([])
+  const [addSearchOpen, setAddSearchOpen] = useState(false)
   const [expandedTrialRows, setExpandedTrialRows] = useState(new Set())
   const [expandedFilingRows, setExpandedFilingRows] = useState(new Set())
   const [expandedFundingRows, setExpandedFundingRows] = useState(new Set())
   const [assignArticle, setAssignArticle] = useState(null)
-  const searchRef = useRef(null)
-  const dropdownRef = useRef(null)
+  const allAccountsRef = useRef(null)
+  const keyAccountsRef = useRef(null)
 
   const trialsFilter = useColumnFilters()
   const filingsFilter = useColumnFilters()
@@ -4729,12 +4733,23 @@ function JimLeadsPage(props) {
   const jobsDateCol = useDateColumn()
   const newsDateCol = useDateColumn()
 
-  // Client-side filter against pre-loaded companyNames
+  const trackedCompanies = data.trackedCompanies || []
+  const keyCompanies = useMemo(() => trackedCompanies.filter(c => c.is_key_account), [trackedCompanies])
+  const keyNameSet = useMemo(() => new Set(keyCompanies.map(c => (c.name || '').toLowerCase())), [keyCompanies])
+  const trackedNameSet = useMemo(() => new Set(trackedCompanies.map(c => (c.name || '').toLowerCase())), [trackedCompanies])
+
+  const matchesView = useCallback((name) => {
+    if (accountView === 'all') return true
+    if (!name) return false
+    return keyNameSet.has(String(name).toLowerCase())
+  }, [accountView, keyNameSet])
+
+  // Client-side filter against pre-loaded companyNames (used inside All Accounts dropdown)
   useEffect(() => {
-    const q = (searchQuery || '').trim().toLowerCase()
+    const q = (addSearchQuery || '').trim().toLowerCase()
     if (q.length < 2) {
-      setSearchResults([])
-      setSearchOpen(false)
+      setAddSearchResults([])
+      setAddSearchOpen(false)
       return
     }
     const list = Array.isArray(companyNames) ? companyNames : []
@@ -4742,31 +4757,34 @@ function JimLeadsPage(props) {
       .filter(name => name && name.toLowerCase().includes(q))
       .slice(0, 20)
       .map(name => ({ name }))
-    setSearchResults(matches)
-    setSearchOpen(true)
-  }, [searchQuery, companyNames])
+    setAddSearchResults(matches)
+    setAddSearchOpen(true)
+  }, [addSearchQuery, companyNames])
 
-  // Close dropdown on outside click
+  // Close dropdowns on outside click
   useEffect(() => {
-    if (!searchOpen) return
+    if (!allAccountsOpen && !keyAccountsOpen) return
     const handleClick = (e) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target) && !searchRef.current.contains(e.target)) {
-        setSearchOpen(false)
+      if (allAccountsOpen && allAccountsRef.current && !allAccountsRef.current.contains(e.target)) {
+        setAllAccountsOpen(false)
+      }
+      if (keyAccountsOpen && keyAccountsRef.current && !keyAccountsRef.current.contains(e.target)) {
+        setKeyAccountsOpen(false)
       }
     }
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
-  }, [searchOpen])
+  }, [allAccountsOpen, keyAccountsOpen])
 
   const addCompany = async (name) => {
-    if (data.trackedCompanies.includes(name)) return
+    if (trackedNameSet.has((name || '').toLowerCase())) return
     await fetch('/api/jim-leads', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ company_name: name }),
     })
-    setSearchQuery('')
-    setSearchOpen(false)
+    setAddSearchQuery('')
+    setAddSearchOpen(false)
     if (onRefresh) await onRefresh()
   }
 
@@ -4779,8 +4797,90 @@ function JimLeadsPage(props) {
     if (onRefresh) await onRefresh()
   }
 
+  const setKeyAccount = async (name, is_key_account) => {
+    await fetch('/api/jim-leads', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ company_name: name, is_key_account }),
+    })
+    if (onRefresh) await onRefresh()
+  }
+
+  const toggleSection = useCallback((key) => {
+    setExpandedSections(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n })
+  }, [])
+
   const pastClientMatchedNames = useMemo(() => new Set(data.pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [data.pastClients])
   const pastClientNames = useMemo(() => new Set(data.pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [data.pastClients])
+
+  // ── View-filtered signal arrays (filter by Key vs All accounts) ───────────
+  const viewClinicalTrials = useMemo(() => (data.clinicalTrials || []).filter(t => matchesView(t.matched_name)), [data.clinicalTrials, matchesView])
+  const viewFilings = useMemo(() => (data.filings || []).filter(f => matchesView(f.matched_name)), [data.filings, matchesView])
+  const viewFundingProjects = useMemo(() => (data.fundingProjects || []).filter(p => matchesView(p.matched_name)), [data.fundingProjects, matchesView])
+  const viewClayJobs = useMemo(() => (data.clayJobs || []).filter(j => matchesView(j.matched_name)), [data.clayJobs, matchesView])
+  const viewNewsArticles = useMemo(() => {
+    const list = data.newsArticles || []
+    if (accountView === 'all') return list
+    return list.filter(a => Array.isArray(a.matched_names) && a.matched_names.some(n => matchesView(n)))
+  }, [data.newsArticles, accountView, matchesView])
+
+  // ── New-signal counts (per section, respecting active view) ───────────────
+  const cutoffMs = useMemo(() => {
+    if (data.cutoffIso) return new Date(data.cutoffIso).getTime()
+    const now = new Date()
+    const cutoff = new Date(now)
+    cutoff.setUTCHours(5, 0, 0, 0)
+    if (now.getUTCHours() < 5) cutoff.setUTCDate(cutoff.getUTCDate() - 1)
+    cutoff.setUTCDate(cutoff.getUTCDate() - 7)
+    return cutoff.getTime()
+  }, [data.cutoffIso])
+  const isNewRow = useCallback((row) => {
+    const t = new Date(row?.created_at || 0).getTime()
+    return !!t && t >= cutoffMs
+  }, [cutoffMs])
+
+  const sectionNewCounts = useMemo(() => ({
+    clinicalTrials: viewClinicalTrials.filter(isNewRow).length,
+    filings: viewFilings.filter(isNewRow).length,
+    fundingProjects: viewFundingProjects.filter(isNewRow).length,
+    jobs: viewClayJobs.filter(isNewRow).length,
+    news: viewNewsArticles.filter(isNewRow).length,
+  }), [viewClinicalTrials, viewFilings, viewFundingProjects, viewClayJobs, viewNewsArticles, isNewRow])
+
+  // ── Mini-dashboard stats (all + key) ──────────────────────────────────────
+  const dashStats = useMemo(() => {
+    const all = data
+    const allTotal = (all.clinicalTrials?.length || 0) + (all.filings?.length || 0) + (all.fundingProjects?.length || 0) + (all.clayJobs?.length || 0) + (all.newsArticles?.length || 0)
+    const allNew =
+      (all.clinicalTrials || []).filter(isNewRow).length +
+      (all.filings || []).filter(isNewRow).length +
+      (all.fundingProjects || []).filter(isNewRow).length +
+      (all.clayJobs || []).filter(isNewRow).length +
+      (all.newsArticles || []).filter(isNewRow).length
+
+    const inKey = name => name && keyNameSet.has(String(name).toLowerCase())
+    const keyTrials = (all.clinicalTrials || []).filter(t => inKey(t.matched_name))
+    const keyFilings = (all.filings || []).filter(f => inKey(f.matched_name))
+    const keyFunding = (all.fundingProjects || []).filter(p => inKey(p.matched_name))
+    const keyJobs = (all.clayJobs || []).filter(j => inKey(j.matched_name))
+    const keyNews = (all.newsArticles || []).filter(a => Array.isArray(a.matched_names) && a.matched_names.some(inKey))
+    const keyTotal = keyTrials.length + keyFilings.length + keyFunding.length + keyJobs.length + keyNews.length
+    const keyNew =
+      keyTrials.filter(isNewRow).length +
+      keyFilings.filter(isNewRow).length +
+      keyFunding.filter(isNewRow).length +
+      keyJobs.filter(isNewRow).length +
+      keyNews.filter(isNewRow).length
+
+    return {
+      totalAccounts: trackedCompanies.length,
+      totalSignals: allTotal,
+      totalNew: allNew,
+      keyAccounts: keyCompanies.length,
+      keySignals: keyTotal,
+      keyNew,
+    }
+  }, [data, trackedCompanies.length, keyCompanies.length, keyNameSet, isNewRow])
 
   const toggleTrialRow = useCallback((id) => {
     setExpandedTrialRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -4822,18 +4922,18 @@ function JimLeadsPage(props) {
   }), [getTrialDisplayName, getCategory])
 
   const trialAllValues = useMemo(() => ({
-    nct_id: data.clinicalTrials.map(t => t.nct_id || ''),
-    company: data.clinicalTrials.map(t => getTrialDisplayName(t)),
-    title: data.clinicalTrials.map(t => t.brief_title || ''),
-    phase: data.clinicalTrials.map(t => t.phase || ''),
-    category: data.clinicalTrials.map(t => getCategory(t)),
-  }), [data.clinicalTrials, getTrialDisplayName, getCategory])
+    nct_id: viewClinicalTrials.map(t => t.nct_id || ''),
+    company: viewClinicalTrials.map(t => getTrialDisplayName(t)),
+    title: viewClinicalTrials.map(t => t.brief_title || ''),
+    phase: viewClinicalTrials.map(t => t.phase || ''),
+    category: viewClinicalTrials.map(t => getCategory(t)),
+  }), [viewClinicalTrials, getTrialDisplayName, getCategory])
 
-  const trialsRawDates = useMemo(() => data.clinicalTrials.map(t => t.study_start_date), [data.clinicalTrials])
+  const trialsRawDates = useMemo(() => viewClinicalTrials.map(t => t.study_start_date), [viewClinicalTrials])
   const getTrialDate = useCallback(t => t.study_start_date, [])
 
   const defaultSortedTrials = useMemo(() => {
-    const arr = [...data.clinicalTrials]
+    const arr = [...viewClinicalTrials]
     arr.sort((a, b) => {
       const ap = isPastClient(getTrialDisplayName(a)) ? 1 : 0
       const bp = isPastClient(getTrialDisplayName(b)) ? 1 : 0
@@ -4843,7 +4943,7 @@ function JimLeadsPage(props) {
       return db - da
     })
     return arr
-  }, [data.clinicalTrials, isPastClient, getTrialDisplayName])
+  }, [viewClinicalTrials, isPastClient, getTrialDisplayName])
 
   const sortedTrials = useMemo(() => (
     trialsDateCol.sortDir === null ? defaultSortedTrials : sortRowsByDate(defaultSortedTrials, getTrialDate, trialsDateCol.sortDir)
@@ -4863,15 +4963,15 @@ function JimLeadsPage(props) {
   }), [getFilingDisplayName])
 
   const filingAllValues = useMemo(() => ({
-    company: data.filings.map(f => getFilingDisplayName(f)),
-    transaction: data.filings.map(f => f._transaction || ''),
-  }), [data.filings, getFilingDisplayName])
+    company: viewFilings.map(f => getFilingDisplayName(f)),
+    transaction: viewFilings.map(f => f._transaction || ''),
+  }), [viewFilings, getFilingDisplayName])
 
-  const filingsRawDates = useMemo(() => data.filings.map(f => f.filing_date), [data.filings])
+  const filingsRawDates = useMemo(() => viewFilings.map(f => f.filing_date), [viewFilings])
   const getFilingDate = useCallback(f => f.filing_date, [])
 
   const defaultSortedFilings = useMemo(() => {
-    const arr = [...data.filings]
+    const arr = [...viewFilings]
     arr.sort((a, b) => {
       const ap = isPastClient(getFilingDisplayName(a)) ? 1 : 0
       const bp = isPastClient(getFilingDisplayName(b)) ? 1 : 0
@@ -4881,7 +4981,7 @@ function JimLeadsPage(props) {
       return db - da
     })
     return arr
-  }, [data.filings, isPastClient, getFilingDisplayName])
+  }, [viewFilings, isPastClient, getFilingDisplayName])
 
   const sortedFilings = useMemo(() => (
     filingsDateCol.sortDir === null ? defaultSortedFilings : sortRowsByDate(defaultSortedFilings, getFilingDate, filingsDateCol.sortDir)
@@ -4901,15 +5001,15 @@ function JimLeadsPage(props) {
   }), [getFundingDisplayName])
 
   const fundingAllValues = useMemo(() => ({
-    company: data.fundingProjects.map(p => getFundingDisplayName(p)),
-    title: data.fundingProjects.map(p => p.project_title || ''),
-  }), [data.fundingProjects, getFundingDisplayName])
+    company: viewFundingProjects.map(p => getFundingDisplayName(p)),
+    title: viewFundingProjects.map(p => p.project_title || ''),
+  }), [viewFundingProjects, getFundingDisplayName])
 
-  const fundingRawDates = useMemo(() => data.fundingProjects.map(p => p.award_notice_date), [data.fundingProjects])
+  const fundingRawDates = useMemo(() => viewFundingProjects.map(p => p.award_notice_date), [viewFundingProjects])
   const getFundingDate = useCallback(p => p.award_notice_date, [])
 
   const defaultSortedFunding = useMemo(() => {
-    const arr = [...data.fundingProjects]
+    const arr = [...viewFundingProjects]
     arr.sort((a, b) => {
       const ap = isPastClient(getFundingDisplayName(a)) ? 1 : 0
       const bp = isPastClient(getFundingDisplayName(b)) ? 1 : 0
@@ -4919,7 +5019,7 @@ function JimLeadsPage(props) {
       return db - da
     })
     return arr
-  }, [data.fundingProjects, isPastClient, getFundingDisplayName])
+  }, [viewFundingProjects, isPastClient, getFundingDisplayName])
 
   const sortedFunding = useMemo(() => (
     fundingDateCol.sortDir === null ? defaultSortedFunding : sortRowsByDate(defaultSortedFunding, getFundingDate, fundingDateCol.sortDir)
@@ -4940,16 +5040,16 @@ function JimLeadsPage(props) {
   }), [getJobDisplayName])
 
   const jobAllValues = useMemo(() => ({
-    company: (data.clayJobs || []).map(j => getJobDisplayName(j)),
-    title: (data.clayJobs || []).map(j => j.job_title || ''),
-    location: (data.clayJobs || []).map(j => j.location || ''),
-  }), [data.clayJobs, getJobDisplayName])
+    company: viewClayJobs.map(j => getJobDisplayName(j)),
+    title: viewClayJobs.map(j => j.job_title || ''),
+    location: viewClayJobs.map(j => j.location || ''),
+  }), [viewClayJobs, getJobDisplayName])
 
-  const jobsRawDates = useMemo(() => (data.clayJobs || []).map(j => j.date_posted), [data.clayJobs])
+  const jobsRawDates = useMemo(() => viewClayJobs.map(j => j.date_posted), [viewClayJobs])
   const getJobDate = useCallback(j => j.date_posted, [])
 
   const defaultSortedJobs = useMemo(() => {
-    const arr = [...(data.clayJobs || [])]
+    const arr = [...viewClayJobs]
     arr.sort((a, b) => {
       const ap = isPastClient(getJobDisplayName(a)) ? 1 : 0
       const bp = isPastClient(getJobDisplayName(b)) ? 1 : 0
@@ -4957,7 +5057,7 @@ function JimLeadsPage(props) {
       return new Date(b.created_at || 0) - new Date(a.created_at || 0)
     })
     return arr
-  }, [data.clayJobs, isPastClient, getJobDisplayName])
+  }, [viewClayJobs, isPastClient, getJobDisplayName])
 
   const sortedJobs = useMemo(() => (
     jobsDateCol.sortDir === null ? defaultSortedJobs : sortRowsByDate(defaultSortedJobs, getJobDate, jobsDateCol.sortDir)
@@ -4976,23 +5076,23 @@ function JimLeadsPage(props) {
 
   const newsAllValues = useMemo(() => {
     const companySet = new Set()
-    for (const a of data.newsArticles || []) {
+    for (const a of viewNewsArticles) {
       if (Array.isArray(a.matched_names)) {
         for (const n of a.matched_names) if (n) companySet.add(n)
       }
     }
     return {
       company: [...companySet],
-      title: (data.newsArticles || []).map(a => a.title || ''),
-      source: (data.newsArticles || []).map(a => a._source || ''),
+      title: viewNewsArticles.map(a => a.title || ''),
+      source: viewNewsArticles.map(a => a._source || ''),
     }
-  }, [data.newsArticles])
+  }, [viewNewsArticles])
 
-  const newsRawDates = useMemo(() => (data.newsArticles || []).map(a => a.date), [data.newsArticles])
+  const newsRawDates = useMemo(() => viewNewsArticles.map(a => a.date), [viewNewsArticles])
   const getNewsDate = useCallback(a => a.date, [])
 
   const defaultSortedNews = useMemo(() => {
-    const arr = [...(data.newsArticles || [])]
+    const arr = [...viewNewsArticles]
     arr.sort((a, b) => {
       const ap = articleHasPastClient(a) ? 1 : 0
       const bp = articleHasPastClient(b) ? 1 : 0
@@ -5008,7 +5108,7 @@ function JimLeadsPage(props) {
       return new Date(b.created_at || 0) - new Date(a.created_at || 0)
     })
     return arr
-  }, [data.newsArticles, articleHasPastClient])
+  }, [viewNewsArticles, articleHasPastClient])
 
   const sortedNews = useMemo(() => (
     newsDateCol.sortDir === null ? defaultSortedNews : sortRowsByDate(defaultSortedNews, getNewsDate, newsDateCol.sortDir)
@@ -5044,55 +5144,189 @@ function JimLeadsPage(props) {
     }) : prev)
   }, [setData])
 
-  // Filter search results to exclude already-tracked companies
-  const availableResults = searchResults.filter(r => !data.trackedCompanies.includes(r.name))
+  // Exclude already-tracked companies from add-search suggestions
+  const addSearchAvailable = addSearchResults.filter(r => !trackedNameSet.has((r.name || '').toLowerCase()))
+
+  const SectionHeader = ({ sectionKey, label, total, newCount }) => {
+    const expanded = expandedSections.has(sectionKey)
+    return (
+      <button
+        type="button"
+        onClick={() => toggleSection(sectionKey)}
+        className="w-full flex items-center gap-2 px-3 py-2.5 bg-[#1f2937] hover:bg-[#263045] border border-[#374151] rounded-lg text-left transition-colors"
+      >
+        <span className="text-gray-400 text-xs w-3">{expanded ? '▼' : '▶'}</span>
+        <span className="text-white text-base font-semibold">{label}</span>
+        <span className="text-gray-400 text-sm">({total})</span>
+        {newCount > 0 && (
+          <span className="ml-auto text-green-400 text-sm font-semibold tabular-nums">&uarr;{newCount} new</span>
+        )}
+      </button>
+    )
+  }
 
   return (
     <div className="flex flex-col gap-6">
-      {/* ── Company Selector ─────────────────────────────────────────────── */}
+      {/* ── Mini Dashboard ───────────────────────────────────────────────── */}
       <div className="flex flex-col gap-3">
-        <div className="relative" ref={searchRef}>
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search companies to track..."
-            className="w-full bg-[#111827] text-sm text-white px-4 py-2.5 rounded-lg border border-[#374151] outline-none focus:border-blue-500 placeholder-gray-500"
-          />
-          {searchOpen && availableResults.length > 0 && (
-            <div
-              ref={dropdownRef}
-              className="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl"
-            >
-              {availableResults.slice(0, 20).map(r => (
-                <button
-                  key={r.name}
-                  onClick={() => addCompany(r.name)}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-200 hover:bg-blue-600/20 hover:text-white transition-colors"
-                >
-                  {r.name}
-                </button>
-              ))}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-gray-500">Total Accounts</div>
+            <div className="text-2xl font-bold text-white tabular-nums">{dashStats.totalAccounts.toLocaleString()}</div>
+          </div>
+          <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-gray-500">Total Signals</div>
+            <div className="text-2xl font-bold text-white tabular-nums">{dashStats.totalSignals.toLocaleString()}</div>
+          </div>
+          <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-gray-500">New Signals (7d)</div>
+            <div className="text-2xl font-bold text-green-400 tabular-nums">&uarr;{dashStats.totalNew.toLocaleString()}</div>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-gray-500">Key Accounts</div>
+            <div className="text-2xl font-bold text-white tabular-nums">{dashStats.keyAccounts.toLocaleString()}</div>
+          </div>
+          <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-gray-500">Key Signals</div>
+            <div className="text-2xl font-bold text-white tabular-nums">{dashStats.keySignals.toLocaleString()}</div>
+          </div>
+          <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-gray-500">New Key Signals (7d)</div>
+            <div className="text-2xl font-bold text-green-400 tabular-nums">&uarr;{dashStats.keyNew.toLocaleString()}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Account Management Dropdowns ─────────────────────────────────── */}
+      <div className="flex flex-wrap gap-3 items-start">
+        <div className="relative" ref={allAccountsRef}>
+          <button
+            type="button"
+            onClick={() => { setAllAccountsOpen(v => !v); setKeyAccountsOpen(false) }}
+            className="px-4 py-2 text-sm font-semibold bg-[#1f2937] border border-[#374151] rounded-lg text-white hover:bg-[#263045] transition-colors"
+          >
+            All Accounts ({trackedCompanies.length}) {allAccountsOpen ? '▲' : '▼'}
+          </button>
+          {allAccountsOpen && (
+            <div className="absolute z-50 mt-1 w-80 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl overflow-hidden">
+              <div className="max-h-72 overflow-y-auto">
+                {trackedCompanies.length === 0 ? (
+                  <p className="px-3 py-4 text-sm text-gray-500 italic">No companies tracked yet.</p>
+                ) : trackedCompanies.map(c => (
+                  <div key={c.name} className="flex items-center gap-2 px-3 py-2 border-b border-[#374151] last:border-b-0 hover:bg-[#263045] transition-colors">
+                    <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
+                      {c.is_key_account && <span className="text-yellow-400 mr-1" title="Key account">&#9733;</span>}
+                      {c.name}
+                    </span>
+                    {!c.is_key_account && (
+                      <button
+                        onClick={() => setKeyAccount(c.name, true)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/20 transition-colors"
+                        title="Mark as key account"
+                      >
+                        &#9733; Key
+                      </button>
+                    )}
+                    <button
+                      onClick={() => removeCompany(c.name)}
+                      className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
+                      title={`Remove ${c.name}`}
+                    >
+                      &times; Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="relative border-t border-[#374151] p-2 bg-[#18202e]">
+                <input
+                  type="text"
+                  value={addSearchQuery}
+                  onChange={e => setAddSearchQuery(e.target.value)}
+                  placeholder="Search to add a company..."
+                  className="w-full bg-[#111827] text-sm text-white px-3 py-2 rounded border border-[#374151] outline-none focus:border-blue-500 placeholder-gray-500"
+                />
+                {addSearchOpen && addSearchAvailable.length > 0 && (
+                  <div className="absolute z-50 left-2 right-2 mt-1 max-h-48 overflow-y-auto bg-[#1f2937] border border-[#374151] rounded shadow-2xl">
+                    {addSearchAvailable.slice(0, 20).map(r => (
+                      <button
+                        key={r.name}
+                        onClick={() => addCompany(r.name)}
+                        className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-blue-600/20 hover:text-white transition-colors"
+                      >
+                        {r.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
 
-        {data.trackedCompanies.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {data.trackedCompanies.map(name => (
-              <span key={name} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-600/20 text-blue-300 text-xs font-medium border border-blue-500/30">
-                {name}
-                <button
-                  onClick={() => removeCompany(name)}
-                  className="ml-0.5 text-blue-400 hover:text-white transition-colors text-base leading-none"
-                  aria-label={`Remove ${name}`}
-                >
-                  &times;
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+        <div className="relative" ref={keyAccountsRef}>
+          <button
+            type="button"
+            onClick={() => { setKeyAccountsOpen(v => !v); setAllAccountsOpen(false) }}
+            className="px-4 py-2 text-sm font-semibold bg-[#1f2937] border border-yellow-500/40 rounded-lg text-yellow-300 hover:bg-[#263045] transition-colors"
+          >
+            &#9733; Key Accounts ({keyCompanies.length}) {keyAccountsOpen ? '▲' : '▼'}
+          </button>
+          {keyAccountsOpen && (
+            <div className="absolute z-50 mt-1 w-80 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl overflow-hidden">
+              <div className="max-h-72 overflow-y-auto">
+                {keyCompanies.length === 0 ? (
+                  <p className="px-3 py-4 text-sm text-gray-500 italic">No key accounts yet.</p>
+                ) : keyCompanies.map(c => (
+                  <div key={c.name} className="flex items-center gap-2 px-3 py-2 border-b border-[#374151] last:border-b-0 hover:bg-[#263045] transition-colors">
+                    <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
+                      <span className="text-yellow-400 mr-1">&#9733;</span>{c.name}
+                    </span>
+                    <button
+                      onClick={() => setKeyAccount(c.name, false)}
+                      className="px-2 py-1 text-xs font-semibold rounded border border-gray-500/40 text-gray-300 hover:bg-gray-500/20 transition-colors"
+                      title="Demote to regular account"
+                    >
+                      &darr; Demote
+                    </button>
+                    <button
+                      onClick={() => removeCompany(c.name)}
+                      className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
+                      title={`Remove ${c.name}`}
+                    >
+                      &times; Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── View Tab Toggle ──────────────────────────────────────────────── */}
+      <div className="inline-flex self-start rounded-md border border-[#374151] overflow-hidden">
+        <button
+          onClick={() => setAccountView('key')}
+          className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+            accountView === 'key'
+              ? 'bg-yellow-600/30 text-yellow-200'
+              : 'bg-[#1f2937] text-gray-400 hover:text-white hover:bg-[#263045]'
+          }`}
+        >
+          Key Accounts
+        </button>
+        <button
+          onClick={() => setAccountView('all')}
+          className={`px-3 py-1.5 text-xs font-semibold border-l border-[#374151] transition-colors ${
+            accountView === 'all'
+              ? 'bg-blue-600/30 text-blue-300'
+              : 'bg-[#1f2937] text-gray-400 hover:text-white hover:bg-[#263045]'
+          }`}
+        >
+          All Accounts
+        </button>
       </div>
 
       {loading && (
@@ -5101,14 +5335,19 @@ function JimLeadsPage(props) {
         </div>
       )}
 
-      {!loading && data.trackedCompanies.length === 0 && (
-        <EmptyState message="Search and add companies above to see their clinical trials and SEC filings." />
+      {!loading && trackedCompanies.length === 0 && (
+        <EmptyState message="Open the All Accounts dropdown above to add your first company." />
+      )}
+
+      {!loading && trackedCompanies.length > 0 && accountView === 'key' && keyCompanies.length === 0 && (
+        <EmptyState message="No key accounts yet. Open the All Accounts dropdown and promote companies with the Key button, or switch to All Accounts." />
       )}
 
       {/* ── Clinical Trials Section ──────────────────────────────────────── */}
-      {!loading && data.clinicalTrials.length > 0 && (
+      {!loading && viewClinicalTrials.length > 0 && (
         <div className="flex flex-col gap-2">
-          <h2 className="text-white text-base font-semibold">Clinical Trials</h2>
+          <SectionHeader sectionKey="clinicalTrials" label="Clinical Trials" total={viewClinicalTrials.length} newCount={sectionNewCounts.clinicalTrials} />
+          {expandedSections.has('clinicalTrials') && (<>
           <ClearAllFiltersButton
             hasActiveFilters={trialsFilter.hasActiveFilters || trialsDateCol.hasDateFilter}
             onClear={() => { trialsFilter.clearAll(); trialsDateCol.clearDateFilter() }}
@@ -5185,13 +5424,15 @@ function JimLeadsPage(props) {
               </tbody>
             </table>
           </div>
+          </>)}
         </div>
       )}
 
       {/* ── M&A and Filings Section ──────────────────────────────────────── */}
-      {!loading && data.filings.length > 0 && (
+      {!loading && viewFilings.length > 0 && (
         <div className="flex flex-col gap-2">
-          <h2 className="text-white text-base font-semibold">M&A and Filings</h2>
+          <SectionHeader sectionKey="filings" label="M&A and Filings" total={viewFilings.length} newCount={sectionNewCounts.filings} />
+          {expandedSections.has('filings') && (<>
           <ClearAllFiltersButton
             hasActiveFilters={filingsFilter.hasActiveFilters || filingsDateCol.hasDateFilter}
             onClear={() => { filingsFilter.clearAll(); filingsDateCol.clearDateFilter() }}
@@ -5249,13 +5490,15 @@ function JimLeadsPage(props) {
               </tbody>
             </table>
           </div>
+          </>)}
         </div>
       )}
 
       {/* ── Funding Projects Section ─────────────────────────────────────── */}
-      {!loading && data.fundingProjects.length > 0 && (
+      {!loading && viewFundingProjects.length > 0 && (
         <div className="flex flex-col gap-2">
-          <h2 className="text-white text-base font-semibold">Funding Projects</h2>
+          <SectionHeader sectionKey="fundingProjects" label="Funding Projects" total={viewFundingProjects.length} newCount={sectionNewCounts.fundingProjects} />
+          {expandedSections.has('fundingProjects') && (<>
           <ClearAllFiltersButton
             hasActiveFilters={fundingFilter.hasActiveFilters || fundingDateCol.hasDateFilter}
             onClear={() => { fundingFilter.clearAll(); fundingDateCol.clearDateFilter() }}
@@ -5315,13 +5558,15 @@ function JimLeadsPage(props) {
               </tbody>
             </table>
           </div>
+          </>)}
         </div>
       )}
 
       {/* ── Jobs Section ─────────────────────────────────────────────────── */}
-      {!loading && (data.clayJobs || []).length > 0 && (
+      {!loading && viewClayJobs.length > 0 && (
         <div className="flex flex-col gap-2">
-          <h2 className="text-white text-base font-semibold">Jobs</h2>
+          <SectionHeader sectionKey="jobs" label="Jobs" total={viewClayJobs.length} newCount={sectionNewCounts.jobs} />
+          {expandedSections.has('jobs') && (<>
           <ClearAllFiltersButton
             hasActiveFilters={jobsFilter.hasActiveFilters || jobsDateCol.hasDateFilter}
             onClear={() => { jobsFilter.clearAll(); jobsDateCol.clearDateFilter() }}
@@ -5364,13 +5609,15 @@ function JimLeadsPage(props) {
               </tbody>
             </table>
           </div>
+          </>)}
         </div>
       )}
 
       {/* ── News Section ─────────────────────────────────────────────────── */}
-      {!loading && (data.newsArticles || []).length > 0 && (
+      {!loading && viewNewsArticles.length > 0 && (
         <div className="flex flex-col gap-2">
-          <h2 className="text-white text-base font-semibold">News</h2>
+          <SectionHeader sectionKey="news" label="News" total={viewNewsArticles.length} newCount={sectionNewCounts.news} />
+          {expandedSections.has('news') && (<>
           <ClearAllFiltersButton
             hasActiveFilters={newsFilter.hasActiveFilters || newsDateCol.hasDateFilter}
             onClear={() => { newsFilter.clearAll(); newsDateCol.clearDateFilter() }}
@@ -5436,6 +5683,7 @@ function JimLeadsPage(props) {
               </tbody>
             </table>
           </div>
+          </>)}
         </div>
       )}
 
