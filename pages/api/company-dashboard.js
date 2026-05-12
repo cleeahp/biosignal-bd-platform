@@ -42,45 +42,46 @@ async function fetchSummaryView() {
   return rows
 }
 
-// Fetches today's matched rows for each signal source. All queries run in parallel
-// via Promise.all, and each is filtered by created_at so we never re-scan full tables.
-async function fetchNewTodayBuckets(todayIso) {
-  const sinceToday = q => q.not('matched_name', 'is', null).gte('created_at', todayIso)
-  const sinceTodayArr = q => q.not('matched_names', 'is', null).gte('created_at', todayIso)
+// Fetches matched rows from the past 7 days for each signal source. All queries run
+// in parallel via Promise.all, and each is filtered by created_at so we never
+// re-scan full tables.
+async function fetchNewThisWeekBuckets(cutoffIso) {
+  const sinceCutoff = q => q.not('matched_name', 'is', null).gte('created_at', cutoffIso)
+  const sinceCutoffArr = q => q.not('matched_names', 'is', null).gte('created_at', cutoffIso)
 
   const [
-    trialsToday,
-    eightKToday,
-    s1Today,
-    fundingToday,
-    fierceToday,
-    biospaceToday,
-    endpointsToday,
+    trialsWeek,
+    eightKWeek,
+    s1Week,
+    fundingWeek,
+    fierceWeek,
+    biospaceWeek,
+    endpointsWeek,
   ] = await Promise.all([
-    fetchAll('clinical_trials', 'matched_name', sinceToday),
-    fetchAll('eight_k_filings', 'matched_name, items', sinceToday),
-    fetchAll('s1_filings', 'matched_name', sinceToday),
-    fetchAll('funding_projects', 'matched_name', sinceToday),
-    fetchAll('fiercebio_news', 'matched_names', sinceTodayArr),
-    fetchAll('biospace_news', 'matched_names', sinceTodayArr),
-    fetchAll('endpoint_news', 'matched_names', sinceTodayArr),
+    fetchAll('clinical_trials', 'matched_name', sinceCutoff),
+    fetchAll('eight_k_filings', 'matched_name, items', sinceCutoff),
+    fetchAll('s1_filings', 'matched_name', sinceCutoff),
+    fetchAll('funding_projects', 'matched_name', sinceCutoff),
+    fetchAll('fiercebio_news', 'matched_names', sinceCutoffArr),
+    fetchAll('biospace_news', 'matched_names', sinceCutoffArr),
+    fetchAll('endpoint_news', 'matched_names', sinceCutoffArr),
   ])
 
   const trialNew = new Map()
-  for (const r of trialsToday) bumpScalar(trialNew, r.matched_name)
+  for (const r of trialsWeek) bumpScalar(trialNew, r.matched_name)
 
   const maNew = new Map()
-  for (const r of eightKToday) {
+  for (const r of eightKWeek) {
     if (!Array.isArray(r.items) || !r.items.includes('1.01')) continue
     bumpScalar(maNew, r.matched_name)
   }
-  for (const r of s1Today) bumpScalar(maNew, r.matched_name)
+  for (const r of s1Week) bumpScalar(maNew, r.matched_name)
 
   const fundingNew = new Map()
-  for (const r of fundingToday) bumpScalar(fundingNew, r.matched_name)
+  for (const r of fundingWeek) bumpScalar(fundingNew, r.matched_name)
 
   const newsNew = new Map()
-  for (const list of [fierceToday, biospaceToday, endpointsToday]) {
+  for (const list of [fierceWeek, biospaceWeek, endpointsWeek]) {
     for (const r of list) {
       if (!Array.isArray(r.matched_names)) continue
       for (const name of r.matched_names) bumpScalar(newsNew, name)
@@ -90,26 +91,27 @@ async function fetchNewTodayBuckets(todayIso) {
   return { trialNew, maNew, fundingNew, newsNew }
 }
 
-// Returns ISO timestamp for midnight EST (UTC-5) of "today" in EST.
+// Returns ISO timestamp for midnight EST (UTC-5) seven days ago.
 // Midnight EST = 5:00 AM UTC. If current UTC time is before 5 AM, it's still
-// yesterday in EST, so subtract one day so the cutoff sits at the most recent
-// midnight-EST that has already passed.
-function midnightEstIso() {
+// yesterday in EST, so subtract one day so the "today midnight EST" baseline sits
+// at the most recent midnight-EST that has already passed; then subtract 7 days.
+function sevenDaysAgoMidnightEstIso() {
   const now = new Date()
   const cutoff = new Date(now)
   cutoff.setUTCHours(5, 0, 0, 0)
   if (now.getUTCHours() < 5) {
     cutoff.setUTCDate(cutoff.getUTCDate() - 1)
   }
+  cutoff.setUTCDate(cutoff.getUTCDate() - 7)
   return cutoff.toISOString()
 }
 
 async function buildDashboard() {
-  const todayIso = midnightEstIso()
+  const cutoffIso = sevenDaysAgoMidnightEstIso()
 
-  const [aggRows, newToday, directory, clientRows] = await Promise.all([
+  const [aggRows, newThisWeek, directory, clientRows] = await Promise.all([
     fetchSummaryView(),
-    fetchNewTodayBuckets(todayIso),
+    fetchNewThisWeekBuckets(cutoffIso),
     fetchAll('companies_directory', 'name, company_size'),
     (async () => {
       const { data, error } = await supabase
@@ -121,7 +123,7 @@ async function buildDashboard() {
     })(),
   ])
 
-  const { trialNew, maNew, fundingNew, newsNew } = newToday
+  const { trialNew, maNew, fundingNew, newsNew } = newThisWeek
 
   const pastClients = clientRows
     .filter(r => r.name)
