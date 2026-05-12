@@ -4714,12 +4714,15 @@ function JimLeadsPage(props) {
   const [addSearchQuery, setAddSearchQuery] = useState('')
   const [addSearchResults, setAddSearchResults] = useState([])
   const [addSearchOpen, setAddSearchOpen] = useState(false)
+  const [addSearchPos, setAddSearchPos] = useState({ top: 0, left: 0, width: 0 })
   const [expandedTrialRows, setExpandedTrialRows] = useState(new Set())
   const [expandedFilingRows, setExpandedFilingRows] = useState(new Set())
   const [expandedFundingRows, setExpandedFundingRows] = useState(new Set())
   const [assignArticle, setAssignArticle] = useState(null)
   const allAccountsRef = useRef(null)
   const keyAccountsRef = useRef(null)
+  const addSearchInputRef = useRef(null)
+  const addSearchDropdownRef = useRef(null)
 
   const trialsFilter = useColumnFilters()
   const filingsFilter = useColumnFilters()
@@ -4765,7 +4768,8 @@ function JimLeadsPage(props) {
   useEffect(() => {
     if (!allAccountsOpen && !keyAccountsOpen) return
     const handleClick = (e) => {
-      if (allAccountsOpen && allAccountsRef.current && !allAccountsRef.current.contains(e.target)) {
+      if (allAccountsOpen && allAccountsRef.current && !allAccountsRef.current.contains(e.target)
+          && !(addSearchDropdownRef.current && addSearchDropdownRef.current.contains(e.target))) {
         setAllAccountsOpen(false)
       }
       if (keyAccountsOpen && keyAccountsRef.current && !keyAccountsRef.current.contains(e.target)) {
@@ -4775,6 +4779,23 @@ function JimLeadsPage(props) {
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
   }, [allAccountsOpen, keyAccountsOpen])
+
+  // Recompute portal position for the add-search dropdown
+  useEffect(() => {
+    if (!addSearchOpen) return
+    const updatePos = () => {
+      if (!addSearchInputRef.current) return
+      const rect = addSearchInputRef.current.getBoundingClientRect()
+      setAddSearchPos({ top: rect.bottom + 4, left: rect.left, width: rect.width })
+    }
+    updatePos()
+    window.addEventListener('resize', updatePos)
+    window.addEventListener('scroll', updatePos, true)
+    return () => {
+      window.removeEventListener('resize', updatePos)
+      window.removeEventListener('scroll', updatePos, true)
+    }
+  }, [addSearchOpen, addSearchResults])
 
   const addCompany = async (name) => {
     if (trackedNameSet.has((name || '').toLowerCase())) return
@@ -5239,26 +5260,38 @@ function JimLeadsPage(props) {
                   </div>
                 ))}
               </div>
-              <div className="relative border-t border-[#374151] p-2 bg-[#18202e]">
+              <div className="border-t border-[#374151] p-2 bg-[#18202e]">
                 <input
+                  ref={addSearchInputRef}
                   type="text"
                   value={addSearchQuery}
                   onChange={e => setAddSearchQuery(e.target.value)}
                   placeholder="Search to add a company..."
                   className="w-full bg-[#111827] text-sm text-white px-3 py-2 rounded border border-[#374151] outline-none focus:border-blue-500 placeholder-gray-500"
                 />
-                {addSearchOpen && addSearchAvailable.length > 0 && (
-                  <div className="absolute z-50 left-2 right-2 mt-1 max-h-48 overflow-y-auto bg-[#1f2937] border border-[#374151] rounded shadow-2xl">
+                {addSearchOpen && addSearchAvailable.length > 0 && typeof document !== 'undefined' && createPortal(
+                  <div
+                    ref={addSearchDropdownRef}
+                    style={{
+                      position: 'fixed',
+                      top: addSearchPos.top,
+                      left: addSearchPos.left,
+                      width: addSearchPos.width,
+                      zIndex: 1100,
+                    }}
+                    className="max-h-48 overflow-y-auto bg-[#1f2937] border border-[#374151] rounded shadow-2xl"
+                  >
                     {addSearchAvailable.slice(0, 20).map(r => (
                       <button
                         key={r.name}
-                        onClick={() => addCompany(r.name)}
+                        onMouseDown={(e) => { e.preventDefault(); addCompany(r.name) }}
                         className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-blue-600/20 hover:text-white transition-colors"
                       >
                         {r.name}
                       </button>
                     ))}
-                  </div>
+                  </div>,
+                  document.body
                 )}
               </div>
             </div>
