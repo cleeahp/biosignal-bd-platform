@@ -102,10 +102,6 @@ export default async function handler(req, res) {
   if (clientErr) return res.status(500).json({ error: clientErr.message })
 
   const pastClients = (clientRows || []).map(r => ({ name: r.name, matched_name: r.matched_name }))
-  const pastClientsLower = new Set([
-    ...pastClients.map(c => c.name.toLowerCase()),
-    ...pastClients.filter(c => c.matched_name).map(c => c.matched_name.toLowerCase()),
-  ])
 
   const PAGE = 1000
   const cutoffMs = new Date(cutoffIso).getTime()
@@ -131,15 +127,6 @@ export default async function handler(req, res) {
     offset += PAGE
   }
 
-  // Filter trials: exclude 10,001+ unless past client
-  const filteredTrials = trials.filter(t => {
-    if (t.company_size === '10,001+ employees') {
-      const name = (t.matched_name || '').toLowerCase()
-      return name && pastClientsLower.has(name)
-    }
-    return true
-  })
-
   // ── 8-K filings for tracked companies ─────────────────────────────────────
   const eightK = []
   offset = 0
@@ -157,20 +144,13 @@ export default async function handler(req, res) {
     offset += PAGE
   }
 
-  const filtered8K = eightK.filter(f => {
-    const hasItem101 = Array.isArray(f.items) && f.items.includes('1.01')
-    if (!hasItem101) return false
-
-    if (f.company_size === '10,001+ employees') {
-      const name = (f.matched_name || '').toLowerCase()
-      return name && pastClientsLower.has(name)
-    }
-    return true
-  }).map(f => ({
-    ...f,
-    _source: '8-K',
-    _transaction: f.agreement_type || 'Other',
-  }))
+  const filtered8K = eightK
+    .filter(f => Array.isArray(f.items) && f.items.includes('1.01'))
+    .map(f => ({
+      ...f,
+      _source: '8-K',
+      _transaction: f.agreement_type || 'Other',
+    }))
 
   // ── S-1 filings for tracked companies ─────────────────────────────────────
   const s1 = []
@@ -189,19 +169,13 @@ export default async function handler(req, res) {
     offset += PAGE
   }
 
-  const filteredS1 = s1.filter(f => {
-    if (f.company_size === '10,001+ employees') {
-      const name = (f.matched_name || '').toLowerCase()
-      return name && pastClientsLower.has(name)
-    }
-    return true
-  }).map(f => ({
+  const mappedS1 = s1.map(f => ({
     ...f,
     _source: 'S-1',
     _transaction: 'IPO',
   }))
 
-  const filings = [...filtered8K, ...filteredS1]
+  const filings = [...filtered8K, ...mappedS1]
 
   // ── Funding projects for tracked companies ────────────────────────────────
   const funding = []
@@ -219,15 +193,6 @@ export default async function handler(req, res) {
     funding.push(...data)
     offset += PAGE
   }
-
-  const filteredFunding = funding.filter(p => {
-    if (!p.matched_name) return false
-    if (p.company_size === '10,001+ employees' || p.company_size === '10,001+') {
-      const name = p.matched_name.toLowerCase()
-      return pastClientsLower.has(name)
-    }
-    return true
-  })
 
   // ── News articles for tracked companies ───────────────────────────────────
   const NEWS_SOURCES = [
@@ -263,7 +228,7 @@ export default async function handler(req, res) {
   }
 
   // ── Clay jobs for tracked companies ───────────────────────────────────────
-  const clayJobsRaw = []
+  const clayJobs = []
   offset = 0
 
   while (true) {
@@ -275,38 +240,30 @@ export default async function handler(req, res) {
 
     if (error) return res.status(500).json({ error: error.message })
     if (!data || data.length === 0) break
-    clayJobsRaw.push(...data)
+    clayJobs.push(...data)
     offset += PAGE
   }
 
-  const clayJobs = clayJobsRaw.filter(j => {
-    if (j.company_size === '10,001+ employees' || j.company_size === '10,001+') {
-      const name = (j.matched_name || '').toLowerCase()
-      return !!name && pastClientsLower.has(name)
-    }
-    return true
-  })
-
   const newCounts = {
-    clinicalTrials: filteredTrials.filter(isNew).length,
+    clinicalTrials: trials.filter(isNew).length,
     filings: filings.filter(isNew).length,
-    fundingProjects: filteredFunding.filter(isNew).length,
+    fundingProjects: funding.filter(isNew).length,
     jobs: clayJobs.filter(isNew).length,
     news: newsArticles.filter(isNew).length,
   }
 
   const responseData = {
     trackedCompanies,
-    clinicalTrials: filteredTrials,
+    clinicalTrials: trials,
     filings,
-    fundingProjects: filteredFunding,
+    fundingProjects: funding,
     newsArticles,
     clayJobs,
     pastClients,
     newCounts,
     cutoffIso,
   }
-  const totalRows = filteredTrials.length + filings.length + filteredFunding.length + newsArticles.length + clayJobs.length
+  const totalRows = trials.length + filings.length + funding.length + newsArticles.length + clayJobs.length
   const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
   console.log(`[API] ${req.url}: ${sizeMB} MB (${totalRows} rows)`)
   return res.status(200).json(responseData)
