@@ -1,12 +1,42 @@
 import { supabase } from '../../lib/supabase.js'
 
+// Returns ISO timestamp for midnight EST seven days ago — matches the dashboard.
+function sevenDaysAgoMidnightEstIso() {
+  const now = new Date()
+  const cutoff = new Date(now)
+  cutoff.setUTCHours(5, 0, 0, 0)
+  if (now.getUTCHours() < 5) {
+    cutoff.setUTCDate(cutoff.getUTCDate() - 1)
+  }
+  cutoff.setUTCDate(cutoff.getUTCDate() - 7)
+  return cutoff.toISOString()
+}
+
 export default async function handler(req, res) {
-  // ── POST: add a tracked company ───────────────────────────────────────────
+  // ── POST: add a tracked company (defaults to not a key account) ───────────
   if (req.method === 'POST') {
     const { company_name } = req.body
     if (!company_name) return res.status(400).json({ error: 'company_name required' })
 
-    const { error } = await supabase.from('madison_leads').insert({ company_name })
+    const { error } = await supabase
+      .from('madison_leads')
+      .insert({ company_name, is_key_account: false })
+    if (error) return res.status(500).json({ error: error.message })
+    return res.status(200).json({ ok: true })
+  }
+
+  // ── PATCH: toggle is_key_account ──────────────────────────────────────────
+  if (req.method === 'PATCH') {
+    const { company_name, is_key_account } = req.body
+    if (!company_name) return res.status(400).json({ error: 'company_name required' })
+    if (typeof is_key_account !== 'boolean') {
+      return res.status(400).json({ error: 'is_key_account boolean required' })
+    }
+
+    const { error } = await supabase
+      .from('madison_leads')
+      .update({ is_key_account })
+      .eq('company_name', company_name)
     if (error) return res.status(500).json({ error: error.message })
     return res.status(200).json({ ok: true })
   }
@@ -26,17 +56,25 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  // Fetch tracked companies
+  const cutoffIso = sevenDaysAgoMidnightEstIso()
+
+  // Fetch tracked companies with is_key_account flag
   const { data: tracked, error: trackedErr } = await supabase
     .from('madison_leads')
-    .select('company_name')
+    .select('company_name, is_key_account')
     .order('added_at', { ascending: false })
 
   if (trackedErr) return res.status(500).json({ error: trackedErr.message })
 
-  const trackedCompanies = (tracked || []).map(r => r.company_name)
+  const trackedCompanies = (tracked || []).map(r => ({
+    name: r.company_name,
+    is_key_account: !!r.is_key_account,
+  }))
+  const trackedNames = trackedCompanies.map(c => c.name)
 
-  if (trackedCompanies.length === 0) {
+  const emptyNewCounts = { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0 }
+
+  if (trackedNames.length === 0) {
     // Fetch past_clients even with no tracked companies (for star display)
     const { data: clientRows } = await supabase.from('past_clients').select('name, matched_name').eq('is_active', true)
     const responseData = {
@@ -47,6 +85,8 @@ export default async function handler(req, res) {
       newsArticles: [],
       clayJobs: [],
       pastClients: (clientRows || []).map(r => ({ name: r.name, matched_name: r.matched_name })),
+      newCounts: emptyNewCounts,
+      cutoffIso,
     }
     const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
     console.log(`[API] ${req.url}: ${sizeMB} MB (0 rows)`)
@@ -64,6 +104,11 @@ export default async function handler(req, res) {
   const pastClients = (clientRows || []).map(r => ({ name: r.name, matched_name: r.matched_name }))
 
   const PAGE = 1000
+  const cutoffMs = new Date(cutoffIso).getTime()
+  const isNew = row => {
+    const t = new Date(row.created_at || 0).getTime()
+    return !!t && t >= cutoffMs
+  }
 
   // ── Clinical trials for tracked companies ─────────────────────────────────
   const trials = []
@@ -73,7 +118,7 @@ export default async function handler(req, res) {
     const { data, error } = await supabase
       .from('clinical_trials')
       .select('id, nct_id, brief_title, phase, matched_name, company_size, lead_sponsor_name, is_fda_regulated_drug, is_fda_regulated_device, study_start_date, source_url, central_contacts, created_at')
-      .in('matched_name', trackedCompanies)
+      .in('matched_name', trackedNames)
       .range(offset, offset + PAGE - 1)
 
     if (error) return res.status(500).json({ error: error.message })
@@ -90,7 +135,7 @@ export default async function handler(req, res) {
     const { data, error } = await supabase
       .from('eight_k_filings')
       .select('id, company_name, matched_name, company_size, filing_date, filing_url, items, accession_number, agreement_type, agreement_summary, created_at')
-      .in('matched_name', trackedCompanies)
+      .in('matched_name', trackedNames)
       .range(offset, offset + PAGE - 1)
 
     if (error) return res.status(500).json({ error: error.message })
@@ -115,7 +160,7 @@ export default async function handler(req, res) {
     const { data, error } = await supabase
       .from('s1_filings')
       .select('id, company_name, matched_name, company_size, filing_date, filing_url, accession_number, created_at')
-      .in('matched_name', trackedCompanies)
+      .in('matched_name', trackedNames)
       .range(offset, offset + PAGE - 1)
 
     if (error) return res.status(500).json({ error: error.message })
@@ -140,7 +185,7 @@ export default async function handler(req, res) {
     const { data, error } = await supabase
       .from('funding_projects')
       .select('id, appl_id, org_name, matched_name, company_size, project_title, award_amount, award_notice_date, project_url, public_health_relevance, created_at')
-      .in('matched_name', trackedCompanies)
+      .in('matched_name', trackedNames)
       .range(offset, offset + PAGE - 1)
 
     if (error) return res.status(500).json({ error: error.message })
@@ -163,7 +208,7 @@ export default async function handler(req, res) {
       const { data, error } = await supabase
         .from(cfg.table)
         .select(cfg.select)
-        .overlaps('matched_names', trackedCompanies)
+        .overlaps('matched_names', trackedNames)
         .range(offset, offset + PAGE - 1)
       if (error) return res.status(500).json({ error: error.message })
       if (!data || data.length === 0) break
@@ -190,13 +235,21 @@ export default async function handler(req, res) {
     const { data, error } = await supabase
       .from('clay_jobs')
       .select('id, job_title, company_name, location, company_domain, job_url, date_posted, matched_name, company_size, created_at')
-      .in('matched_name', trackedCompanies)
+      .in('matched_name', trackedNames)
       .range(offset, offset + PAGE - 1)
 
     if (error) return res.status(500).json({ error: error.message })
     if (!data || data.length === 0) break
     clayJobs.push(...data)
     offset += PAGE
+  }
+
+  const newCounts = {
+    clinicalTrials: trials.filter(isNew).length,
+    filings: filings.filter(isNew).length,
+    fundingProjects: funding.filter(isNew).length,
+    jobs: clayJobs.filter(isNew).length,
+    news: newsArticles.filter(isNew).length,
   }
 
   const responseData = {
@@ -207,6 +260,8 @@ export default async function handler(req, res) {
     newsArticles,
     clayJobs,
     pastClients,
+    newCounts,
+    cutoffIso,
   }
   const totalRows = trials.length + filings.length + funding.length + newsArticles.length + clayJobs.length
   const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
