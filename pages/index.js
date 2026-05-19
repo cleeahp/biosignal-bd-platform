@@ -1559,7 +1559,118 @@ const PAGE_TITLES = {
   settings:        'Settings',
 }
 
+function AddCompanyModal({ onClose }) {
+  const [url, setUrl] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+  const [done, setDone] = useState(false)
+  const closeTimerRef = useRef(null)
+
+  useEffect(() => () => {
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
+  }, [])
+
+  useEffect(() => {
+    const handleKey = (e) => { if (e.key === 'Escape' && !submitting) onClose() }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [onClose, submitting])
+
+  const submit = async () => {
+    setError(null)
+    const trimmed = url.trim()
+    if (!/linkedin\.com\/company\//i.test(trimmed)) {
+      setError('Must be a LinkedIn company URL (linkedin.com/company/...)')
+      return
+    }
+    setSubmitting(true)
+    try {
+      const res = await fetch('/api/submit-company', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ linkedin_url: trimmed }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || `HTTP ${res.status}`)
+      }
+      setDone(true)
+      closeTimerRef.current = setTimeout(onClose, 2000)
+    } catch (err) {
+      setError(err.message || 'Submission failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  if (typeof document === 'undefined') return null
+  return createPortal(
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/70" onClick={submitting ? undefined : onClose} />
+      <div className="relative w-full max-w-md mx-4 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl">
+        <div className="flex items-start justify-between gap-4 p-4 border-b border-[#374151]">
+          <h3 className="text-sm font-semibold text-gray-100">Add Company</h3>
+          <button
+            onClick={onClose}
+            disabled={submitting}
+            className="text-gray-400 hover:text-white text-xl leading-none shrink-0 disabled:opacity-50"
+            aria-label="Close"
+          >
+            &times;
+          </button>
+        </div>
+
+        <div className="p-4 space-y-3">
+          {done ? (
+            <p className="text-sm text-green-400">
+              Submitted! The company will be enriched and added to the directory shortly.
+            </p>
+          ) : (
+            <>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">LinkedIn Company URL</span>
+                <input
+                  type="text"
+                  value={url}
+                  onChange={e => setUrl(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !submitting) submit() }}
+                  disabled={submitting}
+                  placeholder="https://www.linkedin.com/company/..."
+                  autoFocus
+                  className="w-full bg-[#111827] text-sm text-white px-3 py-2 rounded border border-[#374151] outline-none focus:border-blue-500 placeholder-gray-500 disabled:opacity-50"
+                />
+              </label>
+              {error && <p className="text-sm text-red-400">{error}</p>}
+            </>
+          )}
+        </div>
+
+        {!done && (
+          <div className="p-4 border-t border-[#374151] flex justify-end gap-2">
+            <button
+              onClick={onClose}
+              disabled={submitting}
+              className="text-sm text-gray-400 hover:text-white px-3 py-1.5 rounded disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={submit}
+              disabled={submitting || !url.trim()}
+              className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-500 px-4 py-1.5 rounded disabled:opacity-50"
+            >
+              {submitting ? 'Submitting…' : 'Submit'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 function TopBar({ activePage, repName, onShowNameModal, onRefresh, refreshing }) {
+  const [addCompanyOpen, setAddCompanyOpen] = useState(false)
   return (
     <div className="bg-[#1f2937] border-b border-[#374151] px-6 py-3 flex items-center justify-between gap-4 sticky top-0 z-30">
       {/* Page title */}
@@ -1569,6 +1680,14 @@ function TopBar({ activePage, repName, onShowNameModal, onRefresh, refreshing })
 
       {/* Right actions */}
       <div className="flex items-center gap-2 shrink-0">
+        <button
+          onClick={() => setAddCompanyOpen(true)}
+          title="Add a company via LinkedIn URL"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/5 hover:bg-white/10 transition-colors text-gray-300 hover:text-white text-sm"
+        >
+          <span className="text-base leading-none">+</span>
+          <span className="hidden sm:inline">Add Company</span>
+        </button>
         {onRefresh && (
           <button
             onClick={onRefresh}
@@ -1600,6 +1719,7 @@ function TopBar({ activePage, repName, onShowNameModal, onRefresh, refreshing })
           </button>
         )}
       </div>
+      {addCompanyOpen && <AddCompanyModal onClose={() => setAddCompanyOpen(false)} />}
     </div>
   )
 }
