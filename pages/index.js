@@ -1559,10 +1559,13 @@ const PAGE_TITLES = {
   settings:        'Settings',
 }
 
+const LINKEDIN_COMPANY_URL_RE = /^https:\/\/www\.linkedin\.com\/company\/[A-Za-z0-9\-]+\/?$/
+
 function AddCompanyModal({ onClose }) {
   const [url, setUrl] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
+  const [errorKind, setErrorKind] = useState(null) // 'invalid' | 'duplicate' | 'other'
   const [done, setDone] = useState(false)
   const closeTimerRef = useRef(null)
 
@@ -1576,11 +1579,18 @@ function AddCompanyModal({ onClose }) {
     return () => document.removeEventListener('keydown', handleKey)
   }, [onClose, submitting])
 
+  const onChange = (e) => {
+    setUrl(e.target.value)
+    if (error) { setError(null); setErrorKind(null) }
+  }
+
   const submit = async () => {
     setError(null)
+    setErrorKind(null)
     const trimmed = url.trim()
-    if (!/linkedin\.com\/company\//i.test(trimmed)) {
-      setError('Must be a LinkedIn company URL (linkedin.com/company/...)')
+    if (!LINKEDIN_COMPANY_URL_RE.test(trimmed)) {
+      setErrorKind('invalid')
+      setError('Please enter a valid LinkedIn company URL (e.g. https://www.linkedin.com/company/elutia)')
       return
     }
     setSubmitting(true)
@@ -1591,12 +1601,23 @@ function AddCompanyModal({ onClose }) {
         body: JSON.stringify({ linkedin_url: trimmed }),
       })
       const json = await res.json().catch(() => ({}))
+      if (json && json.error === 'already_exists') {
+        setErrorKind('duplicate')
+        setError(`This company already exists in the directory as '${json.company_name || 'unknown'}'`)
+        return
+      }
+      if (json && json.error === 'invalid_url') {
+        setErrorKind('invalid')
+        setError(json.message || 'Please enter a valid LinkedIn company URL (e.g. https://www.linkedin.com/company/elutia)')
+        return
+      }
       if (!res.ok || !json.success) {
         throw new Error(json.error || `HTTP ${res.status}`)
       }
       setDone(true)
       closeTimerRef.current = setTimeout(onClose, 2000)
     } catch (err) {
+      setErrorKind('other')
       setError(err.message || 'Submission failed')
     } finally {
       setSubmitting(false)
@@ -1632,15 +1653,19 @@ function AddCompanyModal({ onClose }) {
                 <input
                   type="text"
                   value={url}
-                  onChange={e => setUrl(e.target.value)}
+                  onChange={onChange}
                   onKeyDown={e => { if (e.key === 'Enter' && !submitting) submit() }}
                   disabled={submitting}
-                  placeholder="https://www.linkedin.com/company/..."
+                  placeholder="https://www.linkedin.com/company/company-name"
                   autoFocus
                   className="w-full bg-[#111827] text-sm text-white px-3 py-2 rounded border border-[#374151] outline-none focus:border-blue-500 placeholder-gray-500 disabled:opacity-50"
                 />
               </label>
-              {error && <p className="text-sm text-red-400">{error}</p>}
+              {error && (
+                <p className={`text-sm ${errorKind === 'duplicate' ? 'text-orange-400' : 'text-red-400'}`}>
+                  {error}
+                </p>
+              )}
             </>
           )}
         </div>
