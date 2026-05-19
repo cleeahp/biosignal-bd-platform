@@ -1559,7 +1559,7 @@ const PAGE_TITLES = {
   settings:        'Settings',
 }
 
-const LINKEDIN_COMPANY_URL_RE = /^https:\/\/www\.linkedin\.com\/company\/[A-Za-z0-9\-]+\/?$/
+const LINKEDIN_COMPANY_URL_RE = /^https:\/\/www\.linkedin\.com\/company\/[^/?#]+\/?$/i
 
 function AddCompanyModal({ onClose }) {
   const [url, setUrl] = useState('')
