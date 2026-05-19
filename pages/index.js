@@ -171,17 +171,46 @@ function useColumnFilters() {
   return { filters, setFilter, clearAll, hasActiveFilters, applyFilters }
 }
 
+function useSortableColumns(allowedKeys) {
+  const [state, setState] = useState({ col: null, dir: null })
+  const allowed = useMemo(() => new Set(allowedKeys), [allowedKeys])
+  const cycle = useCallback((colKey) => {
+    if (!allowed.has(colKey)) return
+    setState(prev => {
+      if (prev.col !== colKey) return { col: colKey, dir: 'asc' }
+      if (prev.dir === 'asc') return { col: colKey, dir: 'desc' }
+      return { col: null, dir: null }
+    })
+  }, [allowed])
+  const dirFor = useCallback((colKey) => state.col === colKey ? state.dir : null, [state])
+  return { sortCol: state.col, sortDir: state.dir, cycle, dirFor }
+}
+
+function compareForSort(a, b, dir) {
+  const aStr = a == null ? '' : String(a).trim()
+  const bStr = b == null ? '' : String(b).trim()
+  const aEmpty = aStr === ''
+  const bEmpty = bStr === ''
+  if (aEmpty && bEmpty) return 0
+  if (aEmpty) return 1
+  if (bEmpty) return -1
+  const cmp = aStr.localeCompare(bStr, undefined, { sensitivity: 'base' })
+  return dir === 'desc' ? -cmp : cmp
+}
+
 // ─── Column Filter Dropdown Component ────────────────────────────────────────
 
-function ColumnFilterDropdown({ colKey, label, allValues, activeValues, onApply, className = '' }) {
+function ColumnFilterDropdown({ colKey, label, allValues, activeValues, onApply, className = '', sortDir = null, onCycleSort = null }) {
   const [isOpen, setIsOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState(new Set(activeValues || []))
   const btnRef = useRef(null)
+  const chevronRef = useRef(null)
   const dropdownRef = useRef(null)
   const [pos, setPos] = useState({ top: 0, left: 0 })
 
   const hasFilter = activeValues && activeValues.length > 0
+  const sortable = typeof onCycleSort === 'function'
 
   useEffect(() => {
     setSelected(new Set(activeValues || []))
@@ -195,6 +224,16 @@ function ColumnFilterDropdown({ colKey, label, allValues, activeValues, onApply,
     }
     setSearch('')
     setIsOpen(true)
+  }
+
+  const handleHeaderClick = (e) => {
+    if (sortable) {
+      if (chevronRef.current && chevronRef.current.contains(e.target)) return
+      e.stopPropagation()
+      onCycleSort(colKey)
+    } else {
+      openDropdown(e)
+    }
   }
 
   useEffect(() => {
@@ -240,13 +279,17 @@ function ColumnFilterDropdown({ colKey, label, allValues, activeValues, onApply,
     <>
       <th
         ref={btnRef}
-        onClick={openDropdown}
+        onClick={handleHeaderClick}
         className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap cursor-pointer hover:text-gray-200 select-none ${className}`}
       >
         <span className="inline-flex items-center gap-1.5">
           {label}
+          {sortable && sortDir === 'asc' && <span className="text-blue-400 text-[10px]">▲</span>}
+          {sortable && sortDir === 'desc' && <span className="text-blue-400 text-[10px]">▼</span>}
           {hasFilter && <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />}
-          <svg className="w-3 h-3 opacity-40" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+          <span ref={chevronRef} onClick={sortable ? openDropdown : undefined} className={sortable ? 'inline-flex items-center hover:opacity-80' : 'inline-flex items-center'}>
+            <svg className="w-3 h-3 opacity-40" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+          </span>
         </span>
       </th>
       {isOpen && typeof document !== 'undefined' && createPortal(
@@ -7437,6 +7480,7 @@ function PastBuyersPage({ data }) {
   const loading = !data
   const [expandedIds, setExpandedIds] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const sortable = useSortableColumns(['person_name', 'current_title', 'current_company', 'original_title', 'original_company'])
 
   const toggleRow = useCallback(id => {
     setExpandedIds(prev => {
@@ -7467,14 +7511,19 @@ function PastBuyersPage({ data }) {
 
   const sorted = useMemo(() => {
     const arr = [...rows]
-    arr.sort((a, b) => {
-      const aRank = pastBuyerCompanyChanged(a) ? 0 : pastBuyerRoleChanged(a) ? 1 : 2
-      const bRank = pastBuyerCompanyChanged(b) ? 0 : pastBuyerRoleChanged(b) ? 1 : 2
-      if (aRank !== bRank) return aRank - bRank
-      return (a.person_name || '').localeCompare(b.person_name || '')
-    })
+    if (sortable.sortCol && sortable.sortDir) {
+      const extractor = extractors[sortable.sortCol]
+      arr.sort((a, b) => compareForSort(extractor(a), extractor(b), sortable.sortDir))
+    } else {
+      arr.sort((a, b) => {
+        const aRank = pastBuyerCompanyChanged(a) ? 0 : pastBuyerRoleChanged(a) ? 1 : 2
+        const bRank = pastBuyerCompanyChanged(b) ? 0 : pastBuyerRoleChanged(b) ? 1 : 2
+        if (aRank !== bRank) return aRank - bRank
+        return (a.person_name || '').localeCompare(b.person_name || '')
+      })
+    }
     return arr
-  }, [rows])
+  }, [rows, sortable.sortCol, sortable.sortDir, extractors])
 
   const filtered = useMemo(() => applyFilters(sorted, extractors), [sorted, applyFilters, extractors])
 
@@ -7486,11 +7535,11 @@ function PastBuyersPage({ data }) {
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
-              <ColumnFilterDropdown colKey="person_name"      label="Full Name"        allValues={allValues.person_name}      activeValues={filters.person_name}      onApply={setFilter} className="w-[15%]" />
-              <ColumnFilterDropdown colKey="current_title"    label="Current Role"     allValues={allValues.current_title}    activeValues={filters.current_title}    onApply={setFilter} className="w-[17%]" />
-              <ColumnFilterDropdown colKey="current_company"  label="Current Company"  allValues={allValues.current_company}  activeValues={filters.current_company}  onApply={setFilter} className="w-[15%]" />
-              <ColumnFilterDropdown colKey="original_title"   label="Former Role"      allValues={allValues.original_title}   activeValues={filters.original_title}   onApply={setFilter} className="w-[17%]" />
-              <ColumnFilterDropdown colKey="original_company" label="Former Company"   allValues={allValues.original_company} activeValues={filters.original_company} onApply={setFilter} className="w-[13%]" />
+              <ColumnFilterDropdown colKey="person_name"      label="Full Name"        allValues={allValues.person_name}      activeValues={filters.person_name}      onApply={setFilter} className="w-[15%]" sortDir={sortable.dirFor('person_name')}      onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="current_title"    label="Current Role"     allValues={allValues.current_title}    activeValues={filters.current_title}    onApply={setFilter} className="w-[17%]" sortDir={sortable.dirFor('current_title')}    onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="current_company"  label="Current Company"  allValues={allValues.current_company}  activeValues={filters.current_company}  onApply={setFilter} className="w-[15%]" sortDir={sortable.dirFor('current_company')}  onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="original_title"   label="Former Role"      allValues={allValues.original_title}   activeValues={filters.original_title}   onApply={setFilter} className="w-[17%]" sortDir={sortable.dirFor('original_title')}   onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="original_company" label="Former Company"   allValues={allValues.original_company} activeValues={filters.original_company} onApply={setFilter} className="w-[13%]" sortDir={sortable.dirFor('original_company')} onCycleSort={sortable.cycle} />
               <ColumnFilterDropdown colKey="current_location" label="Current Location" allValues={allValues.current_location} activeValues={filters.current_location} onApply={setFilter} className="w-[13%]" />
             </tr>
           </thead>
@@ -7584,6 +7633,7 @@ function PastCandidatesPage({ data }) {
   const loading = !data
   const [expandedIds, setExpandedIds] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const sortable = useSortableColumns(['person_name', 'current_title', 'current_company', 'original_title', 'original_company'])
 
   const toggleRow = useCallback(id => {
     setExpandedIds(prev => {
@@ -7614,14 +7664,19 @@ function PastCandidatesPage({ data }) {
 
   const sorted = useMemo(() => {
     const arr = [...rows]
-    arr.sort((a, b) => {
-      const aRank = pastBuyerCompanyChanged(a) ? 0 : pastBuyerRoleChanged(a) ? 1 : 2
-      const bRank = pastBuyerCompanyChanged(b) ? 0 : pastBuyerRoleChanged(b) ? 1 : 2
-      if (aRank !== bRank) return aRank - bRank
-      return (a.person_name || '').localeCompare(b.person_name || '')
-    })
+    if (sortable.sortCol && sortable.sortDir) {
+      const extractor = extractors[sortable.sortCol]
+      arr.sort((a, b) => compareForSort(extractor(a), extractor(b), sortable.sortDir))
+    } else {
+      arr.sort((a, b) => {
+        const aRank = pastBuyerCompanyChanged(a) ? 0 : pastBuyerRoleChanged(a) ? 1 : 2
+        const bRank = pastBuyerCompanyChanged(b) ? 0 : pastBuyerRoleChanged(b) ? 1 : 2
+        if (aRank !== bRank) return aRank - bRank
+        return (a.person_name || '').localeCompare(b.person_name || '')
+      })
+    }
     return arr
-  }, [rows])
+  }, [rows, sortable.sortCol, sortable.sortDir, extractors])
 
   const filtered = useMemo(() => applyFilters(sorted, extractors), [sorted, applyFilters, extractors])
 
@@ -7633,11 +7688,11 @@ function PastCandidatesPage({ data }) {
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
-              <ColumnFilterDropdown colKey="person_name"      label="Full Name"        allValues={allValues.person_name}      activeValues={filters.person_name}      onApply={setFilter} className="w-[15%]" />
-              <ColumnFilterDropdown colKey="current_title"    label="Current Role"     allValues={allValues.current_title}    activeValues={filters.current_title}    onApply={setFilter} className="w-[17%]" />
-              <ColumnFilterDropdown colKey="current_company"  label="Current Company"  allValues={allValues.current_company}  activeValues={filters.current_company}  onApply={setFilter} className="w-[15%]" />
-              <ColumnFilterDropdown colKey="original_title"   label="Former Role"      allValues={allValues.original_title}   activeValues={filters.original_title}   onApply={setFilter} className="w-[17%]" />
-              <ColumnFilterDropdown colKey="original_company" label="Former Company"   allValues={allValues.original_company} activeValues={filters.original_company} onApply={setFilter} className="w-[13%]" />
+              <ColumnFilterDropdown colKey="person_name"      label="Full Name"        allValues={allValues.person_name}      activeValues={filters.person_name}      onApply={setFilter} className="w-[15%]" sortDir={sortable.dirFor('person_name')}      onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="current_title"    label="Current Role"     allValues={allValues.current_title}    activeValues={filters.current_title}    onApply={setFilter} className="w-[17%]" sortDir={sortable.dirFor('current_title')}    onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="current_company"  label="Current Company"  allValues={allValues.current_company}  activeValues={filters.current_company}  onApply={setFilter} className="w-[15%]" sortDir={sortable.dirFor('current_company')}  onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="original_title"   label="Former Role"      allValues={allValues.original_title}   activeValues={filters.original_title}   onApply={setFilter} className="w-[17%]" sortDir={sortable.dirFor('original_title')}   onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="original_company" label="Former Company"   allValues={allValues.original_company} activeValues={filters.original_company} onApply={setFilter} className="w-[13%]" sortDir={sortable.dirFor('original_company')} onCycleSort={sortable.cycle} />
               <ColumnFilterDropdown colKey="current_location" label="Current Location" allValues={allValues.current_location} activeValues={filters.current_location} onApply={setFilter} className="w-[13%]" />
             </tr>
           </thead>
