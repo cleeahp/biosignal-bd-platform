@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { createClient } from '@supabase/supabase-js'
+import { SPECIALTY_OPTIONS } from '../lib/specialtyMatcher.js'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -299,6 +300,203 @@ function ColumnFilterDropdown({ colKey, label, allValues, activeValues, onApply,
       )}
     </>
   )
+}
+
+// ─── Specialty cell (editable dropdown + display) ───────────────────────────
+
+function SpecialtyCell({ job, table, onChange }) {
+  const [open, setOpen] = useState(false)
+  const [selected, setSelected] = useState(() => new Set(Array.isArray(job.specialty) ? job.specialty : []))
+  const [saving, setSaving] = useState(false)
+  const btnRef = useRef(null)
+  const dropdownRef = useRef(null)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+
+  useEffect(() => {
+    setSelected(new Set(Array.isArray(job.specialty) ? job.specialty : []))
+  }, [job.specialty])
+
+  const editable = typeof onChange === 'function'
+  const values = Array.isArray(job.specialty) ? job.specialty : []
+
+  const openDropdown = (e) => {
+    e.stopPropagation()
+    if (!editable || saving) return
+    if (btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      setPos({ top: rect.bottom + 4, left: Math.max(4, Math.min(rect.left, window.innerWidth - 240)) })
+    }
+    setSelected(new Set(values))
+    setOpen(true)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const handleClick = (e) => {
+      if (
+        dropdownRef.current && !dropdownRef.current.contains(e.target)
+        && btnRef.current && !btnRef.current.contains(e.target)
+      ) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
+
+  const toggle = (val) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(val) ? next.delete(val) : next.add(val)
+      return next
+    })
+  }
+
+  const save = async () => {
+    const newSpecialty = [...selected]
+    setSaving(true)
+    try {
+      const res = await fetch('/api/job-specialty', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: job.id, table, specialty: newSpecialty }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.error || `HTTP ${res.status}`)
+      }
+      onChange(job.id, newSpecialty)
+      setOpen(false)
+    } catch (err) {
+      console.error('[SpecialtyCell] save failed', err)
+      alert(`Failed to update specialty: ${err.message || 'unknown error'}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!editable) {
+    return (
+      <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+        {values.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {values.map(v => (
+              <span key={v} className="text-xs px-1.5 py-0.5 rounded bg-blue-600/20 text-blue-300 border border-blue-500/30">{v}</span>
+            ))}
+          </div>
+        ) : <span className="text-gray-600">—</span>}
+      </td>
+    )
+  }
+
+  return (
+    <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+      <button
+        ref={btnRef}
+        onClick={openDropdown}
+        disabled={saving}
+        className="w-full text-left min-h-[24px] rounded hover:bg-[#374151]/40 px-1 py-0.5 -mx-1 -my-0.5 transition-colors"
+      >
+        {values.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {values.map(v => (
+              <span key={v} className="text-xs px-1.5 py-0.5 rounded bg-blue-600/20 text-blue-300 border border-blue-500/30">{v}</span>
+            ))}
+          </div>
+        ) : <span className="text-gray-600 italic">— set</span>}
+      </button>
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={dropdownRef}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 1000 }}
+          className="w-56 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl"
+        >
+          <div className="max-h-60 overflow-y-auto p-1.5">
+            {SPECIALTY_OPTIONS.map(opt => (
+              <label key={opt} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-[#374151] cursor-pointer text-xs text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={selected.has(opt)}
+                  onChange={() => toggle(opt)}
+                  className="rounded border-gray-600 bg-[#111827] text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                />
+                <span className="truncate">{opt}</span>
+              </label>
+            ))}
+          </div>
+          <div className="p-2 border-t border-[#374151] flex justify-between">
+            <button
+              onClick={() => setOpen(false)}
+              disabled={saving}
+              className="text-xs text-gray-400 hover:text-white disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={save}
+              disabled={saving}
+              className="text-xs text-blue-400 hover:text-blue-300 font-semibold disabled:opacity-50"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </td>
+  )
+}
+
+function JobDeleteButton({ job, table, onDelete }) {
+  const [busy, setBusy] = useState(false)
+  const handle = async () => {
+    if (!confirm('Delete this job? Future jobs with this title will also be blocked.')) return
+    setBusy(true)
+    try {
+      const res = await fetch('/api/job-specialty', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: job.id, table }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.error || `HTTP ${res.status}`)
+      }
+      onDelete(job.id)
+    } catch (err) {
+      console.error('[JobDeleteButton] delete failed', err)
+      alert(`Failed to delete job: ${err.message || 'unknown error'}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <button
+      onClick={handle}
+      disabled={busy}
+      title="Delete & block this title"
+      className="text-gray-500 hover:text-red-400 transition-colors disabled:opacity-50"
+    >
+      ✕
+    </button>
+  )
+}
+
+// ─── Specialty filter (handles array cell values; SPECIALTY_OPTIONS as choices) ─
+
+function useSpecialtyFilter() {
+  const [active, setActive] = useState([])
+  const apply = useCallback((rows) => {
+    if (!active || active.length === 0) return rows
+    const lowerSet = new Set(active.map(v => v.toLowerCase()))
+    return rows.filter(r => {
+      const sp = Array.isArray(r.specialty) ? r.specialty : []
+      return sp.some(s => lowerSet.has(String(s || '').toLowerCase()))
+    })
+  }, [active])
+  const setFilter = useCallback((_key, vals) => setActive(vals || []), [])
+  const clear = useCallback(() => setActive([]), [])
+  return { active, setFilter, clear, apply, hasFilter: active.length > 0 }
 }
 
 function ClearAllFiltersButton({ hasActiveFilters, onClear }) {
@@ -2193,9 +2391,9 @@ function JobsSection({ jobs, pastClients }) {
           <thead>
             <tr>
               <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[20%]" />
-              <ColumnFilterDropdown colKey="title" label="Job Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
+              <ColumnFilterDropdown colKey="title" label="Job Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[25%]" />
+              <Th className="w-[15%]">Specialty</Th>
               <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[15%]" />
-              <Th className="w-[10%]">Domain</Th>
               <HierarchicalDateFilter label="Date Posted" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
               <Th className="w-[15%]">Link</Th>
             </tr>
@@ -2212,8 +2410,8 @@ function JobsSection({ jobs, pastClients }) {
                     {displayName || '—'}
                   </td>
                   <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.job_title || '—'}</td>
+                  <SpecialtyCell job={job} table="clay_jobs" />
                   <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.location || '—'}</td>
-                  <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.company_domain || '—'}</td>
                   <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatClayDate(job.date_posted)}</td>
                   <td className="px-3 py-3 text-sm align-top">
                     {job.job_url ? (
@@ -3321,11 +3519,19 @@ function formatClayDate(raw) {
   return s
 }
 
-function JobsNewPage({ data }) {
+function JobsNewPage({ data, setData }) {
   const jobs = data?.jobs || []
   const pastClients = data?.pastClients || []
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const specialtyFilter = useSpecialtyFilter()
   const dateCol = useDateColumn()
+
+  const updateJobSpecialty = useCallback((jobId, newSpecialty) => {
+    setData(prev => prev ? { ...prev, jobs: (prev.jobs || []).map(j => j.id === jobId ? { ...j, specialty: newSpecialty } : j) } : prev)
+  }, [setData])
+  const removeJob = useCallback((jobId) => {
+    setData(prev => prev ? { ...prev, jobs: (prev.jobs || []).filter(j => j.id !== jobId) } : prev)
+  }, [setData])
 
   const pastClientMatchedNames = useMemo(() => new Set(pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
   const pastClientNames = useMemo(() => new Set(pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [pastClients])
@@ -3370,8 +3576,8 @@ function JobsNewPage({ data }) {
   ), [defaultSorted, dateCol.sortDir, getRawDate])
 
   const filtered = useMemo(() => (
-    filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
-  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
+    specialtyFilter.apply(filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter))
+  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter, specialtyFilter])
 
   if (!data) {
     return (
@@ -3386,19 +3592,20 @@ function JobsNewPage({ data }) {
   return (
     <div className="flex flex-col gap-2">
       <ClearAllFiltersButton
-        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
-        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter || specialtyFilter.hasFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter(); specialtyFilter.clear() }}
       />
       <div className="rounded-lg border border-[#374151] overflow-hidden">
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
-              <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[20%]" />
-              <ColumnFilterDropdown colKey="title" label="Job Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
-              <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[15%]" />
-              <Th className="w-[10%]">Domain</Th>
+              <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[18%]" />
+              <ColumnFilterDropdown colKey="title" label="Job Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[22%]" />
+              <ColumnFilterDropdown colKey="specialty" label="Specialty" allValues={SPECIALTY_OPTIONS} activeValues={specialtyFilter.active} onApply={specialtyFilter.setFilter} className="w-[15%]" />
+              <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[12%]" />
               <HierarchicalDateFilter label="Date Posted" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
               <Th className="w-[15%]">Link</Th>
+              <Th className="w-[8%]">{' '}</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#374151]">
@@ -3415,11 +3622,9 @@ function JobsNewPage({ data }) {
                   <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
                     {job.job_title || '—'}
                   </td>
+                  <SpecialtyCell job={job} table="clay_jobs" onChange={updateJobSpecialty} />
                   <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
                     {job.location || '—'}
-                  </td>
-                  <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
-                    {job.company_domain || '—'}
                   </td>
                   <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
                     {formatClayDate(job.date_posted)}
@@ -3430,6 +3635,9 @@ function JobsNewPage({ data }) {
                         View Job &#8599;
                       </a>
                     ) : <span className="text-gray-600">—</span>}
+                  </td>
+                  <td className="px-3 py-3 text-sm align-top text-center">
+                    <JobDeleteButton job={job} table="clay_jobs" onDelete={removeJob} />
                   </td>
                 </tr>
               )
@@ -3443,10 +3651,18 @@ function JobsNewPage({ data }) {
 
 // ─── Competitor Jobs - NEW Page ──────────────────────────────────────────────
 
-function CompetitorJobsNewPage({ data }) {
+function CompetitorJobsNewPage({ data, setData }) {
   const jobs = data?.jobs || []
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const specialtyFilter = useSpecialtyFilter()
   const dateCol = useDateColumn()
+
+  const updateJobSpecialty = useCallback((jobId, newSpecialty) => {
+    setData(prev => prev ? { ...prev, jobs: (prev.jobs || []).map(j => j.id === jobId ? { ...j, specialty: newSpecialty } : j) } : prev)
+  }, [setData])
+  const removeJob = useCallback((jobId) => {
+    setData(prev => prev ? { ...prev, jobs: (prev.jobs || []).filter(j => j.id !== jobId) } : prev)
+  }, [setData])
 
   const extractors = useMemo(() => ({
     company: j => j.company_name || '',
@@ -3474,8 +3690,8 @@ function CompetitorJobsNewPage({ data }) {
   ), [defaultSorted, dateCol.sortDir, getRawDate])
 
   const filtered = useMemo(() => (
-    filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter)
-  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter])
+    specialtyFilter.apply(filterRowsByDateKeys(applyFilters(sorted, extractors), getRawDate, dateCol.dateFilter))
+  ), [sorted, applyFilters, extractors, getRawDate, dateCol.dateFilter, specialtyFilter])
 
   if (!data) {
     return (
@@ -3490,19 +3706,20 @@ function CompetitorJobsNewPage({ data }) {
   return (
     <div className="flex flex-col gap-2">
       <ClearAllFiltersButton
-        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter}
-        onClear={() => { clearAll(); dateCol.clearDateFilter() }}
+        hasActiveFilters={hasActiveFilters || dateCol.hasDateFilter || specialtyFilter.hasFilter}
+        onClear={() => { clearAll(); dateCol.clearDateFilter(); specialtyFilter.clear() }}
       />
       <div className="rounded-lg border border-[#374151] overflow-hidden">
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
-              <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[20%]" />
-              <ColumnFilterDropdown colKey="title" label="Job Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[30%]" />
-              <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[15%]" />
-              <Th className="w-[10%]">Domain</Th>
+              <ColumnFilterDropdown colKey="company" label="Company" allValues={allValues.company} activeValues={filters.company} onApply={setFilter} className="w-[18%]" />
+              <ColumnFilterDropdown colKey="title" label="Job Title" allValues={allValues.title} activeValues={filters.title} onApply={setFilter} className="w-[22%]" />
+              <ColumnFilterDropdown colKey="specialty" label="Specialty" allValues={SPECIALTY_OPTIONS} activeValues={specialtyFilter.active} onApply={specialtyFilter.setFilter} className="w-[15%]" />
+              <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[12%]" />
               <HierarchicalDateFilter label="Date Posted" sortDir={dateCol.sortDir} onCycleSort={dateCol.cycleSortDir} allRawDates={allRawDates} activeDateKeys={dateCol.dateFilter} onApplyFilter={dateCol.setDateFilter} className="w-[10%]" />
               <Th className="w-[15%]">Link</Th>
+              <Th className="w-[8%]">{' '}</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#374151]">
@@ -3516,11 +3733,9 @@ function CompetitorJobsNewPage({ data }) {
                   <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
                     {job.job_title || '—'}
                   </td>
+                  <SpecialtyCell job={job} table="clay_jobs_competitors" onChange={updateJobSpecialty} />
                   <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
                     {job.location || '—'}
-                  </td>
-                  <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
-                    {job.company_domain || '—'}
                   </td>
                   <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
                     {formatClayDate(job.date_posted)}
@@ -3531,6 +3746,9 @@ function CompetitorJobsNewPage({ data }) {
                         View Job &#8599;
                       </a>
                     ) : <span className="text-gray-600">—</span>}
+                  </td>
+                  <td className="px-3 py-3 text-sm align-top text-center">
+                    <JobDeleteButton job={job} table="clay_jobs_competitors" onDelete={removeJob} />
                   </td>
                 </tr>
               )
@@ -3978,6 +4196,7 @@ function MadisonLeadsPage(props) {
   const filingsFilter = useColumnFilters()
   const fundingFilter = useColumnFilters()
   const jobsFilter = useColumnFilters()
+  const jobsSpecialtyFilter = useSpecialtyFilter()
   const newsFilter = useColumnFilters()
 
   const trialsDateCol = useDateColumn()
@@ -4350,8 +4569,17 @@ function MadisonLeadsPage(props) {
   ), [defaultSortedJobs, jobsDateCol.sortDir, getJobDate])
 
   const filteredJobs = useMemo(() => (
-    filterRowsByDateKeys(jobsFilter.applyFilters(sortedJobs, jobExtractors), getJobDate, jobsDateCol.dateFilter)
-  ), [sortedJobs, jobsFilter.applyFilters, jobExtractors, getJobDate, jobsDateCol.dateFilter])
+    jobsSpecialtyFilter.apply(filterRowsByDateKeys(jobsFilter.applyFilters(sortedJobs, jobExtractors), getJobDate, jobsDateCol.dateFilter))
+  ), [sortedJobs, jobsFilter.applyFilters, jobExtractors, getJobDate, jobsDateCol.dateFilter, jobsSpecialtyFilter])
+
+  const updateJobSpecialty = useCallback((jobId, newSpecialty) => {
+    if (typeof setData !== 'function') return
+    setData(prev => prev ? { ...prev, clayJobs: (prev.clayJobs || []).map(j => j.id === jobId ? { ...j, specialty: newSpecialty } : j) } : prev)
+  }, [setData])
+  const removeJob = useCallback((jobId) => {
+    if (typeof setData !== 'function') return
+    setData(prev => prev ? { ...prev, clayJobs: (prev.clayJobs || []).filter(j => j.id !== jobId) } : prev)
+  }, [setData])
 
   // ── News table logic ──────────────────────────────────────────────────────
 
@@ -4880,19 +5108,20 @@ function MadisonLeadsPage(props) {
           <SectionHeader sectionKey="jobs" label="Jobs" total={viewClayJobs.length} newCount={sectionNewCounts.jobs} />
           {expandedSections.has('jobs') && (<>
           <ClearAllFiltersButton
-            hasActiveFilters={jobsFilter.hasActiveFilters || jobsDateCol.hasDateFilter}
-            onClear={() => { jobsFilter.clearAll(); jobsDateCol.clearDateFilter() }}
+            hasActiveFilters={jobsFilter.hasActiveFilters || jobsDateCol.hasDateFilter || jobsSpecialtyFilter.hasFilter}
+            onClear={() => { jobsFilter.clearAll(); jobsDateCol.clearDateFilter(); jobsSpecialtyFilter.clear() }}
           />
           <div className="rounded-lg border border-[#374151] overflow-hidden">
             <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
               <thead>
                 <tr>
-                  <ColumnFilterDropdown colKey="company" label="Company" allValues={jobAllValues.company} activeValues={jobsFilter.filters.company} onApply={jobsFilter.setFilter} className="w-[20%]" />
-                  <ColumnFilterDropdown colKey="title" label="Job Title" allValues={jobAllValues.title} activeValues={jobsFilter.filters.title} onApply={jobsFilter.setFilter} className="w-[30%]" />
-                  <ColumnFilterDropdown colKey="location" label="Location" allValues={jobAllValues.location} activeValues={jobsFilter.filters.location} onApply={jobsFilter.setFilter} className="w-[15%]" />
-                  <Th className="w-[10%]">Domain</Th>
+                  <ColumnFilterDropdown colKey="company" label="Company" allValues={jobAllValues.company} activeValues={jobsFilter.filters.company} onApply={jobsFilter.setFilter} className="w-[18%]" />
+                  <ColumnFilterDropdown colKey="title" label="Job Title" allValues={jobAllValues.title} activeValues={jobsFilter.filters.title} onApply={jobsFilter.setFilter} className="w-[22%]" />
+                  <ColumnFilterDropdown colKey="specialty" label="Specialty" allValues={SPECIALTY_OPTIONS} activeValues={jobsSpecialtyFilter.active} onApply={jobsSpecialtyFilter.setFilter} className="w-[15%]" />
+                  <ColumnFilterDropdown colKey="location" label="Location" allValues={jobAllValues.location} activeValues={jobsFilter.filters.location} onApply={jobsFilter.setFilter} className="w-[12%]" />
                   <HierarchicalDateFilter label="Date Posted" sortDir={jobsDateCol.sortDir} onCycleSort={jobsDateCol.cycleSortDir} allRawDates={jobsRawDates} activeDateKeys={jobsDateCol.dateFilter} onApplyFilter={jobsDateCol.setDateFilter} className="w-[10%]" />
                   <Th className="w-[15%]">Link</Th>
+                  <Th className="w-[8%]">{' '}</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#374151]">
@@ -4908,8 +5137,8 @@ function MadisonLeadsPage(props) {
                         {displayName || '—'}
                       </td>
                       <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.job_title || '—'}</td>
+                      <SpecialtyCell job={job} table="clay_jobs" onChange={updateJobSpecialty} />
                       <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.location || '—'}</td>
-                      <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.company_domain || '—'}</td>
                       <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatClayDate(job.date_posted)}</td>
                       <td className="px-3 py-3 text-sm align-top">
                         <span className="inline-flex items-center gap-1">
@@ -4918,6 +5147,9 @@ function MadisonLeadsPage(props) {
                           ) : <span className="text-gray-600">—</span>}
                           {rowIsNew && <NewBadge />}
                         </span>
+                      </td>
+                      <td className="px-3 py-3 text-sm align-top text-center">
+                        <JobDeleteButton job={job} table="clay_jobs" onDelete={removeJob} />
                       </td>
                     </tr>
                   )
@@ -5046,6 +5278,7 @@ function JimLeadsPage(props) {
   const filingsFilter = useColumnFilters()
   const fundingFilter = useColumnFilters()
   const jobsFilter = useColumnFilters()
+  const jobsSpecialtyFilter = useSpecialtyFilter()
   const newsFilter = useColumnFilters()
 
   const trialsDateCol = useDateColumn()
@@ -5418,8 +5651,17 @@ function JimLeadsPage(props) {
   ), [defaultSortedJobs, jobsDateCol.sortDir, getJobDate])
 
   const filteredJobs = useMemo(() => (
-    filterRowsByDateKeys(jobsFilter.applyFilters(sortedJobs, jobExtractors), getJobDate, jobsDateCol.dateFilter)
-  ), [sortedJobs, jobsFilter.applyFilters, jobExtractors, getJobDate, jobsDateCol.dateFilter])
+    jobsSpecialtyFilter.apply(filterRowsByDateKeys(jobsFilter.applyFilters(sortedJobs, jobExtractors), getJobDate, jobsDateCol.dateFilter))
+  ), [sortedJobs, jobsFilter.applyFilters, jobExtractors, getJobDate, jobsDateCol.dateFilter, jobsSpecialtyFilter])
+
+  const updateJobSpecialty = useCallback((jobId, newSpecialty) => {
+    if (typeof setData !== 'function') return
+    setData(prev => prev ? { ...prev, clayJobs: (prev.clayJobs || []).map(j => j.id === jobId ? { ...j, specialty: newSpecialty } : j) } : prev)
+  }, [setData])
+  const removeJob = useCallback((jobId) => {
+    if (typeof setData !== 'function') return
+    setData(prev => prev ? { ...prev, clayJobs: (prev.clayJobs || []).filter(j => j.id !== jobId) } : prev)
+  }, [setData])
 
   // ── News table logic ──────────────────────────────────────────────────────
 
@@ -5948,19 +6190,20 @@ function JimLeadsPage(props) {
           <SectionHeader sectionKey="jobs" label="Jobs" total={viewClayJobs.length} newCount={sectionNewCounts.jobs} />
           {expandedSections.has('jobs') && (<>
           <ClearAllFiltersButton
-            hasActiveFilters={jobsFilter.hasActiveFilters || jobsDateCol.hasDateFilter}
-            onClear={() => { jobsFilter.clearAll(); jobsDateCol.clearDateFilter() }}
+            hasActiveFilters={jobsFilter.hasActiveFilters || jobsDateCol.hasDateFilter || jobsSpecialtyFilter.hasFilter}
+            onClear={() => { jobsFilter.clearAll(); jobsDateCol.clearDateFilter(); jobsSpecialtyFilter.clear() }}
           />
           <div className="rounded-lg border border-[#374151] overflow-hidden">
             <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
               <thead>
                 <tr>
-                  <ColumnFilterDropdown colKey="company" label="Company" allValues={jobAllValues.company} activeValues={jobsFilter.filters.company} onApply={jobsFilter.setFilter} className="w-[20%]" />
-                  <ColumnFilterDropdown colKey="title" label="Job Title" allValues={jobAllValues.title} activeValues={jobsFilter.filters.title} onApply={jobsFilter.setFilter} className="w-[30%]" />
-                  <ColumnFilterDropdown colKey="location" label="Location" allValues={jobAllValues.location} activeValues={jobsFilter.filters.location} onApply={jobsFilter.setFilter} className="w-[15%]" />
-                  <Th className="w-[10%]">Domain</Th>
+                  <ColumnFilterDropdown colKey="company" label="Company" allValues={jobAllValues.company} activeValues={jobsFilter.filters.company} onApply={jobsFilter.setFilter} className="w-[18%]" />
+                  <ColumnFilterDropdown colKey="title" label="Job Title" allValues={jobAllValues.title} activeValues={jobsFilter.filters.title} onApply={jobsFilter.setFilter} className="w-[22%]" />
+                  <ColumnFilterDropdown colKey="specialty" label="Specialty" allValues={SPECIALTY_OPTIONS} activeValues={jobsSpecialtyFilter.active} onApply={jobsSpecialtyFilter.setFilter} className="w-[15%]" />
+                  <ColumnFilterDropdown colKey="location" label="Location" allValues={jobAllValues.location} activeValues={jobsFilter.filters.location} onApply={jobsFilter.setFilter} className="w-[12%]" />
                   <HierarchicalDateFilter label="Date Posted" sortDir={jobsDateCol.sortDir} onCycleSort={jobsDateCol.cycleSortDir} allRawDates={jobsRawDates} activeDateKeys={jobsDateCol.dateFilter} onApplyFilter={jobsDateCol.setDateFilter} className="w-[10%]" />
                   <Th className="w-[15%]">Link</Th>
+                  <Th className="w-[8%]">{' '}</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#374151]">
@@ -5976,8 +6219,8 @@ function JimLeadsPage(props) {
                         {displayName || '—'}
                       </td>
                       <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.job_title || '—'}</td>
+                      <SpecialtyCell job={job} table="clay_jobs" onChange={updateJobSpecialty} />
                       <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.location || '—'}</td>
-                      <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.company_domain || '—'}</td>
                       <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatClayDate(job.date_posted)}</td>
                       <td className="px-3 py-3 text-sm align-top">
                         <span className="inline-flex items-center gap-1">
@@ -5986,6 +6229,9 @@ function JimLeadsPage(props) {
                           ) : <span className="text-gray-600">—</span>}
                           {rowIsNew && <NewBadge />}
                         </span>
+                      </td>
+                      <td className="px-3 py-3 text-sm align-top text-center">
+                        <JobDeleteButton job={job} table="clay_jobs" onDelete={removeJob} />
                       </td>
                     </tr>
                   )
@@ -6114,6 +6360,7 @@ function TimLeadsPage(props) {
   const filingsFilter = useColumnFilters()
   const fundingFilter = useColumnFilters()
   const jobsFilter = useColumnFilters()
+  const jobsSpecialtyFilter = useSpecialtyFilter()
   const newsFilter = useColumnFilters()
 
   const trialsDateCol = useDateColumn()
@@ -6486,8 +6733,17 @@ function TimLeadsPage(props) {
   ), [defaultSortedJobs, jobsDateCol.sortDir, getJobDate])
 
   const filteredJobs = useMemo(() => (
-    filterRowsByDateKeys(jobsFilter.applyFilters(sortedJobs, jobExtractors), getJobDate, jobsDateCol.dateFilter)
-  ), [sortedJobs, jobsFilter.applyFilters, jobExtractors, getJobDate, jobsDateCol.dateFilter])
+    jobsSpecialtyFilter.apply(filterRowsByDateKeys(jobsFilter.applyFilters(sortedJobs, jobExtractors), getJobDate, jobsDateCol.dateFilter))
+  ), [sortedJobs, jobsFilter.applyFilters, jobExtractors, getJobDate, jobsDateCol.dateFilter, jobsSpecialtyFilter])
+
+  const updateJobSpecialty = useCallback((jobId, newSpecialty) => {
+    if (typeof setData !== 'function') return
+    setData(prev => prev ? { ...prev, clayJobs: (prev.clayJobs || []).map(j => j.id === jobId ? { ...j, specialty: newSpecialty } : j) } : prev)
+  }, [setData])
+  const removeJob = useCallback((jobId) => {
+    if (typeof setData !== 'function') return
+    setData(prev => prev ? { ...prev, clayJobs: (prev.clayJobs || []).filter(j => j.id !== jobId) } : prev)
+  }, [setData])
 
   // ── News table logic ──────────────────────────────────────────────────────
 
@@ -7016,19 +7272,20 @@ function TimLeadsPage(props) {
           <SectionHeader sectionKey="jobs" label="Jobs" total={viewClayJobs.length} newCount={sectionNewCounts.jobs} />
           {expandedSections.has('jobs') && (<>
           <ClearAllFiltersButton
-            hasActiveFilters={jobsFilter.hasActiveFilters || jobsDateCol.hasDateFilter}
-            onClear={() => { jobsFilter.clearAll(); jobsDateCol.clearDateFilter() }}
+            hasActiveFilters={jobsFilter.hasActiveFilters || jobsDateCol.hasDateFilter || jobsSpecialtyFilter.hasFilter}
+            onClear={() => { jobsFilter.clearAll(); jobsDateCol.clearDateFilter(); jobsSpecialtyFilter.clear() }}
           />
           <div className="rounded-lg border border-[#374151] overflow-hidden">
             <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
               <thead>
                 <tr>
-                  <ColumnFilterDropdown colKey="company" label="Company" allValues={jobAllValues.company} activeValues={jobsFilter.filters.company} onApply={jobsFilter.setFilter} className="w-[20%]" />
-                  <ColumnFilterDropdown colKey="title" label="Job Title" allValues={jobAllValues.title} activeValues={jobsFilter.filters.title} onApply={jobsFilter.setFilter} className="w-[30%]" />
-                  <ColumnFilterDropdown colKey="location" label="Location" allValues={jobAllValues.location} activeValues={jobsFilter.filters.location} onApply={jobsFilter.setFilter} className="w-[15%]" />
-                  <Th className="w-[10%]">Domain</Th>
+                  <ColumnFilterDropdown colKey="company" label="Company" allValues={jobAllValues.company} activeValues={jobsFilter.filters.company} onApply={jobsFilter.setFilter} className="w-[18%]" />
+                  <ColumnFilterDropdown colKey="title" label="Job Title" allValues={jobAllValues.title} activeValues={jobsFilter.filters.title} onApply={jobsFilter.setFilter} className="w-[22%]" />
+                  <ColumnFilterDropdown colKey="specialty" label="Specialty" allValues={SPECIALTY_OPTIONS} activeValues={jobsSpecialtyFilter.active} onApply={jobsSpecialtyFilter.setFilter} className="w-[15%]" />
+                  <ColumnFilterDropdown colKey="location" label="Location" allValues={jobAllValues.location} activeValues={jobsFilter.filters.location} onApply={jobsFilter.setFilter} className="w-[12%]" />
                   <HierarchicalDateFilter label="Date Posted" sortDir={jobsDateCol.sortDir} onCycleSort={jobsDateCol.cycleSortDir} allRawDates={jobsRawDates} activeDateKeys={jobsDateCol.dateFilter} onApplyFilter={jobsDateCol.setDateFilter} className="w-[10%]" />
                   <Th className="w-[15%]">Link</Th>
+                  <Th className="w-[8%]">{' '}</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#374151]">
@@ -7044,8 +7301,8 @@ function TimLeadsPage(props) {
                         {displayName || '—'}
                       </td>
                       <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.job_title || '—'}</td>
+                      <SpecialtyCell job={job} table="clay_jobs" onChange={updateJobSpecialty} />
                       <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.location || '—'}</td>
-                      <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.company_domain || '—'}</td>
                       <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatClayDate(job.date_posted)}</td>
                       <td className="px-3 py-3 text-sm align-top">
                         <span className="inline-flex items-center gap-1">
@@ -7054,6 +7311,9 @@ function TimLeadsPage(props) {
                           ) : <span className="text-gray-600">—</span>}
                           {rowIsNew && <NewBadge />}
                         </span>
+                      </td>
+                      <td className="px-3 py-3 text-sm align-top text-center">
+                        <JobDeleteButton job={job} table="clay_jobs" onDelete={removeJob} />
                       </td>
                     </tr>
                   )
@@ -7864,8 +8124,8 @@ export default function Home() {
           {activePage === 'clinical_new' && <ClinicalTrialsNewPage data={clinicalTrialsData} />}
           {activePage === 'ma_funding_new' && <MAFundingNewPage data={maFundingData} />}
           {activePage === 'funding_new' && <FundingNewPage data={fundingData} />}
-          {activePage === 'jobs_new' && <JobsNewPage data={jobsData} />}
-          {activePage === 'competitor_jobs_new' && <CompetitorJobsNewPage data={competitorJobsData} />}
+          {activePage === 'jobs_new' && <JobsNewPage data={jobsData} setData={setJobsData} />}
+          {activePage === 'competitor_jobs_new' && <CompetitorJobsNewPage data={competitorJobsData} setData={setCompetitorJobsData} />}
           {activePage === 'news' && <NewsPage data={newsData} setData={setNewsData} companyNames={companyNames} />}
           {activePage === 'madison_leads' && <MadisonLeadsPage data={madisonLeadsData} setData={setMadisonLeadsData} onRefresh={fetchMadisonLeads} companyNames={companyNames} />}
           {activePage === 'jim_leads' && <JimLeadsPage data={jimLeadsData} setData={setJimLeadsData} onRefresh={fetchJimLeads} companyNames={companyNames} />}

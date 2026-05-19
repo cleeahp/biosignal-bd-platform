@@ -37,7 +37,7 @@ export default async function handler(req, res) {
       fetchAll(supabase.from('eight_k_filings').select('id, company_name, matched_name, company_size, filing_date, filing_url, items, accession_number, agreement_type, agreement_summary, created_at').eq('matched_name', company)),
       fetchAll(supabase.from('s1_filings').select('id, company_name, matched_name, company_size, filing_date, filing_url, accession_number, created_at').eq('matched_name', company)),
       fetchAll(supabase.from('funding_projects').select('id, appl_id, org_name, matched_name, company_size, project_title, award_amount, award_notice_date, project_url, public_health_relevance, created_at').eq('matched_name', company)),
-      fetchAll(supabase.from('clay_jobs').select('id, job_title, company_name, location, company_domain, job_url, date_posted, matched_name, company_size, created_at').eq('matched_name', company)),
+      fetchAll(supabase.from('clay_jobs').select('id, job_title, company_name, location, company_domain, job_url, date_posted, matched_name, company_size, specialty, created_at').eq('matched_name', company)),
       fetchAll(supabase.from(NEWS_SOURCES[0].table).select(NEWS_SOURCES[0].select).contains('matched_names', [company])),
       fetchAll(supabase.from(NEWS_SOURCES[1].table).select(NEWS_SOURCES[1].select).contains('matched_names', [company])),
       fetchAll(supabase.from(NEWS_SOURCES[2].table).select(NEWS_SOURCES[2].select).contains('matched_names', [company])),

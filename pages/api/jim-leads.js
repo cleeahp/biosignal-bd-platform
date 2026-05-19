@@ -234,7 +234,7 @@ export default async function handler(req, res) {
   while (true) {
     const { data, error } = await supabase
       .from('clay_jobs')
-      .select('id, job_title, company_name, location, company_domain, job_url, date_posted, matched_name, company_size, created_at')
+      .select('id, job_title, company_name, location, company_domain, job_url, date_posted, matched_name, company_size, specialty, created_at')
       .in('matched_name', trackedNames)
       .range(offset, offset + PAGE - 1)
 
