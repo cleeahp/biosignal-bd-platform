@@ -2740,6 +2740,7 @@ function PastContactsSection({ rows, emailField, emptyLabel }) {
                               ? <a href={row.linkedin_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline break-all">{row.linkedin_url}</a>
                               : <span className="text-sm text-gray-500">—</span>}
                           </div>
+                          <PastContactsJobHistory jobHistory={row.job_history} />
                         </div>
                       </td>
                     </tr>
@@ -7620,8 +7621,63 @@ function pastBuyerRoleChanged(row) {
   return origTitle !== currTitle
 }
 
+function formatEnrichmentDate(value) {
+  if (!value) return null
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value))
+  if (!m) return String(value)
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const monthIdx = parseInt(m[2], 10) - 1
+  const day = parseInt(m[3], 10)
+  return `${months[monthIdx]} ${day}, ${m[1]}`
+}
+
+function PastContactsSummaryBar({ totalLabel, summary }) {
+  const total = summary?.total ?? 0
+  const companyTotal = (summary?.company_changes ?? 0) + (summary?.both_changes ?? 0)
+  const roleTotal = (summary?.role_changes ?? 0) + (summary?.both_changes ?? 0)
+  const formatted = formatEnrichmentDate(summary?.last_enrichment_date)
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+          <div className="text-xs uppercase tracking-wider text-gray-500">{totalLabel}</div>
+          <div className="text-2xl font-bold text-white tabular-nums">{total.toLocaleString()}</div>
+        </div>
+        <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+          <div className="text-xs uppercase tracking-wider text-gray-500">Company Changes</div>
+          <div className="text-2xl font-bold text-orange-400 tabular-nums">{companyTotal.toLocaleString()}</div>
+        </div>
+        <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+          <div className="text-xs uppercase tracking-wider text-gray-500">Role Changes</div>
+          <div className="text-2xl font-bold text-orange-400 tabular-nums">{roleTotal.toLocaleString()}</div>
+        </div>
+      </div>
+      <div className="text-xs text-gray-500">
+        {formatted ? `Last updated: ${formatted}` : 'No updates yet'}
+      </div>
+    </div>
+  )
+}
+
+function PastContactsJobHistory({ jobHistory }) {
+  if (!Array.isArray(jobHistory) || jobHistory.length === 0) return null
+  return (
+    <div className="flex flex-col gap-1 sm:col-span-2">
+      <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Job History</span>
+      <ul className="flex flex-col gap-1">
+        {jobHistory.map((entry, idx) => (
+          <li key={idx} className="text-sm text-gray-300">
+            {(entry?.role || '—')}, {(entry?.company || '—')}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function PastBuyersPage({ data }) {
-  const rows = Array.isArray(data) ? data : []
+  const rows = Array.isArray(data?.rows) ? data.rows : (Array.isArray(data) ? data : [])
+  const summary = data && !Array.isArray(data) ? data.summary : null
   const loading = !data
   const [expandedIds, setExpandedIds] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
@@ -7675,6 +7731,7 @@ function PastBuyersPage({ data }) {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-gray-400 text-sm">Contacts at companies that have purchased staffing services.</p>
+      <PastContactsSummaryBar totalLabel="Total Past Buyers" summary={summary} />
       <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
       <div className="rounded-lg border border-[#374151] overflow-hidden">
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
@@ -7759,6 +7816,7 @@ function PastBuyersPage({ data }) {
                               ? <a href={row.linkedin_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline break-all">{row.linkedin_url}</a>
                               : <span className="text-sm text-gray-500">—</span>}
                           </div>
+                          <PastContactsJobHistory jobHistory={row.job_history} />
                         </div>
                       </td>
                     </tr>
@@ -7774,7 +7832,8 @@ function PastBuyersPage({ data }) {
 }
 
 function PastCandidatesPage({ data }) {
-  const rows = Array.isArray(data) ? data : []
+  const rows = Array.isArray(data?.rows) ? data.rows : (Array.isArray(data) ? data : [])
+  const summary = data && !Array.isArray(data) ? data.summary : null
   const loading = !data
   const [expandedIds, setExpandedIds] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
@@ -7828,6 +7887,7 @@ function PastCandidatesPage({ data }) {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-gray-400 text-sm">Candidates previously placed or engaged with through staffing services.</p>
+      <PastContactsSummaryBar totalLabel="Total Past Candidates" summary={summary} />
       <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
       <div className="rounded-lg border border-[#374151] overflow-hidden">
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
@@ -7912,6 +7972,7 @@ function PastCandidatesPage({ data }) {
                               ? <a href={row.linkedin_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-sm text-blue-400 hover:text-blue-300 hover:underline break-all">{row.linkedin_url}</a>
                               : <span className="text-sm text-gray-500">—</span>}
                           </div>
+                          <PastContactsJobHistory jobHistory={row.job_history} />
                         </div>
                       </td>
                     </tr>

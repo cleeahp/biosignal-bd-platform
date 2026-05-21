@@ -18,9 +18,35 @@ export default async function handler(req, res) {
     const { data, error } = await query
     if (error) return res.status(500).json({ error: error.message })
     const rows = data || []
-    const sizeMB = (Buffer.byteLength(JSON.stringify(rows), 'utf8') / (1024 * 1024)).toFixed(2)
+
+    let maxDate = null
+    for (const r of rows) {
+      const d = r.last_enrichment_date
+      if (d && (!maxDate || d > maxDate)) maxDate = d
+    }
+    let company_changes = 0
+    let role_changes = 0
+    let both_changes = 0
+    if (maxDate) {
+      for (const r of rows) {
+        if (r.last_enrichment_date !== maxDate) continue
+        if (r.last_change_type === 'company_changed') company_changes++
+        else if (r.last_change_type === 'role_changed') role_changes++
+        else if (r.last_change_type === 'both_changed') both_changes++
+      }
+    }
+    const summary = {
+      total: rows.length,
+      last_enrichment_date: maxDate,
+      company_changes,
+      role_changes,
+      both_changes,
+    }
+
+    const response = { rows, summary }
+    const sizeMB = (Buffer.byteLength(JSON.stringify(response), 'utf8') / (1024 * 1024)).toFixed(2)
     console.log(`[API] ${req.url}: ${sizeMB} MB (${rows.length} rows)`)
-    return res.status(200).json(rows)
+    return res.status(200).json(response)
   }
 
   if (req.method === 'POST') {

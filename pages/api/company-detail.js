@@ -41,8 +41,8 @@ export default async function handler(req, res) {
       fetchAll(supabase.from(NEWS_SOURCES[0].table).select(NEWS_SOURCES[0].select).contains('matched_names', [company])),
       fetchAll(supabase.from(NEWS_SOURCES[1].table).select(NEWS_SOURCES[1].select).contains('matched_names', [company])),
       fetchAll(supabase.from(NEWS_SOURCES[2].table).select(NEWS_SOURCES[2].select).contains('matched_names', [company])),
-      fetchAll(supabase.from('past_buyers').select('id, person_name, current_title, current_company, original_title, original_company, current_location, original_email, phone, linkedin_url').ilike('current_company', company)),
-      fetchAll(supabase.from('past_candidates').select('id, person_name, current_title, current_company, original_title, original_company, current_location, email, phone, linkedin_url').ilike('current_company', company)),
+      fetchAll(supabase.from('past_buyers').select('id, person_name, current_title, current_company, original_title, original_company, current_location, original_email, phone, linkedin_url, job_history').ilike('current_company', company)),
+      fetchAll(supabase.from('past_candidates').select('id, person_name, current_title, current_company, original_title, original_company, current_location, email, phone, linkedin_url, job_history').ilike('current_company', company)),
       (async () => {
         const { data, error } = await supabase
           .from('past_clients')
