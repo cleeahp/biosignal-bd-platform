@@ -27,21 +27,15 @@ export default async function handler(req, res) {
     const normalize = (s) => (s || '').trim().toLowerCase()
     let companyChanges = 0
     let roleChanges = 0
-    let bothChanges = 0
     for (const row of rows) {
-      const cc = normalize(row.original_company) !== normalize(row.current_company)
-        && normalize(row.original_company) !== '' && normalize(row.current_company) !== ''
-      const rc = normalize(row.original_title) !== normalize(row.current_title)
-        && normalize(row.original_title) !== '' && normalize(row.current_title) !== ''
-      if (cc && rc) bothChanges++
-      else if (cc) companyChanges++
-      else if (rc) roleChanges++
+      if (normalize(row.original_company) !== normalize(row.current_company)) companyChanges++
+      if (normalize(row.original_title) !== normalize(row.current_title)) roleChanges++
     }
     const summary = {
       total: rows.length,
       last_enrichment_date: maxDate,
-      company_changes: companyChanges + bothChanges,
-      role_changes: roleChanges + bothChanges,
+      company_changes: companyChanges,
+      role_changes: roleChanges,
     }
 
     const response = { rows, summary }
