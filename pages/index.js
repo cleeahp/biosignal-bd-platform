@@ -1493,6 +1493,7 @@ function Sidebar({ activePage, setActivePage, tabCounts }) {
         {MAIN_NAV.map(item => {
           const isActive = activePage === item.key
           const count = item.countKey ? (tabCounts[item.countKey] || 0) : 0
+          const isChangeCount = item.countKey === 'past_buyers_changes' || item.countKey === 'past_candidates_changes'
           return (
             <button
               key={item.key}
@@ -1509,11 +1510,17 @@ function Sidebar({ activePage, setActivePage, tabCounts }) {
               <NavIcon type={item.icon} className="w-5 h-5 shrink-0" />
               <span className="hidden lg:inline truncate">{item.label}</span>
               {count > 0 && (
-                <span className={`hidden lg:inline ml-auto text-xs font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
-                  isActive ? 'bg-blue-600/30 text-blue-300' : 'bg-white/10 text-gray-400'
-                }`}>
-                  {count}
-                </span>
+                isChangeCount ? (
+                  <span className="hidden lg:inline ml-auto text-xs font-semibold tabular-nums text-green-400 shrink-0">
+                    ↑{count}
+                  </span>
+                ) : (
+                  <span className={`hidden lg:inline ml-auto text-xs font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
+                    isActive ? 'bg-blue-600/30 text-blue-300' : 'bg-white/10 text-gray-400'
+                  }`}>
+                    {count}
+                  </span>
+                )
               )}
             </button>
           )
