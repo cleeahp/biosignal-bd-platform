@@ -3,9 +3,7 @@ import { supabase } from '../../lib/supabase.js'
 const AUTH_TOKEN = 'Bearer biosignal-clay-2026'
 const ALLOWED_TABLES = ['past_buyers', 'past_candidates']
 
-function normalize(s) {
-  return typeof s === 'string' ? s.trim().toLowerCase() : ''
-}
+const normalize = (s) => (s || '').trim().toLowerCase()
 
 function isBlank(s) {
   return s == null || String(s).trim() === ''

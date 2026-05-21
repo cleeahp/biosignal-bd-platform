@@ -7716,9 +7716,11 @@ function PastBuyersPage({ data }) {
       const extractor = extractors[sortable.sortCol]
       arr.sort((a, b) => compareForSort(extractor(a), extractor(b), sortable.sortDir))
     } else {
+      const companyChangedRow = r => (r.original_company || '').trim().toLowerCase() !== (r.current_company || '').trim().toLowerCase()
+      const roleChangedRow = r => (r.original_title || '').trim().toLowerCase() !== (r.current_title || '').trim().toLowerCase()
       arr.sort((a, b) => {
-        const aRank = pastBuyerCompanyChanged(a) ? 0 : pastBuyerRoleChanged(a) ? 1 : 2
-        const bRank = pastBuyerCompanyChanged(b) ? 0 : pastBuyerRoleChanged(b) ? 1 : 2
+        const aRank = companyChangedRow(a) ? 0 : roleChangedRow(a) ? 1 : 2
+        const bRank = companyChangedRow(b) ? 0 : roleChangedRow(b) ? 1 : 2
         if (aRank !== bRank) return aRank - bRank
         return (a.person_name || '').localeCompare(b.person_name || '')
       })
@@ -7753,8 +7755,8 @@ function PastBuyersPage({ data }) {
             ) : filtered.map((row, i) => {
               const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
               const isExpanded = expandedIds.has(row.id)
-              const companyChanged = pastBuyerCompanyChanged(row)
-              const roleChanged = pastBuyerRoleChanged(row)
+              const companyChanged = (row.original_company || '').trim().toLowerCase() !== (row.current_company || '').trim().toLowerCase()
+              const roleChanged = (row.original_title || '').trim().toLowerCase() !== (row.current_title || '').trim().toLowerCase()
               return (
                 <Fragment key={row.id}>
                   <tr
@@ -7872,9 +7874,11 @@ function PastCandidatesPage({ data }) {
       const extractor = extractors[sortable.sortCol]
       arr.sort((a, b) => compareForSort(extractor(a), extractor(b), sortable.sortDir))
     } else {
+      const companyChangedRow = r => (r.original_company || '').trim().toLowerCase() !== (r.current_company || '').trim().toLowerCase()
+      const roleChangedRow = r => (r.original_title || '').trim().toLowerCase() !== (r.current_title || '').trim().toLowerCase()
       arr.sort((a, b) => {
-        const aRank = pastBuyerCompanyChanged(a) ? 0 : pastBuyerRoleChanged(a) ? 1 : 2
-        const bRank = pastBuyerCompanyChanged(b) ? 0 : pastBuyerRoleChanged(b) ? 1 : 2
+        const aRank = companyChangedRow(a) ? 0 : roleChangedRow(a) ? 1 : 2
+        const bRank = companyChangedRow(b) ? 0 : roleChangedRow(b) ? 1 : 2
         if (aRank !== bRank) return aRank - bRank
         return (a.person_name || '').localeCompare(b.person_name || '')
       })
@@ -7909,8 +7913,8 @@ function PastCandidatesPage({ data }) {
             ) : filtered.map((row, i) => {
               const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
               const isExpanded = expandedIds.has(row.id)
-              const companyChanged = pastBuyerCompanyChanged(row)
-              const roleChanged = pastBuyerRoleChanged(row)
+              const companyChanged = (row.original_company || '').trim().toLowerCase() !== (row.current_company || '').trim().toLowerCase()
+              const roleChanged = (row.original_title || '').trim().toLowerCase() !== (row.current_title || '').trim().toLowerCase()
               return (
                 <Fragment key={row.id}>
                   <tr
