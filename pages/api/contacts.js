@@ -24,23 +24,24 @@ export default async function handler(req, res) {
       const d = r.last_enrichment_date
       if (d && (!maxDate || d > maxDate)) maxDate = d
     }
-    let company_changes = 0
-    let role_changes = 0
-    let both_changes = 0
-    if (maxDate) {
-      for (const r of rows) {
-        if (r.last_enrichment_date !== maxDate) continue
-        if (r.last_change_type === 'company_changed') company_changes++
-        else if (r.last_change_type === 'role_changed') role_changes++
-        else if (r.last_change_type === 'both_changed') both_changes++
-      }
+    const normalize = (s) => (s || '').trim().toLowerCase()
+    let companyChanges = 0
+    let roleChanges = 0
+    let bothChanges = 0
+    for (const row of rows) {
+      const cc = normalize(row.original_company) !== normalize(row.current_company)
+        && normalize(row.original_company) !== '' && normalize(row.current_company) !== ''
+      const rc = normalize(row.original_title) !== normalize(row.current_title)
+        && normalize(row.original_title) !== '' && normalize(row.current_title) !== ''
+      if (cc && rc) bothChanges++
+      else if (cc) companyChanges++
+      else if (rc) roleChanges++
     }
     const summary = {
       total: rows.length,
       last_enrichment_date: maxDate,
-      company_changes,
-      role_changes,
-      both_changes,
+      company_changes: companyChanges + bothChanges,
+      role_changes: roleChanges + bothChanges,
     }
 
     const response = { rows, summary }
