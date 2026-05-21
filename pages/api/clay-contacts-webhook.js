@@ -96,6 +96,26 @@ export default async function handler(req, res) {
     else if (role_changed) update.last_change_type = 'role_changed'
     else update.last_change_type = 'company_changed'
   } else {
+    const origTitle = existing.original_title
+    const origCompany = existing.original_company
+    const originalsDiffer =
+      normalize(origTitle) !== normalize(existing_title) ||
+      normalize(origCompany) !== normalize(existing_company)
+    if (originalsDiffer) {
+      if (!isBlank(origTitle) && !isBlank(origCompany)) {
+        const job_history = Array.isArray(existing.job_history) ? [...existing.job_history] : []
+        const exists = job_history.some(e =>
+          normalize(e && e.role) === normalize(origTitle) &&
+          normalize(e && e.company) === normalize(origCompany)
+        )
+        if (!exists) {
+          job_history.push({ role: origTitle, company: origCompany })
+          update.job_history = job_history
+        }
+      }
+      update.original_title = existing.current_title
+      update.original_company = existing.current_company
+    }
     update.last_change_type = null
   }
 
