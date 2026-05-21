@@ -7605,20 +7605,11 @@ function TimLeadsPage(props) {
 }
 
 function pastBuyerCompanyChanged(row) {
-  const orig = (row.original_company || '').trim().toLowerCase()
-  const curr = (row.current_company || '').trim().toLowerCase()
-  if (!orig || !curr) return false
-  return orig !== curr
+  return (row.original_company || '').trim().toLowerCase() !== (row.current_company || '').trim().toLowerCase()
 }
 
 function pastBuyerRoleChanged(row) {
-  const origCompany = (row.original_company || '').trim().toLowerCase()
-  const currCompany = (row.current_company || '').trim().toLowerCase()
-  if (!origCompany || !currCompany || origCompany !== currCompany) return false
-  const origTitle = (row.original_title || '').trim().toLowerCase()
-  const currTitle = (row.current_title || '').trim().toLowerCase()
-  if (!origTitle || !currTitle) return false
-  return origTitle !== currTitle
+  return (row.original_title || '').trim().toLowerCase() !== (row.current_title || '').trim().toLowerCase()
 }
 
 function formatEnrichmentDate(value) {
