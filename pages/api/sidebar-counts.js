@@ -117,6 +117,22 @@ export default async function handler(req, res) {
     ])
     const newsCount = (fierceCount || 0) + (biospaceCount || 0) + (endpointsCount || 0)
 
+    // Past Buyers / Past Candidates: count of contacts with any change (company OR role)
+    const normalize = (s) => (s || '').trim().toLowerCase()
+    const countChanged = (rows) => {
+      let n = 0
+      for (const r of rows) {
+        const companyChanged = normalize(r.original_company) !== normalize(r.current_company)
+        const roleChanged = normalize(r.original_title) !== normalize(r.current_title)
+        if (companyChanged || roleChanged) n++
+      }
+      return n
+    }
+    const pastBuyersRows = await fetchAll('past_buyers', 'original_company, current_company, original_title, current_title')
+    const pastCandidatesRows = await fetchAll('past_candidates', 'original_company, current_company, original_title, current_title')
+    const pastBuyersChanges = countChanged(pastBuyersRows)
+    const pastCandidatesChanges = countChanged(pastCandidatesRows)
+
     const responseData = {
       madison_leads: madisonCount || 0,
       jim_leads: jimCount || 0,
@@ -127,6 +143,8 @@ export default async function handler(req, res) {
       jobs_new: jobsNewCount,
       competitor_jobs_new: competitorJobsNewCount,
       news: newsCount,
+      past_buyers_changes: pastBuyersChanges,
+      past_candidates_changes: pastCandidatesChanges,
     }
     const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
     console.log(`[API] ${req.url}: ${sizeMB} MB (counts: ${JSON.stringify(responseData)})`)

@@ -1470,8 +1470,8 @@ const MAIN_NAV = [
   { key: 'jobs_new',       label: 'Jobs',                   icon: 'briefcase', countKey: 'jobs_new' },
   { key: 'competitor_jobs_new', label: 'Competitor Jobs',   icon: 'users',     countKey: 'competitor_jobs_new' },
   { key: 'news',           label: 'News',                   icon: 'file-text', countKey: 'news' },
-  { key: 'buyers',         label: 'Past Buyers',            icon: 'users' },
-  { key: 'candidates',     label: 'Past Candidates',        icon: 'user' },
+  { key: 'buyers',         label: 'Past Buyers',            icon: 'users',     countKey: 'past_buyers_changes' },
+  { key: 'candidates',     label: 'Past Candidates',        icon: 'user',      countKey: 'past_candidates_changes' },
 ]
 
 function Sidebar({ activePage, setActivePage, tabCounts }) {
@@ -2692,7 +2692,7 @@ function PastContactsSection({ rows, emailField, emptyLabel }) {
                       <div className="flex flex-wrap items-start gap-1.5">
                         <span>{row.current_title || '—'}</span>
                         {roleChanged && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 whitespace-nowrap">
+                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-green-500/20 text-green-300 border border-green-500/40 whitespace-nowrap">
                             Role Changed
                           </span>
                         )}
@@ -2702,7 +2702,7 @@ function PastContactsSection({ rows, emailField, emptyLabel }) {
                       <div className="flex flex-wrap items-start gap-1.5">
                         <span>{row.current_company || '—'}</span>
                         {companyChanged && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-orange-500/20 text-orange-300 border border-orange-500/30 whitespace-nowrap">
+                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-green-500/20 text-green-300 border border-green-500/40 whitespace-nowrap">
                             Company Changed
                           </span>
                         )}
@@ -7635,12 +7635,12 @@ function PastContactsSummaryBar({ totalLabel, summary }) {
           <div className="text-2xl font-bold text-white tabular-nums">{total.toLocaleString()}</div>
         </div>
         <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
-          <div className="text-xs uppercase tracking-wider text-gray-500">Company Changes</div>
-          <div className="text-2xl font-bold text-orange-400 tabular-nums">{companyTotal.toLocaleString()}</div>
+          <div className="text-xs uppercase tracking-wider text-green-400">Company Changes</div>
+          <div className="text-2xl font-bold text-green-400 tabular-nums">{companyTotal.toLocaleString()}</div>
         </div>
         <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
-          <div className="text-xs uppercase tracking-wider text-gray-500">Role Changes</div>
-          <div className="text-2xl font-bold text-orange-400 tabular-nums">{roleTotal.toLocaleString()}</div>
+          <div className="text-xs uppercase tracking-wider text-green-400">Role Changes</div>
+          <div className="text-2xl font-bold text-green-400 tabular-nums">{roleTotal.toLocaleString()}</div>
         </div>
       </div>
       <div className="text-xs text-gray-500">
@@ -7761,7 +7761,7 @@ function PastBuyersPage({ data }) {
                       <div className="flex flex-wrap items-start gap-1.5">
                         <span>{row.current_title || '—'}</span>
                         {roleChanged && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 whitespace-nowrap">
+                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-green-500/20 text-green-300 border border-green-500/40 whitespace-nowrap">
                             Role Changed
                           </span>
                         )}
@@ -7771,7 +7771,7 @@ function PastBuyersPage({ data }) {
                       <div className="flex flex-wrap items-start gap-1.5">
                         <span>{row.current_company || '—'}</span>
                         {companyChanged && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-orange-500/20 text-orange-300 border border-orange-500/30 whitespace-nowrap">
+                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-green-500/20 text-green-300 border border-green-500/40 whitespace-nowrap">
                             Company Changed
                           </span>
                         )}
@@ -7919,7 +7919,7 @@ function PastCandidatesPage({ data }) {
                       <div className="flex flex-wrap items-start gap-1.5">
                         <span>{row.current_title || '—'}</span>
                         {roleChanged && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 whitespace-nowrap">
+                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-green-500/20 text-green-300 border border-green-500/40 whitespace-nowrap">
                             Role Changed
                           </span>
                         )}
@@ -7929,7 +7929,7 @@ function PastCandidatesPage({ data }) {
                       <div className="flex flex-wrap items-start gap-1.5">
                         <span>{row.current_company || '—'}</span>
                         {companyChanged && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-orange-500/20 text-orange-300 border border-orange-500/30 whitespace-nowrap">
+                          <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-green-500/20 text-green-300 border border-green-500/40 whitespace-nowrap">
                             Company Changed
                           </span>
                         )}
@@ -8352,6 +8352,8 @@ export default function Home() {
     jobs_new:       sidebarCounts.jobs_new || 0,
     competitor_jobs_new: sidebarCounts.competitor_jobs_new || 0,
     news:           sidebarCounts.news || 0,
+    past_buyers_changes:     sidebarCounts.past_buyers_changes || 0,
+    past_candidates_changes: sidebarCounts.past_candidates_changes || 0,
   }
 
 
