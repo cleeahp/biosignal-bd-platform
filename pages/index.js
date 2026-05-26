@@ -1,13 +1,24 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
 import { createPortal } from 'react-dom'
-import { createClient } from '@supabase/supabase-js'
+import { supabase } from '../lib/supabaseClient.js'
 import { SPECIALTY_OPTIONS } from '../lib/specialtyMatcher.js'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-const supabase = supabaseUrl && supabaseAnonKey
-  ? createClient(supabaseUrl, supabaseAnonKey)
-  : null
+const USER_ROLES = {
+  'clee@argosyhp.com':                   { displayName: 'Chris Lee',  role: 'admin', leadsPage: null },
+  'gmayer@argosyhp.com':                 { displayName: 'G Mayer',    role: 'admin', leadsPage: null },
+  'sdalton@connectlifesciences.com':     { displayName: 'S Dalton',   role: 'admin', leadsPage: null },
+  'mdriggers@connectlifesciences.com':   { displayName: 'M Driggers', role: 'user',  leadsPage: 'madison_leads' },
+  'jowens@connectlifesciences.com':      { displayName: 'J Owens',    role: 'user',  leadsPage: 'jim_leads' },
+  'tweldon@connectlifesciences.com':     { displayName: 'T Weldon',   role: 'user',  leadsPage: 'tim_leads' },
+}
+
+function resolveUserInfo(email) {
+  const lower = (email || '').toLowerCase()
+  const known = USER_ROLES[lower]
+  if (known) return { email: lower, ...known }
+  const fallbackName = lower.includes('@') ? lower.split('@')[0] : (lower || 'User')
+  return { email: lower, displayName: fallbackName, role: 'user', leadsPage: null }
+}
 
 const SIGNAL_TYPE_CONFIG = {
   clinical_trial_phase_transition: { label: 'Phase Transition', color: 'bg-blue-500', tab: 'clinical' },
@@ -1474,7 +1485,11 @@ const MAIN_NAV = [
   { key: 'candidates',     label: 'Past Candidates',        icon: 'user',      countKey: 'past_candidates_changes' },
 ]
 
-function Sidebar({ activePage, setActivePage, tabCounts }) {
+const LEADS_PAGE_KEYS = new Set(['madison_leads', 'jim_leads', 'tim_leads'])
+
+function Sidebar({ activePage, setActivePage, tabCounts, userInfo }) {
+  const isRegularUser = userInfo?.role === 'user'
+  const ownLeadsPage = userInfo?.leadsPage || null
   return (
     <aside className="fixed inset-y-0 left-0 z-40 w-16 lg:w-[220px] flex flex-col bg-[#0f1729] border-r border-[#1e2d4a]">
       {/* Brand */}
@@ -1494,6 +1509,8 @@ function Sidebar({ activePage, setActivePage, tabCounts }) {
           const isActive = activePage === item.key
           const count = item.countKey ? (tabCounts[item.countKey] || 0) : 0
           const isChangeCount = item.countKey === 'past_buyers_changes' || item.countKey === 'past_candidates_changes'
+          const isLeadsItem = LEADS_PAGE_KEYS.has(item.key)
+          const isViewOnly = isRegularUser && isLeadsItem && item.key !== ownLeadsPage
           return (
             <button
               key={item.key}
@@ -1509,6 +1526,14 @@ function Sidebar({ activePage, setActivePage, tabCounts }) {
               )}
               <NavIcon type={item.icon} className="w-5 h-5 shrink-0" />
               <span className="hidden lg:inline truncate">{item.label}</span>
+              {isViewOnly && (
+                <span
+                  className="hidden lg:inline text-[10px] font-semibold text-gray-500 italic shrink-0 ml-1"
+                  title="View Only"
+                >
+                  🔒
+                </span>
+              )}
               {count > 0 && (
                 isChangeCount ? (
                   <span className="hidden lg:inline ml-auto text-xs font-semibold tabular-nums text-green-400 shrink-0">
@@ -1701,8 +1726,23 @@ function AddCompanyModal({ onClose }) {
   )
 }
 
-function TopBar({ activePage, repName, onShowNameModal, onRefresh, refreshing }) {
+function TopBar({ activePage, userInfo, onSignOut, onRefresh, refreshing }) {
   const [addCompanyOpen, setAddCompanyOpen] = useState(false)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const userMenuRef = useRef(null)
+  const displayName = userInfo?.displayName || ''
+
+  useEffect(() => {
+    if (!userMenuOpen) return
+    const handleClick = (e) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+        setUserMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [userMenuOpen])
+
   return (
     <div className="bg-[#1f2937] border-b border-[#374151] px-6 py-3 flex items-center justify-between gap-4 sticky top-0 z-30">
       {/* Page title */}
@@ -1731,25 +1771,35 @@ function TopBar({ activePage, repName, onShowNameModal, onRefresh, refreshing })
             <span className={`text-base leading-none ${refreshing ? 'animate-spin inline-block' : ''}`}>↻</span>
           </button>
         )}
-        {/* Rep identity — opens name modal */}
-        {repName ? (
+        {/* User identity + menu */}
+        <div className="relative" ref={userMenuRef}>
           <button
-            onClick={onShowNameModal}
+            onClick={() => setUserMenuOpen(v => !v)}
             className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 hover:bg-white/10 transition-colors group"
           >
             <span className="w-6 h-6 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold text-white select-none">
-              {getRepInitials(repName)}
+              {getRepInitials(displayName)}
             </span>
-            <span className="text-sm text-gray-300 group-hover:text-white hidden sm:inline">{repName}</span>
+            <span className="text-sm text-gray-300 group-hover:text-white hidden sm:inline">{displayName}</span>
           </button>
-        ) : (
-          <button
-            onClick={onShowNameModal}
-            className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors"
-          >
-            Set name →
-          </button>
-        )}
+          {userMenuOpen && (
+            <div className="absolute right-0 mt-1 w-56 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl overflow-hidden z-50">
+              <div className="px-3 py-2.5 border-b border-[#374151]">
+                <div className="text-sm font-semibold text-gray-100 truncate">{displayName || '—'}</div>
+                <div className="text-xs text-gray-500 truncate">{userInfo?.email || ''}</div>
+                {userInfo?.role && (
+                  <div className="text-[10px] text-blue-400/80 uppercase tracking-wider mt-1">{userInfo.role}</div>
+                )}
+              </div>
+              <button
+                onClick={() => { setUserMenuOpen(false); onSignOut && onSignOut() }}
+                className="w-full px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-white/5 transition-colors"
+              >
+                Sign Out
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       {addCompanyOpen && <AddCompanyModal onClose={() => setAddCompanyOpen(false)} />}
     </div>
@@ -4368,7 +4418,8 @@ function NewsPage({ data, setData, companyNames }) {
 // ─── Madison Leads Page ──────────────────────────────────────────────────────
 
 function MadisonLeadsPage(props) {
-  const { setData, onRefresh, companyNames } = props
+  const { setData, onRefresh, companyNames, userInfo } = props
+  const readOnly = userInfo?.role === 'user' && userInfo?.leadsPage !== 'madison_leads'
   const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0 }, cutoffIso: null }
   const loading = !props.data
   const [accountView, setAccountView] = useState('key')
@@ -4877,6 +4928,12 @@ function MadisonLeadsPage(props) {
 
   return (
     <div className="flex flex-col gap-6">
+      {readOnly && (
+        <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-4 py-2.5 text-sm text-yellow-200 flex items-center gap-2">
+          <span aria-hidden="true">🔒</span>
+          <span>View Only — this leads page belongs to another rep. You can view all data but cannot make changes.</span>
+        </div>
+      )}
       {/* ── Mini Dashboard ───────────────────────────────────────────────── */}
       <div className="flex flex-col gap-3">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -4930,7 +4987,7 @@ function MadisonLeadsPage(props) {
                       {c.is_key_account && <span className="text-yellow-400 mr-1" title="Key account">&#9733;</span>}
                       {c.name}
                     </span>
-                    {!c.is_key_account && (
+                    {!c.is_key_account && !readOnly && (
                       <button
                         onClick={() => setKeyAccount(c.name, true)}
                         className="px-2 py-1 text-xs font-semibold rounded border border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/20 transition-colors"
@@ -4939,16 +4996,19 @@ function MadisonLeadsPage(props) {
                         &#9733; Key
                       </button>
                     )}
-                    <button
-                      onClick={() => removeCompany(c.name)}
-                      className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
-                      title={`Remove ${c.name}`}
-                    >
-                      &times; Remove
-                    </button>
+                    {!readOnly && (
+                      <button
+                        onClick={() => removeCompany(c.name)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
+                        title={`Remove ${c.name}`}
+                      >
+                        &times; Remove
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
+              {!readOnly && (
               <div className="border-t border-[#374151] p-2 bg-[#18202e]">
                 <input
                   ref={addSearchInputRef}
@@ -4983,6 +5043,7 @@ function MadisonLeadsPage(props) {
                   document.body
                 )}
               </div>
+              )}
             </div>
           )}
         </div>
@@ -5005,20 +5066,24 @@ function MadisonLeadsPage(props) {
                     <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
                       <span className="text-yellow-400 mr-1">&#9733;</span>{c.name}
                     </span>
-                    <button
-                      onClick={() => setKeyAccount(c.name, false)}
-                      className="px-2 py-1 text-xs font-semibold rounded border border-gray-500/40 text-gray-300 hover:bg-gray-500/20 transition-colors"
-                      title="Demote to regular account"
-                    >
-                      &darr; Demote
-                    </button>
-                    <button
-                      onClick={() => removeCompany(c.name)}
-                      className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
-                      title={`Remove ${c.name}`}
-                    >
-                      &times; Remove
-                    </button>
+                    {!readOnly && (
+                      <button
+                        onClick={() => setKeyAccount(c.name, false)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-gray-500/40 text-gray-300 hover:bg-gray-500/20 transition-colors"
+                        title="Demote to regular account"
+                      >
+                        &darr; Demote
+                      </button>
+                    )}
+                    {!readOnly && (
+                      <button
+                        onClick={() => removeCompany(c.name)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
+                        title={`Remove ${c.name}`}
+                      >
+                        &times; Remove
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -5333,7 +5398,7 @@ function MadisonLeadsPage(props) {
                         {displayName || '—'}
                       </td>
                       <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.job_title || '—'}</td>
-                      <SpecialtyCell job={job} table="clay_jobs" onChange={updateJobSpecialty} />
+                      <SpecialtyCell job={job} table="clay_jobs" onChange={readOnly ? undefined : updateJobSpecialty} />
                       <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.location || '—'}</td>
                       <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatClayDate(job.date_posted)}</td>
                       <td className="px-3 py-3 text-sm align-top">
@@ -5345,7 +5410,7 @@ function MadisonLeadsPage(props) {
                         </span>
                       </td>
                       <td className="px-3 py-3 text-sm align-top text-center">
-                        <JobDeleteButton job={job} table="clay_jobs" onDelete={removeJob} />
+                        {!readOnly && <JobDeleteButton job={job} table="clay_jobs" onDelete={removeJob} />}
                       </td>
                     </tr>
                   )
@@ -5393,12 +5458,14 @@ function MadisonLeadsPage(props) {
                               {n}
                             </span>
                           ))}
-                          <button
-                            onClick={() => setAssignArticle(article)}
-                            className="self-start mt-1 text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30 hover:bg-blue-600/20 transition-colors"
-                          >
-                            {names.length > 0 ? 'Edit' : '+ Assign'}
-                          </button>
+                          {!readOnly && (
+                            <button
+                              onClick={() => setAssignArticle(article)}
+                              className="self-start mt-1 text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30 hover:bg-blue-600/20 transition-colors"
+                            >
+                              {names.length > 0 ? 'Edit' : '+ Assign'}
+                            </button>
+                          )}
                         </div>
                       </td>
                       <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
@@ -5450,7 +5517,8 @@ function MadisonLeadsPage(props) {
 // ─── Jim Leads Page ──────────────────────────────────────────────────────────
 
 function JimLeadsPage(props) {
-  const { setData, onRefresh, companyNames } = props
+  const { setData, onRefresh, companyNames, userInfo } = props
+  const readOnly = userInfo?.role === 'user' && userInfo?.leadsPage !== 'jim_leads'
   const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0 }, cutoffIso: null }
   const loading = !props.data
   const [accountView, setAccountView] = useState('key')
@@ -5959,6 +6027,12 @@ function JimLeadsPage(props) {
 
   return (
     <div className="flex flex-col gap-6">
+      {readOnly && (
+        <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-4 py-2.5 text-sm text-yellow-200 flex items-center gap-2">
+          <span aria-hidden="true">🔒</span>
+          <span>View Only — this leads page belongs to another rep. You can view all data but cannot make changes.</span>
+        </div>
+      )}
       {/* ── Mini Dashboard ───────────────────────────────────────────────── */}
       <div className="flex flex-col gap-3">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -6012,7 +6086,7 @@ function JimLeadsPage(props) {
                       {c.is_key_account && <span className="text-yellow-400 mr-1" title="Key account">&#9733;</span>}
                       {c.name}
                     </span>
-                    {!c.is_key_account && (
+                    {!c.is_key_account && !readOnly && (
                       <button
                         onClick={() => setKeyAccount(c.name, true)}
                         className="px-2 py-1 text-xs font-semibold rounded border border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/20 transition-colors"
@@ -6021,16 +6095,19 @@ function JimLeadsPage(props) {
                         &#9733; Key
                       </button>
                     )}
-                    <button
-                      onClick={() => removeCompany(c.name)}
-                      className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
-                      title={`Remove ${c.name}`}
-                    >
-                      &times; Remove
-                    </button>
+                    {!readOnly && (
+                      <button
+                        onClick={() => removeCompany(c.name)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
+                        title={`Remove ${c.name}`}
+                      >
+                        &times; Remove
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
+              {!readOnly && (
               <div className="border-t border-[#374151] p-2 bg-[#18202e]">
                 <input
                   ref={addSearchInputRef}
@@ -6065,6 +6142,7 @@ function JimLeadsPage(props) {
                   document.body
                 )}
               </div>
+              )}
             </div>
           )}
         </div>
@@ -6087,20 +6165,24 @@ function JimLeadsPage(props) {
                     <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
                       <span className="text-yellow-400 mr-1">&#9733;</span>{c.name}
                     </span>
-                    <button
-                      onClick={() => setKeyAccount(c.name, false)}
-                      className="px-2 py-1 text-xs font-semibold rounded border border-gray-500/40 text-gray-300 hover:bg-gray-500/20 transition-colors"
-                      title="Demote to regular account"
-                    >
-                      &darr; Demote
-                    </button>
-                    <button
-                      onClick={() => removeCompany(c.name)}
-                      className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
-                      title={`Remove ${c.name}`}
-                    >
-                      &times; Remove
-                    </button>
+                    {!readOnly && (
+                      <button
+                        onClick={() => setKeyAccount(c.name, false)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-gray-500/40 text-gray-300 hover:bg-gray-500/20 transition-colors"
+                        title="Demote to regular account"
+                      >
+                        &darr; Demote
+                      </button>
+                    )}
+                    {!readOnly && (
+                      <button
+                        onClick={() => removeCompany(c.name)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
+                        title={`Remove ${c.name}`}
+                      >
+                        &times; Remove
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -6415,7 +6497,7 @@ function JimLeadsPage(props) {
                         {displayName || '—'}
                       </td>
                       <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.job_title || '—'}</td>
-                      <SpecialtyCell job={job} table="clay_jobs" onChange={updateJobSpecialty} />
+                      <SpecialtyCell job={job} table="clay_jobs" onChange={readOnly ? undefined : updateJobSpecialty} />
                       <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.location || '—'}</td>
                       <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatClayDate(job.date_posted)}</td>
                       <td className="px-3 py-3 text-sm align-top">
@@ -6427,7 +6509,7 @@ function JimLeadsPage(props) {
                         </span>
                       </td>
                       <td className="px-3 py-3 text-sm align-top text-center">
-                        <JobDeleteButton job={job} table="clay_jobs" onDelete={removeJob} />
+                        {!readOnly && <JobDeleteButton job={job} table="clay_jobs" onDelete={removeJob} />}
                       </td>
                     </tr>
                   )
@@ -6475,12 +6557,14 @@ function JimLeadsPage(props) {
                               {n}
                             </span>
                           ))}
-                          <button
-                            onClick={() => setAssignArticle(article)}
-                            className="self-start mt-1 text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30 hover:bg-blue-600/20 transition-colors"
-                          >
-                            {names.length > 0 ? 'Edit' : '+ Assign'}
-                          </button>
+                          {!readOnly && (
+                            <button
+                              onClick={() => setAssignArticle(article)}
+                              className="self-start mt-1 text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30 hover:bg-blue-600/20 transition-colors"
+                            >
+                              {names.length > 0 ? 'Edit' : '+ Assign'}
+                            </button>
+                          )}
                         </div>
                       </td>
                       <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
@@ -6532,7 +6616,8 @@ function JimLeadsPage(props) {
 // ─── Tim Leads Page ──────────────────────────────────────────────────────────
 
 function TimLeadsPage(props) {
-  const { setData, onRefresh, companyNames } = props
+  const { setData, onRefresh, companyNames, userInfo } = props
+  const readOnly = userInfo?.role === 'user' && userInfo?.leadsPage !== 'tim_leads'
   const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0 }, cutoffIso: null }
   const loading = !props.data
   const [accountView, setAccountView] = useState('key')
@@ -7041,6 +7126,12 @@ function TimLeadsPage(props) {
 
   return (
     <div className="flex flex-col gap-6">
+      {readOnly && (
+        <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-4 py-2.5 text-sm text-yellow-200 flex items-center gap-2">
+          <span aria-hidden="true">🔒</span>
+          <span>View Only — this leads page belongs to another rep. You can view all data but cannot make changes.</span>
+        </div>
+      )}
       {/* ── Mini Dashboard ───────────────────────────────────────────────── */}
       <div className="flex flex-col gap-3">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -7094,7 +7185,7 @@ function TimLeadsPage(props) {
                       {c.is_key_account && <span className="text-yellow-400 mr-1" title="Key account">&#9733;</span>}
                       {c.name}
                     </span>
-                    {!c.is_key_account && (
+                    {!c.is_key_account && !readOnly && (
                       <button
                         onClick={() => setKeyAccount(c.name, true)}
                         className="px-2 py-1 text-xs font-semibold rounded border border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/20 transition-colors"
@@ -7103,16 +7194,19 @@ function TimLeadsPage(props) {
                         &#9733; Key
                       </button>
                     )}
-                    <button
-                      onClick={() => removeCompany(c.name)}
-                      className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
-                      title={`Remove ${c.name}`}
-                    >
-                      &times; Remove
-                    </button>
+                    {!readOnly && (
+                      <button
+                        onClick={() => removeCompany(c.name)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
+                        title={`Remove ${c.name}`}
+                      >
+                        &times; Remove
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
+              {!readOnly && (
               <div className="border-t border-[#374151] p-2 bg-[#18202e]">
                 <input
                   ref={addSearchInputRef}
@@ -7147,6 +7241,7 @@ function TimLeadsPage(props) {
                   document.body
                 )}
               </div>
+              )}
             </div>
           )}
         </div>
@@ -7169,20 +7264,24 @@ function TimLeadsPage(props) {
                     <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
                       <span className="text-yellow-400 mr-1">&#9733;</span>{c.name}
                     </span>
-                    <button
-                      onClick={() => setKeyAccount(c.name, false)}
-                      className="px-2 py-1 text-xs font-semibold rounded border border-gray-500/40 text-gray-300 hover:bg-gray-500/20 transition-colors"
-                      title="Demote to regular account"
-                    >
-                      &darr; Demote
-                    </button>
-                    <button
-                      onClick={() => removeCompany(c.name)}
-                      className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
-                      title={`Remove ${c.name}`}
-                    >
-                      &times; Remove
-                    </button>
+                    {!readOnly && (
+                      <button
+                        onClick={() => setKeyAccount(c.name, false)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-gray-500/40 text-gray-300 hover:bg-gray-500/20 transition-colors"
+                        title="Demote to regular account"
+                      >
+                        &darr; Demote
+                      </button>
+                    )}
+                    {!readOnly && (
+                      <button
+                        onClick={() => removeCompany(c.name)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
+                        title={`Remove ${c.name}`}
+                      >
+                        &times; Remove
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -7497,7 +7596,7 @@ function TimLeadsPage(props) {
                         {displayName || '—'}
                       </td>
                       <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.job_title || '—'}</td>
-                      <SpecialtyCell job={job} table="clay_jobs" onChange={updateJobSpecialty} />
+                      <SpecialtyCell job={job} table="clay_jobs" onChange={readOnly ? undefined : updateJobSpecialty} />
                       <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.location || '—'}</td>
                       <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatClayDate(job.date_posted)}</td>
                       <td className="px-3 py-3 text-sm align-top">
@@ -7509,7 +7608,7 @@ function TimLeadsPage(props) {
                         </span>
                       </td>
                       <td className="px-3 py-3 text-sm align-top text-center">
-                        <JobDeleteButton job={job} table="clay_jobs" onDelete={removeJob} />
+                        {!readOnly && <JobDeleteButton job={job} table="clay_jobs" onDelete={removeJob} />}
                       </td>
                     </tr>
                   )
@@ -7557,12 +7656,14 @@ function TimLeadsPage(props) {
                               {n}
                             </span>
                           ))}
-                          <button
-                            onClick={() => setAssignArticle(article)}
-                            className="self-start mt-1 text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30 hover:bg-blue-600/20 transition-colors"
-                          >
-                            {names.length > 0 ? 'Edit' : '+ Assign'}
-                          </button>
+                          {!readOnly && (
+                            <button
+                              onClick={() => setAssignArticle(article)}
+                              className="self-start mt-1 text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30 hover:bg-blue-600/20 transition-colors"
+                            >
+                              {names.length > 0 ? 'Edit' : '+ Assign'}
+                            </button>
+                          )}
                         </div>
                       </td>
                       <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
@@ -8251,11 +8352,12 @@ function SettingsPage() {
 
 export default function Home() {
   const [activePage, setActivePage]     = useState('dashboard')
-  const [repName, setRepName]           = useState('')
-  const [showNameModal, setShowNameModal] = useState(false)
+  const [userInfo, setUserInfo]         = useState(null)
+  const [authChecking, setAuthChecking] = useState(true)
   const [toast, setToast]               = useState(null)
   const [sidebarCounts, setSidebarCounts] = useState({})
   const [refreshing, setRefreshing]     = useState(false)
+  const repName = userInfo?.displayName || ''
 
   // Per-page data caches. null = not loaded yet (page shows spinner).
   const [dashboardData, setDashboardData] = useState(null)
@@ -8340,14 +8442,58 @@ export default function Home() {
   }, [fetchAllData])
 
   useEffect(() => {
-    const stored = localStorage.getItem('biosignal_rep_name')
-    if (stored) {
-      setRepName(stored)
-    } else {
-      setShowNameModal(true)
+    let cancelled = false
+    async function checkAuth() {
+      if (!supabase) {
+        // Auth not configured — fall back to unauthenticated (data load will use anon API routes only)
+        const fallback = resolveUserInfo('')
+        setUserInfo(fallback)
+        setAuthChecking(false)
+        fetchAllData()
+        return
+      }
+      try {
+        const { data } = await supabase.auth.getSession()
+        if (cancelled) return
+        if (!data?.session) {
+          window.location.replace('/login')
+          return
+        }
+        const email = data.session.user?.email || ''
+        const info = resolveUserInfo(email)
+        setUserInfo(info)
+        try { document.cookie = `biosignal_rep_name=${encodeURIComponent(info.displayName)}; path=/` } catch (_) {}
+        setAuthChecking(false)
+        fetchAllData()
+      } catch (err) {
+        console.error('Auth check failed:', err)
+        if (!cancelled) window.location.replace('/login')
+      }
     }
-    fetchAllData()
+    checkAuth()
+
+    let unsubscribe = null
+    if (supabase) {
+      const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+        if (event === 'SIGNED_OUT') {
+          window.location.replace('/login')
+        }
+      })
+      unsubscribe = () => sub?.subscription?.unsubscribe?.()
+    }
+
+    return () => {
+      cancelled = true
+      if (unsubscribe) unsubscribe()
+    }
   }, [fetchAllData])
+
+  const handleSignOut = useCallback(async () => {
+    if (supabase) {
+      try { await supabase.auth.signOut() } catch (_) {}
+    }
+    window.location.replace('/login')
+  }, [])
 
   const tabCounts = {
     madison_leads:  sidebarCounts.madison_leads || 0,
@@ -8364,22 +8510,23 @@ export default function Home() {
   }
 
 
-  const saveRepName = (name) => {
-    setRepName(name)
-    localStorage.setItem('biosignal_rep_name', name)
-    document.cookie = `biosignal_rep_name=${encodeURIComponent(name)}; path=/`
-    setShowNameModal(false)
+  if (authChecking || !userInfo) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-[#111827]">
+        <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
   }
 
   return (
     <div className="flex min-h-screen bg-[#111827]">
-      <Sidebar activePage={activePage} setActivePage={setActivePage} tabCounts={tabCounts} />
+      <Sidebar activePage={activePage} setActivePage={setActivePage} tabCounts={tabCounts} userInfo={userInfo} />
 
       <div className="flex-1 lg:ml-[220px] ml-16 min-w-0 flex flex-col">
         <TopBar
           activePage={activePage}
-          repName={repName}
-          onShowNameModal={() => setShowNameModal(true)}
+          userInfo={userInfo}
+          onSignOut={handleSignOut}
           onRefresh={handleGlobalRefresh}
           refreshing={refreshing}
         />
@@ -8392,19 +8539,14 @@ export default function Home() {
           {activePage === 'jobs_new' && <JobsNewPage data={jobsData} setData={setJobsData} />}
           {activePage === 'competitor_jobs_new' && <CompetitorJobsNewPage data={competitorJobsData} setData={setCompetitorJobsData} />}
           {activePage === 'news' && <NewsPage data={newsData} setData={setNewsData} companyNames={companyNames} />}
-          {activePage === 'madison_leads' && <MadisonLeadsPage data={madisonLeadsData} setData={setMadisonLeadsData} onRefresh={fetchMadisonLeads} companyNames={companyNames} />}
-          {activePage === 'jim_leads' && <JimLeadsPage data={jimLeadsData} setData={setJimLeadsData} onRefresh={fetchJimLeads} companyNames={companyNames} />}
-          {activePage === 'tim_leads' && <TimLeadsPage data={timLeadsData} setData={setTimLeadsData} onRefresh={fetchTimLeads} companyNames={companyNames} />}
+          {activePage === 'madison_leads' && <MadisonLeadsPage data={madisonLeadsData} setData={setMadisonLeadsData} onRefresh={fetchMadisonLeads} companyNames={companyNames} userInfo={userInfo} />}
+          {activePage === 'jim_leads' && <JimLeadsPage data={jimLeadsData} setData={setJimLeadsData} onRefresh={fetchJimLeads} companyNames={companyNames} userInfo={userInfo} />}
+          {activePage === 'tim_leads' && <TimLeadsPage data={timLeadsData} setData={setTimLeadsData} onRefresh={fetchTimLeads} companyNames={companyNames} userInfo={userInfo} />}
           {activePage === 'buyers'     && <PastBuyersPage data={pastBuyersData} />}
           {activePage === 'candidates' && <PastCandidatesPage data={pastCandidatesData} />}
           {activePage === 'settings'   && <SettingsPage />}
         </main>
       </div>
-
-      {/* Name modal — shown on first visit or when clicking name */}
-      {showNameModal && (
-        <NameModal onSave={saveRepName} />
-      )}
 
       {/* Toast notification */}
       {toast && (
