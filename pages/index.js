@@ -8442,20 +8442,11 @@ export default function Home() {
   }, [fetchAllData])
 
   useEffect(() => {
-    // Invite/signup links arrive at the site root with hash-fragment tokens
-    // (e.g. /#access_token=...&type=invite). Bounce these to /set-password
-    // before any session check or data load happens.
-    if (typeof window !== 'undefined' && window.location.hash) {
-      const hash = window.location.hash.substring(1)
-      const params = new URLSearchParams(hash)
-      const type = params.get('type')
-      if (type === 'invite' || type === 'signup') {
-        window.location.href = '/set-password'
-        return
-      }
-    }
-
     let cancelled = false
+    let inviteSubscription = null
+    let inviteTimeout = null
+    let signOutSubscription = null
+
     async function checkAuth() {
       if (!supabase) {
         // Auth not configured — fall back to unauthenticated (data load will use anon API routes only)
@@ -8465,6 +8456,44 @@ export default function Home() {
         fetchAllData()
         return
       }
+
+      // Step 1: Invite/signup links land at the site root with hash-fragment
+      // tokens (e.g. /#access_token=...&type=invite). The Supabase client
+      // processes those tokens asynchronously. Wait for SIGNED_IN before
+      // redirecting so the session is persisted to localStorage first; if it
+      // never fires, fall back to a direct getSession check after a timeout.
+      const hash = (typeof window !== 'undefined' && window.location.hash) || ''
+      const isInvite = hash.includes('type=invite') || hash.includes('type=signup')
+
+      if (isInvite) {
+        const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+          if (event === 'SIGNED_IN' && session) {
+            if (inviteTimeout) clearTimeout(inviteTimeout)
+            inviteSubscription?.unsubscribe?.()
+            window.location.href = '/set-password'
+          }
+        })
+        inviteSubscription = sub?.subscription
+
+        inviteTimeout = setTimeout(async () => {
+          inviteSubscription?.unsubscribe?.()
+          try {
+            const { data } = await supabase.auth.getSession()
+            if (cancelled) return
+            if (data?.session) {
+              window.location.href = '/set-password'
+            } else {
+              window.location.href = '/login'
+            }
+          } catch (_) {
+            if (!cancelled) window.location.href = '/login'
+          }
+        }, 3000)
+
+        return // Don't run the normal auth check while invite handling is in flight
+      }
+
+      // Step 2: Normal auth check (no invite hash present)
       try {
         const { data } = await supabase.auth.getSession()
         if (cancelled) return
@@ -8485,19 +8514,20 @@ export default function Home() {
     }
     checkAuth()
 
-    let unsubscribe = null
     if (supabase) {
       const { data: sub } = supabase.auth.onAuthStateChange((event) => {
         if (event === 'SIGNED_OUT') {
           window.location.replace('/login')
         }
       })
-      unsubscribe = () => sub?.subscription?.unsubscribe?.()
+      signOutSubscription = sub?.subscription
     }
 
     return () => {
       cancelled = true
-      if (unsubscribe) unsubscribe()
+      if (inviteTimeout) clearTimeout(inviteTimeout)
+      inviteSubscription?.unsubscribe?.()
+      signOutSubscription?.unsubscribe?.()
     }
   }, [fetchAllData])
 
