@@ -8442,6 +8442,19 @@ export default function Home() {
   }, [fetchAllData])
 
   useEffect(() => {
+    // Invite/signup links arrive at the site root with hash-fragment tokens
+    // (e.g. /#access_token=...&type=invite). Bounce these to /set-password
+    // before any session check or data load happens.
+    if (typeof window !== 'undefined' && window.location.hash) {
+      const hash = window.location.hash.substring(1)
+      const params = new URLSearchParams(hash)
+      const type = params.get('type')
+      if (type === 'invite' || type === 'signup') {
+        window.location.href = '/set-password'
+        return
+      }
+    }
+
     let cancelled = false
     async function checkAuth() {
       if (!supabase) {
