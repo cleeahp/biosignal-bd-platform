@@ -1,5 +1,8 @@
 import { supabase } from '../../lib/supabase.js'
 
+// Clay webhook that pulls newly added leads in for enrichment.
+const CLAY_LEADS_WEBHOOK = 'https://api.clay.com/v3/sources/webhook/pull-in-data-from-a-webhook-90ff0492-a963-46c5-a9cc-9ad22293f0aa'
+
 // Returns ISO timestamp for midnight EST seven days ago — matches the dashboard.
 function sevenDaysAgoMidnightEstIso() {
   const now = new Date()
@@ -27,10 +30,25 @@ export default async function handler(req, res) {
       .limit(1)
       .maybeSingle()
 
+    const linkedinUrl = dirMatch?.linkedin_url ?? null
+
     const { error } = await supabase
       .from('madison_leads')
-      .insert({ company_name, is_key_account: false, linkedin_url: dirMatch?.linkedin_url ?? null })
+      .insert({ company_name, is_key_account: false, linkedin_url: linkedinUrl })
     if (error) return res.status(500).json({ error: error.message })
+
+    // Fire-and-forget: push the lead to Clay for enrichment. Failures are logged
+    // but never block or fail the leads insert.
+    fetch(CLAY_LEADS_WEBHOOK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        company_name,
+        linkedin_url: linkedinUrl || null,
+        leads_page: 'madison_leads',
+      }),
+    }).catch(err => console.log('[ClayLeadsWebhook] Error:', err.message))
+
     return res.status(200).json({ ok: true })
   }
 
