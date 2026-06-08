@@ -100,7 +100,7 @@ export default async function handler(req, res) {
   }))
   const trackedNames = trackedCompanies.map(c => c.name)
 
-  const emptyNewCounts = { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0 }
+  const emptyNewCounts = { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0, hiringManagers: 0 }
 
   if (trackedNames.length === 0) {
     // Fetch past_clients even with no tracked companies (for star display)
@@ -112,6 +112,7 @@ export default async function handler(req, res) {
       fundingProjects: [],
       newsArticles: [],
       clayJobs: [],
+      hiringManagers: [],
       pastClients: (clientRows || []).map(r => ({ name: r.name, matched_name: r.matched_name })),
       newCounts: emptyNewCounts,
       cutoffIso,
@@ -272,12 +273,34 @@ export default async function handler(req, res) {
     offset += PAGE
   }
 
+  // ── Hiring managers (Clay-enriched contacts) for tracked companies ────────
+  // leads_contacts is scoped to tracked companies across all leads pages, so we
+  // load it and match by company_name case-insensitively against this page's set.
+  const trackedNameLowerSet = new Set(trackedNames.map(n => String(n).toLowerCase()))
+  const allContacts = []
+  offset = 0
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('leads_contacts')
+      .select('id, full_name, job_title, specialty, location, company_name, linkedin_url, created_at')
+      .range(offset, offset + PAGE - 1)
+
+    if (error) return res.status(500).json({ error: error.message })
+    if (!data || data.length === 0) break
+    allContacts.push(...data)
+    offset += PAGE
+  }
+
+  const hiringManagers = allContacts.filter(c => c.company_name && trackedNameLowerSet.has(String(c.company_name).toLowerCase()))
+
   const newCounts = {
     clinicalTrials: trials.filter(isNew).length,
     filings: filings.filter(isNew).length,
     fundingProjects: funding.filter(isNew).length,
     jobs: clayJobs.filter(isNew).length,
     news: newsArticles.filter(isNew).length,
+    hiringManagers: hiringManagers.filter(isNew).length,
   }
 
   const responseData = {
@@ -287,11 +310,12 @@ export default async function handler(req, res) {
     fundingProjects: funding,
     newsArticles,
     clayJobs,
+    hiringManagers,
     pastClients,
     newCounts,
     cutoffIso,
   }
-  const totalRows = trials.length + filings.length + funding.length + newsArticles.length + clayJobs.length
+  const totalRows = trials.length + filings.length + funding.length + newsArticles.length + clayJobs.length + hiringManagers.length
   const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
   console.log(`[API] ${req.url}: ${sizeMB} MB (${totalRows} rows)`)
   return res.status(200).json(responseData)

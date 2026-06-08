@@ -1,7 +1,7 @@
 import { supabase } from '../../lib/supabase.js'
 import { cleanJobTitle } from '../../lib/specialtyMatcher.js'
 
-const ALLOWED_TABLES = new Set(['clay_jobs', 'clay_jobs_competitors'])
+const ALLOWED_TABLES = new Set(['clay_jobs', 'clay_jobs_competitors', 'leads_contacts'])
 
 export default async function handler(req, res) {
   if (req.method === 'PATCH') {

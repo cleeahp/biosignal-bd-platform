@@ -4420,7 +4420,7 @@ function NewsPage({ data, setData, companyNames }) {
 function MadisonLeadsPage(props) {
   const { setData, onRefresh, companyNames, userInfo } = props
   const readOnly = userInfo?.role === 'user' && userInfo?.leadsPage !== 'madison_leads'
-  const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0 }, cutoffIso: null }
+  const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], hiringManagers: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0, hiringManagers: 0 }, cutoffIso: null }
   const loading = !props.data
   const [accountView, setAccountView] = useState('key')
   const [allAccountsOpen, setAllAccountsOpen] = useState(false)
@@ -4445,12 +4445,15 @@ function MadisonLeadsPage(props) {
   const jobsFilter = useColumnFilters()
   const jobsSpecialtyFilter = useSpecialtyFilter()
   const newsFilter = useColumnFilters()
+  const hmFilter = useColumnFilters()
+  const hmSpecialtyFilter = useSpecialtyFilter()
 
   const trialsDateCol = useDateColumn()
   const filingsDateCol = useDateColumn()
   const fundingDateCol = useDateColumn()
   const jobsDateCol = useDateColumn()
   const newsDateCol = useDateColumn()
+  const hmDateCol = useDateColumn()
 
   const trackedCompanies = data.trackedCompanies || []
   const keyCompanies = useMemo(() => trackedCompanies.filter(c => c.is_key_account), [trackedCompanies])
@@ -4560,6 +4563,7 @@ function MadisonLeadsPage(props) {
     if (accountView === 'all') return list
     return list.filter(a => Array.isArray(a.matched_names) && a.matched_names.some(n => matchesView(n)))
   }, [data.newsArticles, accountView, matchesView])
+  const viewHiringManagers = useMemo(() => (data.hiringManagers || []).filter(c => matchesView(c.company_name)), [data.hiringManagers, matchesView])
 
   // ── New-signal counts (per section, respecting active view) ───────────────
   const cutoffMs = useMemo(() => {
@@ -4597,18 +4601,20 @@ function MadisonLeadsPage(props) {
     fundingProjects: viewFundingProjects.filter(isNewRow).length,
     jobs: viewClayJobs.filter(isNewRow).length,
     news: viewNewsArticles.filter(isNewRow).length,
-  }), [viewClinicalTrials, viewFilings, viewFundingProjects, viewClayJobs, viewNewsArticles, isNewRow])
+    hiringManagers: viewHiringManagers.filter(isNewRow).length,
+  }), [viewClinicalTrials, viewFilings, viewFundingProjects, viewClayJobs, viewNewsArticles, viewHiringManagers, isNewRow])
 
   // ── Mini-dashboard stats (all + key) ──────────────────────────────────────
   const dashStats = useMemo(() => {
     const all = data
-    const allTotal = (all.clinicalTrials?.length || 0) + (all.filings?.length || 0) + (all.fundingProjects?.length || 0) + (all.clayJobs?.length || 0) + (all.newsArticles?.length || 0)
+    const allTotal = (all.clinicalTrials?.length || 0) + (all.filings?.length || 0) + (all.fundingProjects?.length || 0) + (all.clayJobs?.length || 0) + (all.newsArticles?.length || 0) + (all.hiringManagers?.length || 0)
     const allNew =
       (all.clinicalTrials || []).filter(isNewRow).length +
       (all.filings || []).filter(isNewRow).length +
       (all.fundingProjects || []).filter(isNewRow).length +
       (all.clayJobs || []).filter(isNewRow).length +
-      (all.newsArticles || []).filter(isNewRow).length
+      (all.newsArticles || []).filter(isNewRow).length +
+      (all.hiringManagers || []).filter(isNewRow).length
 
     const inKey = name => name && keyNameSet.has(String(name).toLowerCase())
     const keyTrials = (all.clinicalTrials || []).filter(t => inKey(t.matched_name))
@@ -4616,13 +4622,15 @@ function MadisonLeadsPage(props) {
     const keyFunding = (all.fundingProjects || []).filter(p => inKey(p.matched_name))
     const keyJobs = (all.clayJobs || []).filter(j => inKey(j.matched_name))
     const keyNews = (all.newsArticles || []).filter(a => Array.isArray(a.matched_names) && a.matched_names.some(inKey))
-    const keyTotal = keyTrials.length + keyFilings.length + keyFunding.length + keyJobs.length + keyNews.length
+    const keyHm = (all.hiringManagers || []).filter(c => inKey(c.company_name))
+    const keyTotal = keyTrials.length + keyFilings.length + keyFunding.length + keyJobs.length + keyNews.length + keyHm.length
     const keyNew =
       keyTrials.filter(isNewRow).length +
       keyFilings.filter(isNewRow).length +
       keyFunding.filter(isNewRow).length +
       keyJobs.filter(isNewRow).length +
-      keyNews.filter(isNewRow).length
+      keyNews.filter(isNewRow).length +
+      keyHm.filter(isNewRow).length
 
     return {
       totalAccounts: trackedCompanies.length,
@@ -4903,6 +4911,44 @@ function MadisonLeadsPage(props) {
           : a
       ),
     }) : prev)
+  }, [setData])
+
+  // ── Hiring Managers table logic ───────────────────────────────────────────
+
+  const hmExtractors = useMemo(() => ({
+    company: c => c.company_name || '',
+    full_name: c => c.full_name || '',
+    title: c => c.job_title || '',
+    location: c => c.location || '',
+  }), [])
+
+  const hmAllValues = useMemo(() => ({
+    company: viewHiringManagers.map(c => c.company_name || ''),
+    full_name: viewHiringManagers.map(c => c.full_name || ''),
+    title: viewHiringManagers.map(c => c.job_title || ''),
+    location: viewHiringManagers.map(c => c.location || ''),
+  }), [viewHiringManagers])
+
+  const hmRawDates = useMemo(() => viewHiringManagers.map(c => c.created_at), [viewHiringManagers])
+  const getHmDate = useCallback(c => c.created_at, [])
+
+  const defaultSortedHm = useMemo(() => {
+    const arr = [...viewHiringManagers]
+    arr.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+    return arr
+  }, [viewHiringManagers])
+
+  const sortedHm = useMemo(() => (
+    hmDateCol.sortDir === null ? defaultSortedHm : sortRowsByDate(defaultSortedHm, getHmDate, hmDateCol.sortDir)
+  ), [defaultSortedHm, hmDateCol.sortDir, getHmDate])
+
+  const filteredHm = useMemo(() => (
+    hmSpecialtyFilter.apply(filterRowsByDateKeys(hmFilter.applyFilters(sortedHm, hmExtractors), getHmDate, hmDateCol.dateFilter))
+  ), [sortedHm, hmFilter.applyFilters, hmExtractors, getHmDate, hmDateCol.dateFilter, hmSpecialtyFilter])
+
+  const updateContactSpecialty = useCallback((contactId, newSpecialty) => {
+    if (typeof setData !== 'function') return
+    setData(prev => prev ? { ...prev, hiringManagers: (prev.hiringManagers || []).map(c => c.id === contactId ? { ...c, specialty: newSpecialty } : c) } : prev)
   }, [setData])
 
   // Exclude already-tracked companies from add-search suggestions
@@ -5488,6 +5534,62 @@ function MadisonLeadsPage(props) {
                             >
                               Read Article &#8599;
                             </a>
+                          ) : <span className="text-gray-600">—</span>}
+                          {rowIsNew && <NewBadge />}
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          </>)}
+        </div>
+      )}
+
+      {/* ── Hiring Managers Section ──────────────────────────────────────── */}
+      {!loading && viewHiringManagers.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <SectionHeader sectionKey="hiringManagers" label="Hiring Managers" total={viewHiringManagers.length} newCount={sectionNewCounts.hiringManagers} />
+          {expandedSections.has('hiringManagers') && (<>
+          <ClearAllFiltersButton
+            hasActiveFilters={hmFilter.hasActiveFilters || hmDateCol.hasDateFilter || hmSpecialtyFilter.hasFilter}
+            onClear={() => { hmFilter.clearAll(); hmDateCol.clearDateFilter(); hmSpecialtyFilter.clear() }}
+          />
+          <div className="rounded-lg border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <ColumnFilterDropdown colKey="company" label="Company" allValues={hmAllValues.company} activeValues={hmFilter.filters.company} onApply={hmFilter.setFilter} className="w-[15%]" />
+                  <ColumnFilterDropdown colKey="full_name" label="Full Name" allValues={hmAllValues.full_name} activeValues={hmFilter.filters.full_name} onApply={hmFilter.setFilter} className="w-[18%]" />
+                  <ColumnFilterDropdown colKey="title" label="Job Title" allValues={hmAllValues.title} activeValues={hmFilter.filters.title} onApply={hmFilter.setFilter} className="w-[22%]" />
+                  <ColumnFilterDropdown colKey="specialty" label="Specialty" allValues={SPECIALTY_OPTIONS} activeValues={hmSpecialtyFilter.active} onApply={hmSpecialtyFilter.setFilter} className="w-[12%]" />
+                  <ColumnFilterDropdown colKey="location" label="Location" allValues={hmAllValues.location} activeValues={hmFilter.filters.location} onApply={hmFilter.setFilter} className="w-[13%]" />
+                  <HierarchicalDateFilter label="Date Added" sortDir={hmDateCol.sortDir} onCycleSort={hmDateCol.cycleSortDir} allRawDates={hmRawDates} activeDateKeys={hmDateCol.dateFilter} onApplyFilter={hmDateCol.setDateFilter} className="w-[10%]" />
+                  <Th className="w-[10%]">LinkedIn</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {filteredHm.map((contact, i) => {
+                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                  const isClient = isPastClient(contact.company_name)
+                  const rowIsNew = isNewRow(contact)
+                  return (
+                    <tr key={contact.id} className={`${rowBg} transition-colors`}>
+                      <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                        {contact.company_name || '—'}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{contact.full_name || '—'}</td>
+                      <td className="px-3 py-3 text-sm text-gray-200 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{contact.job_title || '—'}</td>
+                      <SpecialtyCell job={contact} table="leads_contacts" onChange={readOnly ? undefined : updateContactSpecialty} />
+                      <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{contact.location || '—'}</td>
+                      <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(contact.created_at)}</td>
+                      <td className="px-3 py-3 text-sm align-top">
+                        <span className="inline-flex items-center gap-1">
+                          {contact.linkedin_url ? (
+                            <a href={contact.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View &#8599;</a>
                           ) : <span className="text-gray-600">—</span>}
                           {rowIsNew && <NewBadge />}
                         </span>
@@ -5519,7 +5621,7 @@ function MadisonLeadsPage(props) {
 function JimLeadsPage(props) {
   const { setData, onRefresh, companyNames, userInfo } = props
   const readOnly = userInfo?.role === 'user' && userInfo?.leadsPage !== 'jim_leads'
-  const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0 }, cutoffIso: null }
+  const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], hiringManagers: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0, hiringManagers: 0 }, cutoffIso: null }
   const loading = !props.data
   const [accountView, setAccountView] = useState('key')
   const [allAccountsOpen, setAllAccountsOpen] = useState(false)
@@ -5544,12 +5646,15 @@ function JimLeadsPage(props) {
   const jobsFilter = useColumnFilters()
   const jobsSpecialtyFilter = useSpecialtyFilter()
   const newsFilter = useColumnFilters()
+  const hmFilter = useColumnFilters()
+  const hmSpecialtyFilter = useSpecialtyFilter()
 
   const trialsDateCol = useDateColumn()
   const filingsDateCol = useDateColumn()
   const fundingDateCol = useDateColumn()
   const jobsDateCol = useDateColumn()
   const newsDateCol = useDateColumn()
+  const hmDateCol = useDateColumn()
 
   const trackedCompanies = data.trackedCompanies || []
   const keyCompanies = useMemo(() => trackedCompanies.filter(c => c.is_key_account), [trackedCompanies])
@@ -5659,6 +5764,7 @@ function JimLeadsPage(props) {
     if (accountView === 'all') return list
     return list.filter(a => Array.isArray(a.matched_names) && a.matched_names.some(n => matchesView(n)))
   }, [data.newsArticles, accountView, matchesView])
+  const viewHiringManagers = useMemo(() => (data.hiringManagers || []).filter(c => matchesView(c.company_name)), [data.hiringManagers, matchesView])
 
   // ── New-signal counts (per section, respecting active view) ───────────────
   const cutoffMs = useMemo(() => {
@@ -5696,18 +5802,20 @@ function JimLeadsPage(props) {
     fundingProjects: viewFundingProjects.filter(isNewRow).length,
     jobs: viewClayJobs.filter(isNewRow).length,
     news: viewNewsArticles.filter(isNewRow).length,
-  }), [viewClinicalTrials, viewFilings, viewFundingProjects, viewClayJobs, viewNewsArticles, isNewRow])
+    hiringManagers: viewHiringManagers.filter(isNewRow).length,
+  }), [viewClinicalTrials, viewFilings, viewFundingProjects, viewClayJobs, viewNewsArticles, viewHiringManagers, isNewRow])
 
   // ── Mini-dashboard stats (all + key) ──────────────────────────────────────
   const dashStats = useMemo(() => {
     const all = data
-    const allTotal = (all.clinicalTrials?.length || 0) + (all.filings?.length || 0) + (all.fundingProjects?.length || 0) + (all.clayJobs?.length || 0) + (all.newsArticles?.length || 0)
+    const allTotal = (all.clinicalTrials?.length || 0) + (all.filings?.length || 0) + (all.fundingProjects?.length || 0) + (all.clayJobs?.length || 0) + (all.newsArticles?.length || 0) + (all.hiringManagers?.length || 0)
     const allNew =
       (all.clinicalTrials || []).filter(isNewRow).length +
       (all.filings || []).filter(isNewRow).length +
       (all.fundingProjects || []).filter(isNewRow).length +
       (all.clayJobs || []).filter(isNewRow).length +
-      (all.newsArticles || []).filter(isNewRow).length
+      (all.newsArticles || []).filter(isNewRow).length +
+      (all.hiringManagers || []).filter(isNewRow).length
 
     const inKey = name => name && keyNameSet.has(String(name).toLowerCase())
     const keyTrials = (all.clinicalTrials || []).filter(t => inKey(t.matched_name))
@@ -5715,13 +5823,15 @@ function JimLeadsPage(props) {
     const keyFunding = (all.fundingProjects || []).filter(p => inKey(p.matched_name))
     const keyJobs = (all.clayJobs || []).filter(j => inKey(j.matched_name))
     const keyNews = (all.newsArticles || []).filter(a => Array.isArray(a.matched_names) && a.matched_names.some(inKey))
-    const keyTotal = keyTrials.length + keyFilings.length + keyFunding.length + keyJobs.length + keyNews.length
+    const keyHm = (all.hiringManagers || []).filter(c => inKey(c.company_name))
+    const keyTotal = keyTrials.length + keyFilings.length + keyFunding.length + keyJobs.length + keyNews.length + keyHm.length
     const keyNew =
       keyTrials.filter(isNewRow).length +
       keyFilings.filter(isNewRow).length +
       keyFunding.filter(isNewRow).length +
       keyJobs.filter(isNewRow).length +
-      keyNews.filter(isNewRow).length
+      keyNews.filter(isNewRow).length +
+      keyHm.filter(isNewRow).length
 
     return {
       totalAccounts: trackedCompanies.length,
@@ -6002,6 +6112,44 @@ function JimLeadsPage(props) {
           : a
       ),
     }) : prev)
+  }, [setData])
+
+  // ── Hiring Managers table logic ───────────────────────────────────────────
+
+  const hmExtractors = useMemo(() => ({
+    company: c => c.company_name || '',
+    full_name: c => c.full_name || '',
+    title: c => c.job_title || '',
+    location: c => c.location || '',
+  }), [])
+
+  const hmAllValues = useMemo(() => ({
+    company: viewHiringManagers.map(c => c.company_name || ''),
+    full_name: viewHiringManagers.map(c => c.full_name || ''),
+    title: viewHiringManagers.map(c => c.job_title || ''),
+    location: viewHiringManagers.map(c => c.location || ''),
+  }), [viewHiringManagers])
+
+  const hmRawDates = useMemo(() => viewHiringManagers.map(c => c.created_at), [viewHiringManagers])
+  const getHmDate = useCallback(c => c.created_at, [])
+
+  const defaultSortedHm = useMemo(() => {
+    const arr = [...viewHiringManagers]
+    arr.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+    return arr
+  }, [viewHiringManagers])
+
+  const sortedHm = useMemo(() => (
+    hmDateCol.sortDir === null ? defaultSortedHm : sortRowsByDate(defaultSortedHm, getHmDate, hmDateCol.sortDir)
+  ), [defaultSortedHm, hmDateCol.sortDir, getHmDate])
+
+  const filteredHm = useMemo(() => (
+    hmSpecialtyFilter.apply(filterRowsByDateKeys(hmFilter.applyFilters(sortedHm, hmExtractors), getHmDate, hmDateCol.dateFilter))
+  ), [sortedHm, hmFilter.applyFilters, hmExtractors, getHmDate, hmDateCol.dateFilter, hmSpecialtyFilter])
+
+  const updateContactSpecialty = useCallback((contactId, newSpecialty) => {
+    if (typeof setData !== 'function') return
+    setData(prev => prev ? { ...prev, hiringManagers: (prev.hiringManagers || []).map(c => c.id === contactId ? { ...c, specialty: newSpecialty } : c) } : prev)
   }, [setData])
 
   // Exclude already-tracked companies from add-search suggestions
@@ -6587,6 +6735,62 @@ function JimLeadsPage(props) {
                             >
                               Read Article &#8599;
                             </a>
+                          ) : <span className="text-gray-600">—</span>}
+                          {rowIsNew && <NewBadge />}
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          </>)}
+        </div>
+      )}
+
+      {/* ── Hiring Managers Section ──────────────────────────────────────── */}
+      {!loading && viewHiringManagers.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <SectionHeader sectionKey="hiringManagers" label="Hiring Managers" total={viewHiringManagers.length} newCount={sectionNewCounts.hiringManagers} />
+          {expandedSections.has('hiringManagers') && (<>
+          <ClearAllFiltersButton
+            hasActiveFilters={hmFilter.hasActiveFilters || hmDateCol.hasDateFilter || hmSpecialtyFilter.hasFilter}
+            onClear={() => { hmFilter.clearAll(); hmDateCol.clearDateFilter(); hmSpecialtyFilter.clear() }}
+          />
+          <div className="rounded-lg border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <ColumnFilterDropdown colKey="company" label="Company" allValues={hmAllValues.company} activeValues={hmFilter.filters.company} onApply={hmFilter.setFilter} className="w-[15%]" />
+                  <ColumnFilterDropdown colKey="full_name" label="Full Name" allValues={hmAllValues.full_name} activeValues={hmFilter.filters.full_name} onApply={hmFilter.setFilter} className="w-[18%]" />
+                  <ColumnFilterDropdown colKey="title" label="Job Title" allValues={hmAllValues.title} activeValues={hmFilter.filters.title} onApply={hmFilter.setFilter} className="w-[22%]" />
+                  <ColumnFilterDropdown colKey="specialty" label="Specialty" allValues={SPECIALTY_OPTIONS} activeValues={hmSpecialtyFilter.active} onApply={hmSpecialtyFilter.setFilter} className="w-[12%]" />
+                  <ColumnFilterDropdown colKey="location" label="Location" allValues={hmAllValues.location} activeValues={hmFilter.filters.location} onApply={hmFilter.setFilter} className="w-[13%]" />
+                  <HierarchicalDateFilter label="Date Added" sortDir={hmDateCol.sortDir} onCycleSort={hmDateCol.cycleSortDir} allRawDates={hmRawDates} activeDateKeys={hmDateCol.dateFilter} onApplyFilter={hmDateCol.setDateFilter} className="w-[10%]" />
+                  <Th className="w-[10%]">LinkedIn</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {filteredHm.map((contact, i) => {
+                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                  const isClient = isPastClient(contact.company_name)
+                  const rowIsNew = isNewRow(contact)
+                  return (
+                    <tr key={contact.id} className={`${rowBg} transition-colors`}>
+                      <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                        {contact.company_name || '—'}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{contact.full_name || '—'}</td>
+                      <td className="px-3 py-3 text-sm text-gray-200 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{contact.job_title || '—'}</td>
+                      <SpecialtyCell job={contact} table="leads_contacts" onChange={readOnly ? undefined : updateContactSpecialty} />
+                      <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{contact.location || '—'}</td>
+                      <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(contact.created_at)}</td>
+                      <td className="px-3 py-3 text-sm align-top">
+                        <span className="inline-flex items-center gap-1">
+                          {contact.linkedin_url ? (
+                            <a href={contact.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View &#8599;</a>
                           ) : <span className="text-gray-600">—</span>}
                           {rowIsNew && <NewBadge />}
                         </span>
@@ -6618,7 +6822,7 @@ function JimLeadsPage(props) {
 function TimLeadsPage(props) {
   const { setData, onRefresh, companyNames, userInfo } = props
   const readOnly = userInfo?.role === 'user' && userInfo?.leadsPage !== 'tim_leads'
-  const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0 }, cutoffIso: null }
+  const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], hiringManagers: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0, hiringManagers: 0 }, cutoffIso: null }
   const loading = !props.data
   const [accountView, setAccountView] = useState('key')
   const [allAccountsOpen, setAllAccountsOpen] = useState(false)
@@ -6643,12 +6847,15 @@ function TimLeadsPage(props) {
   const jobsFilter = useColumnFilters()
   const jobsSpecialtyFilter = useSpecialtyFilter()
   const newsFilter = useColumnFilters()
+  const hmFilter = useColumnFilters()
+  const hmSpecialtyFilter = useSpecialtyFilter()
 
   const trialsDateCol = useDateColumn()
   const filingsDateCol = useDateColumn()
   const fundingDateCol = useDateColumn()
   const jobsDateCol = useDateColumn()
   const newsDateCol = useDateColumn()
+  const hmDateCol = useDateColumn()
 
   const trackedCompanies = data.trackedCompanies || []
   const keyCompanies = useMemo(() => trackedCompanies.filter(c => c.is_key_account), [trackedCompanies])
@@ -6758,6 +6965,7 @@ function TimLeadsPage(props) {
     if (accountView === 'all') return list
     return list.filter(a => Array.isArray(a.matched_names) && a.matched_names.some(n => matchesView(n)))
   }, [data.newsArticles, accountView, matchesView])
+  const viewHiringManagers = useMemo(() => (data.hiringManagers || []).filter(c => matchesView(c.company_name)), [data.hiringManagers, matchesView])
 
   // ── New-signal counts (per section, respecting active view) ───────────────
   const cutoffMs = useMemo(() => {
@@ -6795,18 +7003,20 @@ function TimLeadsPage(props) {
     fundingProjects: viewFundingProjects.filter(isNewRow).length,
     jobs: viewClayJobs.filter(isNewRow).length,
     news: viewNewsArticles.filter(isNewRow).length,
-  }), [viewClinicalTrials, viewFilings, viewFundingProjects, viewClayJobs, viewNewsArticles, isNewRow])
+    hiringManagers: viewHiringManagers.filter(isNewRow).length,
+  }), [viewClinicalTrials, viewFilings, viewFundingProjects, viewClayJobs, viewNewsArticles, viewHiringManagers, isNewRow])
 
   // ── Mini-dashboard stats (all + key) ──────────────────────────────────────
   const dashStats = useMemo(() => {
     const all = data
-    const allTotal = (all.clinicalTrials?.length || 0) + (all.filings?.length || 0) + (all.fundingProjects?.length || 0) + (all.clayJobs?.length || 0) + (all.newsArticles?.length || 0)
+    const allTotal = (all.clinicalTrials?.length || 0) + (all.filings?.length || 0) + (all.fundingProjects?.length || 0) + (all.clayJobs?.length || 0) + (all.newsArticles?.length || 0) + (all.hiringManagers?.length || 0)
     const allNew =
       (all.clinicalTrials || []).filter(isNewRow).length +
       (all.filings || []).filter(isNewRow).length +
       (all.fundingProjects || []).filter(isNewRow).length +
       (all.clayJobs || []).filter(isNewRow).length +
-      (all.newsArticles || []).filter(isNewRow).length
+      (all.newsArticles || []).filter(isNewRow).length +
+      (all.hiringManagers || []).filter(isNewRow).length
 
     const inKey = name => name && keyNameSet.has(String(name).toLowerCase())
     const keyTrials = (all.clinicalTrials || []).filter(t => inKey(t.matched_name))
@@ -6814,13 +7024,15 @@ function TimLeadsPage(props) {
     const keyFunding = (all.fundingProjects || []).filter(p => inKey(p.matched_name))
     const keyJobs = (all.clayJobs || []).filter(j => inKey(j.matched_name))
     const keyNews = (all.newsArticles || []).filter(a => Array.isArray(a.matched_names) && a.matched_names.some(inKey))
-    const keyTotal = keyTrials.length + keyFilings.length + keyFunding.length + keyJobs.length + keyNews.length
+    const keyHm = (all.hiringManagers || []).filter(c => inKey(c.company_name))
+    const keyTotal = keyTrials.length + keyFilings.length + keyFunding.length + keyJobs.length + keyNews.length + keyHm.length
     const keyNew =
       keyTrials.filter(isNewRow).length +
       keyFilings.filter(isNewRow).length +
       keyFunding.filter(isNewRow).length +
       keyJobs.filter(isNewRow).length +
-      keyNews.filter(isNewRow).length
+      keyNews.filter(isNewRow).length +
+      keyHm.filter(isNewRow).length
 
     return {
       totalAccounts: trackedCompanies.length,
@@ -7101,6 +7313,44 @@ function TimLeadsPage(props) {
           : a
       ),
     }) : prev)
+  }, [setData])
+
+  // ── Hiring Managers table logic ───────────────────────────────────────────
+
+  const hmExtractors = useMemo(() => ({
+    company: c => c.company_name || '',
+    full_name: c => c.full_name || '',
+    title: c => c.job_title || '',
+    location: c => c.location || '',
+  }), [])
+
+  const hmAllValues = useMemo(() => ({
+    company: viewHiringManagers.map(c => c.company_name || ''),
+    full_name: viewHiringManagers.map(c => c.full_name || ''),
+    title: viewHiringManagers.map(c => c.job_title || ''),
+    location: viewHiringManagers.map(c => c.location || ''),
+  }), [viewHiringManagers])
+
+  const hmRawDates = useMemo(() => viewHiringManagers.map(c => c.created_at), [viewHiringManagers])
+  const getHmDate = useCallback(c => c.created_at, [])
+
+  const defaultSortedHm = useMemo(() => {
+    const arr = [...viewHiringManagers]
+    arr.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+    return arr
+  }, [viewHiringManagers])
+
+  const sortedHm = useMemo(() => (
+    hmDateCol.sortDir === null ? defaultSortedHm : sortRowsByDate(defaultSortedHm, getHmDate, hmDateCol.sortDir)
+  ), [defaultSortedHm, hmDateCol.sortDir, getHmDate])
+
+  const filteredHm = useMemo(() => (
+    hmSpecialtyFilter.apply(filterRowsByDateKeys(hmFilter.applyFilters(sortedHm, hmExtractors), getHmDate, hmDateCol.dateFilter))
+  ), [sortedHm, hmFilter.applyFilters, hmExtractors, getHmDate, hmDateCol.dateFilter, hmSpecialtyFilter])
+
+  const updateContactSpecialty = useCallback((contactId, newSpecialty) => {
+    if (typeof setData !== 'function') return
+    setData(prev => prev ? { ...prev, hiringManagers: (prev.hiringManagers || []).map(c => c.id === contactId ? { ...c, specialty: newSpecialty } : c) } : prev)
   }, [setData])
 
   // Exclude already-tracked companies from add-search suggestions
@@ -7686,6 +7936,62 @@ function TimLeadsPage(props) {
                             >
                               Read Article &#8599;
                             </a>
+                          ) : <span className="text-gray-600">—</span>}
+                          {rowIsNew && <NewBadge />}
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          </>)}
+        </div>
+      )}
+
+      {/* ── Hiring Managers Section ──────────────────────────────────────── */}
+      {!loading && viewHiringManagers.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <SectionHeader sectionKey="hiringManagers" label="Hiring Managers" total={viewHiringManagers.length} newCount={sectionNewCounts.hiringManagers} />
+          {expandedSections.has('hiringManagers') && (<>
+          <ClearAllFiltersButton
+            hasActiveFilters={hmFilter.hasActiveFilters || hmDateCol.hasDateFilter || hmSpecialtyFilter.hasFilter}
+            onClear={() => { hmFilter.clearAll(); hmDateCol.clearDateFilter(); hmSpecialtyFilter.clear() }}
+          />
+          <div className="rounded-lg border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <ColumnFilterDropdown colKey="company" label="Company" allValues={hmAllValues.company} activeValues={hmFilter.filters.company} onApply={hmFilter.setFilter} className="w-[15%]" />
+                  <ColumnFilterDropdown colKey="full_name" label="Full Name" allValues={hmAllValues.full_name} activeValues={hmFilter.filters.full_name} onApply={hmFilter.setFilter} className="w-[18%]" />
+                  <ColumnFilterDropdown colKey="title" label="Job Title" allValues={hmAllValues.title} activeValues={hmFilter.filters.title} onApply={hmFilter.setFilter} className="w-[22%]" />
+                  <ColumnFilterDropdown colKey="specialty" label="Specialty" allValues={SPECIALTY_OPTIONS} activeValues={hmSpecialtyFilter.active} onApply={hmSpecialtyFilter.setFilter} className="w-[12%]" />
+                  <ColumnFilterDropdown colKey="location" label="Location" allValues={hmAllValues.location} activeValues={hmFilter.filters.location} onApply={hmFilter.setFilter} className="w-[13%]" />
+                  <HierarchicalDateFilter label="Date Added" sortDir={hmDateCol.sortDir} onCycleSort={hmDateCol.cycleSortDir} allRawDates={hmRawDates} activeDateKeys={hmDateCol.dateFilter} onApplyFilter={hmDateCol.setDateFilter} className="w-[10%]" />
+                  <Th className="w-[10%]">LinkedIn</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {filteredHm.map((contact, i) => {
+                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                  const isClient = isPastClient(contact.company_name)
+                  const rowIsNew = isNewRow(contact)
+                  return (
+                    <tr key={contact.id} className={`${rowBg} transition-colors`}>
+                      <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                        {contact.company_name || '—'}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{contact.full_name || '—'}</td>
+                      <td className="px-3 py-3 text-sm text-gray-200 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{contact.job_title || '—'}</td>
+                      <SpecialtyCell job={contact} table="leads_contacts" onChange={readOnly ? undefined : updateContactSpecialty} />
+                      <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{contact.location || '—'}</td>
+                      <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(contact.created_at)}</td>
+                      <td className="px-3 py-3 text-sm align-top">
+                        <span className="inline-flex items-center gap-1">
+                          {contact.linkedin_url ? (
+                            <a href={contact.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View &#8599;</a>
                           ) : <span className="text-gray-600">—</span>}
                           {rowIsNew && <NewBadge />}
                         </span>

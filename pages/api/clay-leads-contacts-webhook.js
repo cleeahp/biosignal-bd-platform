@@ -1,9 +1,37 @@
 import { supabase } from '../../lib/supabase.js'
+import { matchSpecialties } from '../../lib/specialtyMatcher.js'
 
 const AUTH_TOKEN = 'Bearer biosignal-clay-2026'
 
 function isBlank(s) {
   return s == null || String(s).trim() === ''
+}
+
+// ── job_title_overrides cache (5 minutes, mirrors clay-jobs-webhook.js) ────────
+let titleCache = null
+const TITLE_CACHE_TTL_MS = 5 * 60 * 1000
+
+async function loadOverrides() {
+  if (titleCache && Date.now() - titleCache.loadedAt < TITLE_CACHE_TTL_MS) return titleCache.overrides
+
+  const overrides = new Map()
+  const PAGE = 1000
+  let offset = 0
+  while (true) {
+    const { data, error } = await supabase
+      .from('job_title_overrides')
+      .select('job_title_lower, specialty')
+      .range(offset, offset + PAGE - 1)
+    if (error) throw new Error(`job_title_overrides: ${error.message}`)
+    if (!data || data.length === 0) break
+    for (const row of data) {
+      if (row.job_title_lower) overrides.set(row.job_title_lower.trim(), row.specialty || [])
+    }
+    offset += PAGE
+  }
+
+  titleCache = { overrides, loadedAt: Date.now() }
+  return overrides
 }
 
 // Rank a companies_directory company_size bucket so we can pick the "largest"
@@ -83,6 +111,16 @@ export default async function handler(req, res) {
     }
   }
 
+  // Categorize by specialty using the same override-aware matcher as jobs.
+  let specialty
+  try {
+    const overrides = await loadOverrides()
+    specialty = matchSpecialties(job_title, overrides)
+  } catch (err) {
+    console.error(`[ClayLeadsContacts] Override cache load error: ${err.message}`)
+    specialty = matchSpecialties(job_title)
+  }
+
   const { error: insertErr } = await supabase
     .from('leads_contacts')
     .insert({
@@ -94,6 +132,7 @@ export default async function handler(req, res) {
       company_domain,
       company_name,
       linkedin_url,
+      specialty,
     })
 
   if (insertErr) {
