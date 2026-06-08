@@ -18,9 +18,18 @@ export default async function handler(req, res) {
     const { company_name } = req.body
     if (!company_name) return res.status(400).json({ error: 'company_name required' })
 
+    // Look up the company in the directory (case-insensitive) to grab its LinkedIn URL.
+    // If multiple entries share the name, use the first one returned.
+    const { data: dirMatch } = await supabase
+      .from('companies_directory')
+      .select('linkedin_url')
+      .ilike('name', company_name)
+      .limit(1)
+      .maybeSingle()
+
     const { error } = await supabase
       .from('tim_leads')
-      .insert({ company_name, is_key_account: false })
+      .insert({ company_name, is_key_account: false, linkedin_url: dirMatch?.linkedin_url ?? null })
     if (error) return res.status(500).json({ error: error.message })
     return res.status(200).json({ ok: true })
   }
@@ -61,7 +70,7 @@ export default async function handler(req, res) {
   // Fetch tracked companies with is_key_account flag
   const { data: tracked, error: trackedErr } = await supabase
     .from('tim_leads')
-    .select('company_name, is_key_account')
+    .select('company_name, is_key_account, linkedin_url')
     .order('added_at', { ascending: false })
 
   if (trackedErr) return res.status(500).json({ error: trackedErr.message })
@@ -69,6 +78,7 @@ export default async function handler(req, res) {
   const trackedCompanies = (tracked || []).map(r => ({
     name: r.company_name,
     is_key_account: !!r.is_key_account,
+    linkedin_url: r.linkedin_url ?? null,
   }))
   const trackedNames = trackedCompanies.map(c => c.name)
 
