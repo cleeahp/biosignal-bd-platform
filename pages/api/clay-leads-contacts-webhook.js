@@ -1,5 +1,5 @@
 import { supabase } from '../../lib/supabase.js'
-import { matchSpecialties } from '../../lib/specialtyMatcher.js'
+import { matchSpecialties, cleanJobTitle } from '../../lib/specialtyMatcher.js'
 
 const AUTH_TOKEN = 'Bearer biosignal-clay-2026'
 
@@ -119,6 +119,22 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error(`[ClayLeadsContacts] Override cache load error: ${err.message}`)
     specialty = matchSpecialties(job_title)
+  }
+
+  // leads_contacts-only HR filtering + Talent Acquisition tagging.
+  // (Does NOT apply to clay_jobs / clay_jobs_competitors.)
+  const cleanedTitle = cleanJobTitle(job_title)
+  const isTalentAcquisition = cleanedTitle.includes('talent acquisition')
+
+  if (cleanedTitle.includes('human resources') && !isTalentAcquisition) {
+    return res.status(200).json({ success: true, skipped: 'blocked_hr' })
+  }
+
+  if (isTalentAcquisition) {
+    const base = Array.isArray(specialty) && !(specialty.length === 1 && specialty[0] === 'Other')
+      ? specialty
+      : []
+    specialty = [...new Set([...base, 'Talent Acquisition'])]
   }
 
   const { error: insertErr } = await supabase
