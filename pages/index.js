@@ -6,12 +6,10 @@ import { SPECIALTY_OPTIONS } from '../lib/specialtyMatcher.js'
 const USER_ROLES = {
   'clee@argosyhp.com':                   { displayName: 'Chris Lee',  role: 'admin', leadsPage: null },
   'gmayer@argosyhp.com':                 { displayName: 'G Mayer',    role: 'admin', leadsPage: null },
-  'sdalton@connectlifesciences.com':     { displayName: 'S Dalton',   role: 'admin', leadsPage: null },
+  'sdalton@connectlifesciences.com':     { displayName: 'S Dalton',   role: 'user',  leadsPage: 'scott_leads' },
   'mdriggers@connectlifesciences.com':   { displayName: 'M Driggers', role: 'user',  leadsPage: 'madison_leads' },
   'jowens@connectlifesciences.com':      { displayName: 'J Owens',    role: 'user',  leadsPage: 'jim_leads' },
   'tweldon@connectlifesciences.com':     { displayName: 'T Weldon',   role: 'user',  leadsPage: 'tim_leads' },
-  // TODO: replace with Scott's real email once provided. Admins already have full control.
-  'scott@connectlifesciences.com':       { displayName: 'Scott',      role: 'user',  leadsPage: 'scott_leads' },
 }
 
 function resolveUserInfo(email) {
@@ -9275,7 +9273,8 @@ function formatCrmDate(value) {
 }
 
 // Inline dropdown cell: shows current value, click to pick, saves immediately.
-function CrmSelectCell({ value, options, onSave }) {
+// When editable is false, renders the current value as plain text.
+function CrmSelectCell({ value, options, onSave, editable = true }) {
   const [open, setOpen] = useState(false)
   const [flash, setFlash] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -9315,6 +9314,15 @@ function CrmSelectCell({ value, options, onSave }) {
     } finally {
       setSaving(false)
     }
+  }
+
+  // Read-only: render the current value as plain text (not clickable).
+  if (!editable) {
+    return (
+      <td className="px-3 py-2 text-sm align-top">
+        <span className={value ? 'text-gray-200' : 'text-gray-600'}>{value || '—'}</span>
+      </td>
+    )
   }
 
   return (
@@ -9357,7 +9365,8 @@ function CrmSelectCell({ value, options, onSave }) {
 }
 
 // Inline editable text cell: click to edit, save on blur or Enter.
-function CrmTextCell({ value, onSave }) {
+// When editable is false, renders the current value as plain text.
+function CrmTextCell({ value, onSave, editable = true }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(value || '')
   const [flash, setFlash] = useState(false)
@@ -9373,6 +9382,15 @@ function CrmTextCell({ value, onSave }) {
     await onSave(next)
     setFlash(true)
     setTimeout(() => setFlash(false), 700)
+  }
+
+  // Read-only: render the current value as plain text (not editable).
+  if (!editable) {
+    return (
+      <td className="px-3 py-2 text-sm align-top">
+        {value ? <span className="text-gray-200 whitespace-pre-wrap break-words">{value}</span> : <span className="text-gray-600">—</span>}
+      </td>
+    )
   }
 
   return (
@@ -9402,10 +9420,14 @@ function CrmTextCell({ value, onSave }) {
   )
 }
 
-function CRMPage({ data, setData, onRefresh }) {
+function CRMPage({ data, setData, onRefresh, userInfo }) {
   const [activeTab, setActiveTab] = useState('madison_leads')
   const { filters, setFilter, clearAll, applyFilters } = useColumnFilters()
   const { cycle, dirFor } = useSortableColumns(['date_added'])
+
+  // Admins can edit every tab; a regular user can edit only their own leads page.
+  // activeTab holds the leads-page key (e.g. 'madison_leads'), matching userInfo.leadsPage.
+  const isEditable = userInfo?.role === 'admin' || activeTab === userInfo?.leadsPage
 
   const loading = !data
   const accounts = useMemo(() => (data?.accounts || []), [data])
@@ -9534,6 +9556,14 @@ function CRMPage({ data, setData, onRefresh }) {
             {tab.label}
           </button>
         ))}
+        {!isEditable && (
+          <span
+            className="ml-auto inline-flex items-center gap-1.5 text-[11px] font-medium text-gray-500 italic pr-1"
+            title="You can view this tab but only edit your own leads page"
+          >
+            🔒 View Only
+          </span>
+        )}
       </div>
 
       {/* Account table */}
@@ -9605,12 +9635,12 @@ function CRMPage({ data, setData, onRefresh }) {
               <tr key={`${account.leads_page}|${account.company_name}`} className="border-b border-[#1e2d4a]/60 last:border-0 hover:bg-white/[0.02]">
                 <td className="px-3 py-2 text-sm text-gray-200 align-top font-medium break-words">{account.company_name}</td>
                 <td className="px-3 py-2 text-sm text-gray-400 align-top whitespace-nowrap">{formatCrmDate(account.date_added)}</td>
-                <CrmSelectCell value={account.momentum} options={CRM_MOMENTUM_OPTIONS} onSave={v => saveField(account, 'momentum', v)} />
-                <CrmSelectCell value={account.development_stage} options={CRM_DEV_STAGE_OPTIONS} onSave={v => saveField(account, 'development_stage', v)} />
-                <CrmSelectCell value={account.engagement_type} options={CRM_ENGAGEMENT_OPTIONS} onSave={v => saveField(account, 'engagement_type', v)} />
-                <CrmTextCell value={account.key_contact} onSave={v => saveField(account, 'key_contact', v)} />
-                <CrmTextCell value={account.partner} onSave={v => saveField(account, 'partner', v)} />
-                <CrmTextCell value={account.notes} onSave={v => saveField(account, 'notes', v)} />
+                <CrmSelectCell value={account.momentum} options={CRM_MOMENTUM_OPTIONS} onSave={v => saveField(account, 'momentum', v)} editable={isEditable} />
+                <CrmSelectCell value={account.development_stage} options={CRM_DEV_STAGE_OPTIONS} onSave={v => saveField(account, 'development_stage', v)} editable={isEditable} />
+                <CrmSelectCell value={account.engagement_type} options={CRM_ENGAGEMENT_OPTIONS} onSave={v => saveField(account, 'engagement_type', v)} editable={isEditable} />
+                <CrmTextCell value={account.key_contact} onSave={v => saveField(account, 'key_contact', v)} editable={isEditable} />
+                <CrmTextCell value={account.partner} onSave={v => saveField(account, 'partner', v)} editable={isEditable} />
+                <CrmTextCell value={account.notes} onSave={v => saveField(account, 'notes', v)} editable={isEditable} />
               </tr>
             ))}
           </tbody>
@@ -10501,7 +10531,7 @@ export default function Home() {
           {activePage === 'jim_leads' && <JimLeadsPage data={jimLeadsData} setData={setJimLeadsData} onRefresh={fetchJimLeads} companyNames={companyNames} userInfo={userInfo} />}
           {activePage === 'tim_leads' && <TimLeadsPage data={timLeadsData} setData={setTimLeadsData} onRefresh={fetchTimLeads} companyNames={companyNames} userInfo={userInfo} />}
           {activePage === 'scott_leads' && <ScottLeadsPage data={scottLeadsData} setData={setScottLeadsData} onRefresh={fetchScottLeads} companyNames={companyNames} userInfo={userInfo} />}
-          {activePage === 'crm' && <CRMPage data={crmData} setData={setCrmData} onRefresh={fetchCrm} />}
+          {activePage === 'crm' && <CRMPage data={crmData} setData={setCrmData} onRefresh={fetchCrm} userInfo={userInfo} />}
           {activePage === 'buyers'     && <PastBuyersPage data={pastBuyersData} />}
           {activePage === 'candidates' && <PastCandidatesPage data={pastCandidatesData} />}
           {activePage === 'settings'   && <SettingsPage />}
