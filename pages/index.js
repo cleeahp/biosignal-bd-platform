@@ -9260,7 +9260,7 @@ const CRM_SUMMARY_COLS = [
   { key: 'engaged',       label: 'Engaged' },
   { key: 'active',        label: 'Active' },
   { key: 'msa_sent',      label: 'MSA Sent' },
-  { key: 'closed',        label: 'Closed' },
+  { key: 'msa_signed',    label: 'MSA Signed' },
   { key: 'drive',         label: 'Drive' },
   { key: 'neutral',       label: 'Neutral' },
   { key: 'reverse',       label: 'Reverse' },

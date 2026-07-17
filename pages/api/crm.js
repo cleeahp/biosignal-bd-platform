@@ -21,7 +21,7 @@ const DEV_STAGE_KEYS = {
   'Engaged':     'engaged',
   'Active':      'active',
   'MSA Sent':    'msa_sent',
-  'Closed':      'closed',
+  'MSA Signed':  'msa_signed',
 }
 
 // Momentum buckets counted in the summary table (label → summary key).
@@ -51,7 +51,7 @@ async function fetchAll(table, select) {
 function emptySummary() {
   return {
     total_targets: 0,
-    prospecting: 0, engaged: 0, active: 0, msa_sent: 0, closed: 0,
+    prospecting: 0, engaged: 0, active: 0, msa_sent: 0, msa_signed: 0,
     drive: 0, neutral: 0, reverse: 0, park: 0,
   }
 }
