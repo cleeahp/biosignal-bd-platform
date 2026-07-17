@@ -10,6 +10,8 @@ const USER_ROLES = {
   'mdriggers@connectlifesciences.com':   { displayName: 'M Driggers', role: 'user',  leadsPage: 'madison_leads' },
   'jowens@connectlifesciences.com':      { displayName: 'J Owens',    role: 'user',  leadsPage: 'jim_leads' },
   'tweldon@connectlifesciences.com':     { displayName: 'T Weldon',   role: 'user',  leadsPage: 'tim_leads' },
+  // TODO: replace with Scott's real email once provided. Admins already have full control.
+  'scott@connectlifesciences.com':       { displayName: 'Scott',      role: 'user',  leadsPage: 'scott_leads' },
 }
 
 function resolveUserInfo(email) {
@@ -1372,6 +1374,15 @@ function NavIcon({ type, className = 'w-5 h-5' }) {
           <rect x="14" y="14" width="7" height="7" rx="1"/>
         </svg>
       )
+    case 'table':
+      return (
+        <svg {...props}>
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <line x1="3" y1="9" x2="21" y2="9"/>
+          <line x1="3" y1="15" x2="21" y2="15"/>
+          <line x1="9" y1="3" x2="9" y2="21"/>
+        </svg>
+      )
     case 'beaker':
       return (
         <svg {...props}>
@@ -1471,10 +1482,12 @@ function NavIcon({ type, className = 'w-5 h-5' }) {
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 const MAIN_NAV = [
+  { key: 'crm',            label: 'CRM',                    icon: 'table' },
   { key: 'dashboard',      label: 'Company Dashboard',      icon: 'grid' },
   { key: 'madison_leads',  label: 'Madison Leads',          icon: 'clipboard', countKey: 'madison_leads' },
   { key: 'jim_leads',      label: 'Jim Leads',              icon: 'clipboard', countKey: 'jim_leads' },
   { key: 'tim_leads',      label: 'Tim Leads',              icon: 'clipboard', countKey: 'tim_leads' },
+  { key: 'scott_leads',    label: 'Scott Leads',            icon: 'clipboard', countKey: 'scott_leads' },
   { key: 'clinical_new',   label: 'Clinical Trials',        icon: 'flask',     countKey: 'clinical_new' },
   { key: 'ma_funding_new', label: 'M&A',                    icon: 'trending',  countKey: 'ma_funding_new' },
   { key: 'funding_new',    label: 'Funding',                icon: 'dollar',    countKey: 'funding_new' },
@@ -1485,7 +1498,7 @@ const MAIN_NAV = [
   { key: 'candidates',     label: 'Past Candidates',        icon: 'user',      countKey: 'past_candidates_changes' },
 ]
 
-const LEADS_PAGE_KEYS = new Set(['madison_leads', 'jim_leads', 'tim_leads'])
+const LEADS_PAGE_KEYS = new Set(['madison_leads', 'jim_leads', 'tim_leads', 'scott_leads'])
 
 function Sidebar({ activePage, setActivePage, tabCounts, userInfo }) {
   const isRegularUser = userInfo?.role === 'user'
@@ -1576,10 +1589,12 @@ function Sidebar({ activePage, setActivePage, tabCounts, userInfo }) {
 // ─── TopBar ───────────────────────────────────────────────────────────────────
 
 const PAGE_TITLES = {
+  crm:             'CRM',
   dashboard:       'Company Dashboard',
   madison_leads:   'Madison Leads',
   jim_leads:       'Jim Leads',
   tim_leads:       'Tim Leads',
+  scott_leads:     'Scott Leads',
   clinical_new:    'Clinical Trials',
   ma_funding_new:  'M&A',
   funding_new:     'Funding',
@@ -1941,6 +1956,12 @@ function AddToLeadsButton({ companyName }) {
             className="w-full text-left px-3 py-2 text-xs text-gray-200 hover:bg-blue-600/20 hover:text-white transition-colors"
           >
             Add to Tim Leads
+          </button>
+          <button
+            onClick={e => submit('/api/scott-leads', e)}
+            className="w-full text-left px-3 py-2 text-xs text-gray-200 hover:bg-blue-600/20 hover:text-white transition-colors"
+          >
+            Add to Scott Leads
           </button>
         </div>,
         document.body,
@@ -8018,6 +8039,1587 @@ function TimLeadsPage(props) {
   )
 }
 
+// ─── Scott Leads Page ──────────────────────────────────────────────────────────
+
+function ScottLeadsPage(props) {
+  const { setData, onRefresh, companyNames, userInfo } = props
+  const readOnly = userInfo?.role === 'user' && userInfo?.leadsPage !== 'scott_leads'
+  const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], hiringManagers: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0, hiringManagers: 0 }, cutoffIso: null }
+  const loading = !props.data
+  const [accountView, setAccountView] = useState('key')
+  const [allAccountsOpen, setAllAccountsOpen] = useState(false)
+  const [keyAccountsOpen, setKeyAccountsOpen] = useState(false)
+  const [expandedSections, setExpandedSections] = useState(new Set())
+  const [addSearchQuery, setAddSearchQuery] = useState('')
+  const [addSearchResults, setAddSearchResults] = useState([])
+  const [addSearchOpen, setAddSearchOpen] = useState(false)
+  const [addSearchPos, setAddSearchPos] = useState({ top: 0, left: 0, width: 0 })
+  const [expandedTrialRows, setExpandedTrialRows] = useState(new Set())
+  const [expandedFilingRows, setExpandedFilingRows] = useState(new Set())
+  const [expandedFundingRows, setExpandedFundingRows] = useState(new Set())
+  const [assignArticle, setAssignArticle] = useState(null)
+  const allAccountsRef = useRef(null)
+  const keyAccountsRef = useRef(null)
+  const addSearchInputRef = useRef(null)
+  const addSearchDropdownRef = useRef(null)
+
+  const trialsFilter = useColumnFilters()
+  const filingsFilter = useColumnFilters()
+  const fundingFilter = useColumnFilters()
+  const jobsFilter = useColumnFilters()
+  const jobsSpecialtyFilter = useSpecialtyFilter()
+  const newsFilter = useColumnFilters()
+  const hmFilter = useColumnFilters()
+  const hmSpecialtyFilter = useSpecialtyFilter()
+
+  const trialsDateCol = useDateColumn()
+  const filingsDateCol = useDateColumn()
+  const fundingDateCol = useDateColumn()
+  const jobsDateCol = useDateColumn()
+  const newsDateCol = useDateColumn()
+  const hmDateCol = useDateColumn()
+
+  const trackedCompanies = data.trackedCompanies || []
+  const keyCompanies = useMemo(() => trackedCompanies.filter(c => c.is_key_account), [trackedCompanies])
+  const keyNameSet = useMemo(() => new Set(keyCompanies.map(c => (c.name || '').toLowerCase())), [keyCompanies])
+  const trackedNameSet = useMemo(() => new Set(trackedCompanies.map(c => (c.name || '').toLowerCase())), [trackedCompanies])
+
+  const matchesView = useCallback((name) => {
+    if (accountView === 'all') return true
+    if (!name) return false
+    return keyNameSet.has(String(name).toLowerCase())
+  }, [accountView, keyNameSet])
+
+  // Client-side filter against pre-loaded companyNames (used inside All Accounts dropdown)
+  useEffect(() => {
+    const q = (addSearchQuery || '').trim().toLowerCase()
+    if (q.length < 2) {
+      setAddSearchResults([])
+      setAddSearchOpen(false)
+      return
+    }
+    const list = Array.isArray(companyNames) ? companyNames : []
+    const matches = list
+      .filter(name => name && name.toLowerCase().includes(q))
+      .slice(0, 20)
+      .map(name => ({ name }))
+    setAddSearchResults(matches)
+    setAddSearchOpen(true)
+  }, [addSearchQuery, companyNames])
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    if (!allAccountsOpen && !keyAccountsOpen) return
+    const handleClick = (e) => {
+      if (allAccountsOpen && allAccountsRef.current && !allAccountsRef.current.contains(e.target)
+          && !(addSearchDropdownRef.current && addSearchDropdownRef.current.contains(e.target))) {
+        setAllAccountsOpen(false)
+      }
+      if (keyAccountsOpen && keyAccountsRef.current && !keyAccountsRef.current.contains(e.target)) {
+        setKeyAccountsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [allAccountsOpen, keyAccountsOpen])
+
+  // Recompute portal position for the add-search dropdown
+  useEffect(() => {
+    if (!addSearchOpen) return
+    const updatePos = () => {
+      if (!addSearchInputRef.current) return
+      const rect = addSearchInputRef.current.getBoundingClientRect()
+      setAddSearchPos({ top: rect.bottom + 4, left: rect.left, width: rect.width })
+    }
+    updatePos()
+    window.addEventListener('resize', updatePos)
+    window.addEventListener('scroll', updatePos, true)
+    return () => {
+      window.removeEventListener('resize', updatePos)
+      window.removeEventListener('scroll', updatePos, true)
+    }
+  }, [addSearchOpen, addSearchResults])
+
+  const addCompany = async (name) => {
+    if (trackedNameSet.has((name || '').toLowerCase())) return
+    await fetch('/api/scott-leads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ company_name: name }),
+    })
+    setAddSearchQuery('')
+    setAddSearchOpen(false)
+    if (onRefresh) await onRefresh()
+  }
+
+  const removeCompany = async (name) => {
+    await fetch('/api/scott-leads', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ company_name: name }),
+    })
+    if (onRefresh) await onRefresh()
+  }
+
+  const setKeyAccount = async (name, is_key_account) => {
+    await fetch('/api/scott-leads', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ company_name: name, is_key_account }),
+    })
+    if (onRefresh) await onRefresh()
+  }
+
+  const toggleSection = useCallback((key) => {
+    setExpandedSections(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n })
+  }, [])
+
+  const pastClientMatchedNames = useMemo(() => new Set(data.pastClients.map(c => c.matched_name).filter(Boolean).map(n => n.toLowerCase())), [data.pastClients])
+  const pastClientNames = useMemo(() => new Set(data.pastClients.map(c => c.name).filter(Boolean).map(n => n.toLowerCase())), [data.pastClients])
+
+  // ── View-filtered signal arrays (filter by Key vs All accounts) ───────────
+  const viewClinicalTrials = useMemo(() => (data.clinicalTrials || []).filter(t => matchesView(t.matched_name)), [data.clinicalTrials, matchesView])
+  const viewFilings = useMemo(() => (data.filings || []).filter(f => matchesView(f.matched_name)), [data.filings, matchesView])
+  const viewFundingProjects = useMemo(() => (data.fundingProjects || []).filter(p => matchesView(p.matched_name)), [data.fundingProjects, matchesView])
+  const viewClayJobs = useMemo(() => (data.clayJobs || []).filter(j => matchesView(j.matched_name)), [data.clayJobs, matchesView])
+  const viewNewsArticles = useMemo(() => {
+    const list = data.newsArticles || []
+    if (accountView === 'all') return list
+    return list.filter(a => Array.isArray(a.matched_names) && a.matched_names.some(n => matchesView(n)))
+  }, [data.newsArticles, accountView, matchesView])
+  const viewHiringManagers = useMemo(() => (data.hiringManagers || []).filter(c => matchesView(c.company_name)), [data.hiringManagers, matchesView])
+
+  // ── New-signal counts (per section, respecting active view) ───────────────
+  const cutoffMs = useMemo(() => {
+    if (data.cutoffIso) return new Date(data.cutoffIso).getTime()
+    const now = new Date()
+    const cutoff = new Date(now)
+    cutoff.setUTCHours(5, 0, 0, 0)
+    if (now.getUTCHours() < 5) cutoff.setUTCDate(cutoff.getUTCDate() - 1)
+    cutoff.setUTCDate(cutoff.getUTCDate() - 7)
+    return cutoff.getTime()
+  }, [data.cutoffIso])
+  const isNewRow = useCallback((row) => {
+    const t = new Date(row?.created_at || 0).getTime()
+    return !!t && t >= cutoffMs
+  }, [cutoffMs])
+
+  const NewBadge = () => (
+    <span className="ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-green-500/20 text-green-300 border border-green-500/40 align-middle">New</span>
+  )
+  const isArticleNew = useCallback((a) => {
+    if (a?.created_at) {
+      const t = new Date(a.created_at).getTime()
+      if (!!t && t >= cutoffMs) return true
+    }
+    if (a?.date) {
+      const t = new Date(a.date).getTime()
+      return !!t && t >= cutoffMs
+    }
+    return false
+  }, [cutoffMs])
+
+  const sectionNewCounts = useMemo(() => ({
+    clinicalTrials: viewClinicalTrials.filter(isNewRow).length,
+    filings: viewFilings.filter(isNewRow).length,
+    fundingProjects: viewFundingProjects.filter(isNewRow).length,
+    jobs: viewClayJobs.filter(isNewRow).length,
+    news: viewNewsArticles.filter(isNewRow).length,
+    hiringManagers: viewHiringManagers.filter(isNewRow).length,
+  }), [viewClinicalTrials, viewFilings, viewFundingProjects, viewClayJobs, viewNewsArticles, viewHiringManagers, isNewRow])
+
+  // ── Mini-dashboard stats (all + key) ──────────────────────────────────────
+  const dashStats = useMemo(() => {
+    const all = data
+    const allTotal = (all.clinicalTrials?.length || 0) + (all.filings?.length || 0) + (all.fundingProjects?.length || 0) + (all.clayJobs?.length || 0) + (all.newsArticles?.length || 0) + (all.hiringManagers?.length || 0)
+    const allNew =
+      (all.clinicalTrials || []).filter(isNewRow).length +
+      (all.filings || []).filter(isNewRow).length +
+      (all.fundingProjects || []).filter(isNewRow).length +
+      (all.clayJobs || []).filter(isNewRow).length +
+      (all.newsArticles || []).filter(isNewRow).length +
+      (all.hiringManagers || []).filter(isNewRow).length
+
+    const inKey = name => name && keyNameSet.has(String(name).toLowerCase())
+    const keyTrials = (all.clinicalTrials || []).filter(t => inKey(t.matched_name))
+    const keyFilings = (all.filings || []).filter(f => inKey(f.matched_name))
+    const keyFunding = (all.fundingProjects || []).filter(p => inKey(p.matched_name))
+    const keyJobs = (all.clayJobs || []).filter(j => inKey(j.matched_name))
+    const keyNews = (all.newsArticles || []).filter(a => Array.isArray(a.matched_names) && a.matched_names.some(inKey))
+    const keyHm = (all.hiringManagers || []).filter(c => inKey(c.company_name))
+    const keyTotal = keyTrials.length + keyFilings.length + keyFunding.length + keyJobs.length + keyNews.length + keyHm.length
+    const keyNew =
+      keyTrials.filter(isNewRow).length +
+      keyFilings.filter(isNewRow).length +
+      keyFunding.filter(isNewRow).length +
+      keyJobs.filter(isNewRow).length +
+      keyNews.filter(isNewRow).length +
+      keyHm.filter(isNewRow).length
+
+    return {
+      totalAccounts: trackedCompanies.length,
+      totalSignals: allTotal,
+      totalNew: allNew,
+      keyAccounts: keyCompanies.length,
+      keySignals: keyTotal,
+      keyNew,
+    }
+  }, [data, trackedCompanies.length, keyCompanies.length, keyNameSet, isNewRow])
+
+  const toggleTrialRow = useCallback((id) => {
+    setExpandedTrialRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }, [])
+
+  const toggleFilingRow = useCallback((id) => {
+    setExpandedFilingRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }, [])
+
+  const toggleFundingRow = useCallback((id) => {
+    setExpandedFundingRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }, [])
+
+  const isPastClient = useCallback((name) => {
+    const lower = (name || '').toLowerCase()
+    if (!lower) return false
+    if (pastClientMatchedNames.has(lower)) return true
+    return pastClientNames.has(lower)
+  }, [pastClientMatchedNames, pastClientNames])
+
+  // ── Clinical Trials table logic ───────────────────────────────────────────
+
+  const getTrialDisplayName = useCallback((t) => t.matched_name || t.lead_sponsor_name || '', [])
+  const getCategory = useCallback((t) => {
+    const drug = t.is_fda_regulated_drug
+    const device = t.is_fda_regulated_device
+    if (drug && device) return 'Drug / Device'
+    if (drug) return 'Drug'
+    if (device) return 'Device'
+    return ''
+  }, [])
+
+  const trialExtractors = useMemo(() => ({
+    nct_id: t => t.nct_id || '',
+    company: t => getTrialDisplayName(t),
+    title: t => t.brief_title || '',
+    phase: t => t.phase || '',
+    category: t => getCategory(t),
+  }), [getTrialDisplayName, getCategory])
+
+  const trialAllValues = useMemo(() => ({
+    nct_id: viewClinicalTrials.map(t => t.nct_id || ''),
+    company: viewClinicalTrials.map(t => getTrialDisplayName(t)),
+    title: viewClinicalTrials.map(t => t.brief_title || ''),
+    phase: viewClinicalTrials.map(t => t.phase || ''),
+    category: viewClinicalTrials.map(t => getCategory(t)),
+  }), [viewClinicalTrials, getTrialDisplayName, getCategory])
+
+  const trialsRawDates = useMemo(() => viewClinicalTrials.map(t => t.study_start_date), [viewClinicalTrials])
+  const getTrialDate = useCallback(t => t.study_start_date, [])
+
+  const defaultSortedTrials = useMemo(() => {
+    const arr = [...viewClinicalTrials]
+    arr.sort((a, b) => {
+      const ap = isPastClient(getTrialDisplayName(a)) ? 1 : 0
+      const bp = isPastClient(getTrialDisplayName(b)) ? 1 : 0
+      if (bp !== ap) return bp - ap
+      const da = parseDateValue(a.study_start_date)?.getTime() || 0
+      const db = parseDateValue(b.study_start_date)?.getTime() || 0
+      return db - da
+    })
+    return arr
+  }, [viewClinicalTrials, isPastClient, getTrialDisplayName])
+
+  const sortedTrials = useMemo(() => (
+    trialsDateCol.sortDir === null ? defaultSortedTrials : sortRowsByDate(defaultSortedTrials, getTrialDate, trialsDateCol.sortDir)
+  ), [defaultSortedTrials, trialsDateCol.sortDir, getTrialDate])
+
+  const filteredTrials = useMemo(() => (
+    filterRowsByDateKeys(trialsFilter.applyFilters(sortedTrials, trialExtractors), getTrialDate, trialsDateCol.dateFilter)
+  ), [sortedTrials, trialsFilter.applyFilters, trialExtractors, getTrialDate, trialsDateCol.dateFilter])
+
+  // ── Filings table logic ───────────────────────────────────────────────────
+
+  const getFilingDisplayName = useCallback((f) => f.matched_name || f.company_name || '', [])
+
+  const filingExtractors = useMemo(() => ({
+    company: f => getFilingDisplayName(f),
+    transaction: f => f._transaction || '',
+  }), [getFilingDisplayName])
+
+  const filingAllValues = useMemo(() => ({
+    company: viewFilings.map(f => getFilingDisplayName(f)),
+    transaction: viewFilings.map(f => f._transaction || ''),
+  }), [viewFilings, getFilingDisplayName])
+
+  const filingsRawDates = useMemo(() => viewFilings.map(f => f.filing_date), [viewFilings])
+  const getFilingDate = useCallback(f => f.filing_date, [])
+
+  const defaultSortedFilings = useMemo(() => {
+    const arr = [...viewFilings]
+    arr.sort((a, b) => {
+      const ap = isPastClient(getFilingDisplayName(a)) ? 1 : 0
+      const bp = isPastClient(getFilingDisplayName(b)) ? 1 : 0
+      if (bp !== ap) return bp - ap
+      const da = parseDateValue(a.filing_date)?.getTime() || 0
+      const db = parseDateValue(b.filing_date)?.getTime() || 0
+      return db - da
+    })
+    return arr
+  }, [viewFilings, isPastClient, getFilingDisplayName])
+
+  const sortedFilings = useMemo(() => (
+    filingsDateCol.sortDir === null ? defaultSortedFilings : sortRowsByDate(defaultSortedFilings, getFilingDate, filingsDateCol.sortDir)
+  ), [defaultSortedFilings, filingsDateCol.sortDir, getFilingDate])
+
+  const filteredFilings = useMemo(() => (
+    filterRowsByDateKeys(filingsFilter.applyFilters(sortedFilings, filingExtractors), getFilingDate, filingsDateCol.dateFilter)
+  ), [sortedFilings, filingsFilter.applyFilters, filingExtractors, getFilingDate, filingsDateCol.dateFilter])
+
+  // ── Funding table logic ───────────────────────────────────────────────────
+
+  const getFundingDisplayName = useCallback((p) => p.matched_name || '', [])
+
+  const fundingExtractors = useMemo(() => ({
+    company: p => getFundingDisplayName(p),
+    title: p => p.project_title || '',
+  }), [getFundingDisplayName])
+
+  const fundingAllValues = useMemo(() => ({
+    company: viewFundingProjects.map(p => getFundingDisplayName(p)),
+    title: viewFundingProjects.map(p => p.project_title || ''),
+  }), [viewFundingProjects, getFundingDisplayName])
+
+  const fundingRawDates = useMemo(() => viewFundingProjects.map(p => p.award_notice_date), [viewFundingProjects])
+  const getFundingDate = useCallback(p => p.award_notice_date, [])
+
+  const defaultSortedFunding = useMemo(() => {
+    const arr = [...viewFundingProjects]
+    arr.sort((a, b) => {
+      const ap = isPastClient(getFundingDisplayName(a)) ? 1 : 0
+      const bp = isPastClient(getFundingDisplayName(b)) ? 1 : 0
+      if (bp !== ap) return bp - ap
+      const da = parseDateValue(a.award_notice_date)?.getTime() || 0
+      const db = parseDateValue(b.award_notice_date)?.getTime() || 0
+      return db - da
+    })
+    return arr
+  }, [viewFundingProjects, isPastClient, getFundingDisplayName])
+
+  const sortedFunding = useMemo(() => (
+    fundingDateCol.sortDir === null ? defaultSortedFunding : sortRowsByDate(defaultSortedFunding, getFundingDate, fundingDateCol.sortDir)
+  ), [defaultSortedFunding, fundingDateCol.sortDir, getFundingDate])
+
+  const filteredFunding = useMemo(() => (
+    filterRowsByDateKeys(fundingFilter.applyFilters(sortedFunding, fundingExtractors), getFundingDate, fundingDateCol.dateFilter)
+  ), [sortedFunding, fundingFilter.applyFilters, fundingExtractors, getFundingDate, fundingDateCol.dateFilter])
+
+  // ── Clay Jobs table logic ─────────────────────────────────────────────────
+
+  const getJobDisplayName = useCallback((j) => j.matched_name || j.company_name || '', [])
+
+  const jobExtractors = useMemo(() => ({
+    company: j => getJobDisplayName(j),
+    title: j => j.job_title || '',
+    location: j => j.location || '',
+  }), [getJobDisplayName])
+
+  const jobAllValues = useMemo(() => ({
+    company: viewClayJobs.map(j => getJobDisplayName(j)),
+    title: viewClayJobs.map(j => j.job_title || ''),
+    location: viewClayJobs.map(j => j.location || ''),
+  }), [viewClayJobs, getJobDisplayName])
+
+  const jobsRawDates = useMemo(() => viewClayJobs.map(j => j.date_posted), [viewClayJobs])
+  const getJobDate = useCallback(j => j.date_posted, [])
+
+  const defaultSortedJobs = useMemo(() => {
+    const arr = [...viewClayJobs]
+    arr.sort((a, b) => {
+      const ap = isPastClient(getJobDisplayName(a)) ? 1 : 0
+      const bp = isPastClient(getJobDisplayName(b)) ? 1 : 0
+      if (bp !== ap) return bp - ap
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0)
+    })
+    return arr
+  }, [viewClayJobs, isPastClient, getJobDisplayName])
+
+  const sortedJobs = useMemo(() => (
+    jobsDateCol.sortDir === null ? defaultSortedJobs : sortRowsByDate(defaultSortedJobs, getJobDate, jobsDateCol.sortDir)
+  ), [defaultSortedJobs, jobsDateCol.sortDir, getJobDate])
+
+  const filteredJobs = useMemo(() => (
+    jobsSpecialtyFilter.apply(filterRowsByDateKeys(jobsFilter.applyFilters(sortedJobs, jobExtractors), getJobDate, jobsDateCol.dateFilter))
+  ), [sortedJobs, jobsFilter.applyFilters, jobExtractors, getJobDate, jobsDateCol.dateFilter, jobsSpecialtyFilter])
+
+  const updateJobSpecialty = useCallback((jobId, newSpecialty) => {
+    if (typeof setData !== 'function') return
+    setData(prev => prev ? { ...prev, clayJobs: (prev.clayJobs || []).map(j => j.id === jobId ? { ...j, specialty: newSpecialty } : j) } : prev)
+  }, [setData])
+  const removeJob = useCallback((jobId) => {
+    if (typeof setData !== 'function') return
+    setData(prev => prev ? { ...prev, clayJobs: (prev.clayJobs || []).filter(j => j.id !== jobId) } : prev)
+  }, [setData])
+
+  // ── News table logic ──────────────────────────────────────────────────────
+
+  const articleHasPastClient = useCallback((a) => {
+    const names = Array.isArray(a.matched_names) ? a.matched_names : []
+    return names.some(n => isPastClient(n))
+  }, [isPastClient])
+
+  const newsAllValues = useMemo(() => {
+    const companySet = new Set()
+    for (const a of viewNewsArticles) {
+      if (Array.isArray(a.matched_names)) {
+        for (const n of a.matched_names) if (n) companySet.add(n)
+      }
+    }
+    return {
+      company: [...companySet],
+      title: viewNewsArticles.map(a => a.title || ''),
+      source: viewNewsArticles.map(a => a._source || ''),
+    }
+  }, [viewNewsArticles])
+
+  const newsRawDates = useMemo(() => viewNewsArticles.map(a => a.date), [viewNewsArticles])
+  const getNewsDate = useCallback(a => a.date, [])
+
+  const defaultSortedNews = useMemo(() => {
+    const arr = [...viewNewsArticles]
+    arr.sort((a, b) => {
+      const ap = articleHasPastClient(a) ? 1 : 0
+      const bp = articleHasPastClient(b) ? 1 : 0
+      if (bp !== ap) return bp - ap
+      const aHas = a.date ? 1 : 0
+      const bHas = b.date ? 1 : 0
+      if (aHas !== bHas) return bHas - aHas
+      if (a.date && b.date) {
+        const da = parseDateValue(a.date)?.getTime() || 0
+        const db = parseDateValue(b.date)?.getTime() || 0
+        return db - da
+      }
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0)
+    })
+    return arr
+  }, [viewNewsArticles, articleHasPastClient])
+
+  const sortedNews = useMemo(() => (
+    newsDateCol.sortDir === null ? defaultSortedNews : sortRowsByDate(defaultSortedNews, getNewsDate, newsDateCol.sortDir)
+  ), [defaultSortedNews, newsDateCol.sortDir, getNewsDate])
+
+  const filteredNews = useMemo(() => {
+    const colFiltered = !newsFilter.hasActiveFilters ? sortedNews : sortedNews.filter(a => {
+      for (const [colKey, allowedValues] of Object.entries(newsFilter.filters)) {
+        if (!allowedValues || allowedValues.length === 0) continue
+        const allowedLower = allowedValues.map(v => String(v).toLowerCase())
+        if (colKey === 'company') {
+          const names = Array.isArray(a.matched_names) ? a.matched_names : []
+          if (!names.some(n => allowedLower.includes(String(n).toLowerCase()))) return false
+        } else if (colKey === 'title') {
+          if (!allowedLower.includes(String(a.title || '').toLowerCase())) return false
+        } else if (colKey === 'source') {
+          if (!allowedLower.includes(String(a._source || '').toLowerCase())) return false
+        }
+      }
+      return true
+    })
+    return filterRowsByDateKeys(colFiltered, getNewsDate, newsDateCol.dateFilter)
+  }, [sortedNews, newsFilter.filters, newsFilter.hasActiveFilters, getNewsDate, newsDateCol.dateFilter])
+
+  const updateNewsMatches = useCallback((url, newMatches) => {
+    setData(prev => prev ? ({
+      ...prev,
+      newsArticles: (prev.newsArticles || []).map(a =>
+        a.url === url
+          ? { ...a, matched_names: newMatches && newMatches.length > 0 ? newMatches : null }
+          : a
+      ),
+    }) : prev)
+  }, [setData])
+
+  // ── Hiring Managers table logic ───────────────────────────────────────────
+
+  const hmExtractors = useMemo(() => ({
+    company: c => c.company_name || '',
+    full_name: c => c.full_name || '',
+    title: c => c.job_title || '',
+    location: c => c.location || '',
+  }), [])
+
+  const hmAllValues = useMemo(() => ({
+    company: viewHiringManagers.map(c => c.company_name || ''),
+    full_name: viewHiringManagers.map(c => c.full_name || ''),
+    title: viewHiringManagers.map(c => c.job_title || ''),
+    location: viewHiringManagers.map(c => c.location || ''),
+  }), [viewHiringManagers])
+
+  const hmRawDates = useMemo(() => viewHiringManagers.map(c => c.created_at), [viewHiringManagers])
+  const getHmDate = useCallback(c => c.created_at, [])
+
+  const defaultSortedHm = useMemo(() => {
+    const arr = [...viewHiringManagers]
+    arr.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+    return arr
+  }, [viewHiringManagers])
+
+  const sortedHm = useMemo(() => (
+    hmDateCol.sortDir === null ? defaultSortedHm : sortRowsByDate(defaultSortedHm, getHmDate, hmDateCol.sortDir)
+  ), [defaultSortedHm, hmDateCol.sortDir, getHmDate])
+
+  const filteredHm = useMemo(() => (
+    hmSpecialtyFilter.apply(filterRowsByDateKeys(hmFilter.applyFilters(sortedHm, hmExtractors), getHmDate, hmDateCol.dateFilter))
+  ), [sortedHm, hmFilter.applyFilters, hmExtractors, getHmDate, hmDateCol.dateFilter, hmSpecialtyFilter])
+
+  const updateContactSpecialty = useCallback((contactId, newSpecialty) => {
+    if (typeof setData !== 'function') return
+    setData(prev => prev ? { ...prev, hiringManagers: (prev.hiringManagers || []).map(c => c.id === contactId ? { ...c, specialty: newSpecialty } : c) } : prev)
+  }, [setData])
+
+  // Exclude already-tracked companies from add-search suggestions
+  const addSearchAvailable = addSearchResults.filter(r => !trackedNameSet.has((r.name || '').toLowerCase()))
+
+  const SectionHeader = ({ sectionKey, label, total, newCount }) => {
+    const expanded = expandedSections.has(sectionKey)
+    return (
+      <button
+        type="button"
+        onClick={() => toggleSection(sectionKey)}
+        className="w-full flex items-center gap-2 px-3 py-2.5 bg-[#1f2937] hover:bg-[#263045] border border-[#374151] rounded-lg text-left transition-colors"
+      >
+        <span className="text-gray-400 text-xs w-3">{expanded ? '▼' : '▶'}</span>
+        <span className="text-white text-base font-semibold">{label}</span>
+        <span className="text-gray-400 text-sm">({total})</span>
+        {newCount > 0 && (
+          <span className="ml-auto text-green-400 text-sm font-semibold tabular-nums">&uarr;{newCount} new</span>
+        )}
+      </button>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      {readOnly && (
+        <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-4 py-2.5 text-sm text-yellow-200 flex items-center gap-2">
+          <span aria-hidden="true">🔒</span>
+          <span>View Only — this leads page belongs to another rep. You can view all data but cannot make changes.</span>
+        </div>
+      )}
+      {/* ── Mini Dashboard ───────────────────────────────────────────────── */}
+      <div className="flex flex-col gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-gray-500">Total Accounts</div>
+            <div className="text-2xl font-bold text-white tabular-nums">{dashStats.totalAccounts.toLocaleString()}</div>
+          </div>
+          <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-gray-500">Total Signals</div>
+            <div className="text-2xl font-bold text-white tabular-nums">{dashStats.totalSignals.toLocaleString()}</div>
+          </div>
+          <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-gray-500">New Signals (7d)</div>
+            <div className="text-2xl font-bold text-green-400 tabular-nums">&uarr;{dashStats.totalNew.toLocaleString()}</div>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-yellow-400">Key Accounts</div>
+            <div className="text-2xl font-bold text-white tabular-nums">{dashStats.keyAccounts.toLocaleString()}</div>
+          </div>
+          <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-yellow-400">Key Signals</div>
+            <div className="text-2xl font-bold text-white tabular-nums">{dashStats.keySignals.toLocaleString()}</div>
+          </div>
+          <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+            <div className="text-xs uppercase tracking-wider text-yellow-400">New Key Signals (7d)</div>
+            <div className="text-2xl font-bold text-green-400 tabular-nums">&uarr;{dashStats.keyNew.toLocaleString()}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Account Management Dropdowns ─────────────────────────────────── */}
+      <div className="flex flex-wrap gap-3 items-start">
+        <div className="relative" ref={allAccountsRef}>
+          <button
+            type="button"
+            onClick={() => { setAllAccountsOpen(v => !v); setKeyAccountsOpen(false) }}
+            className="px-4 py-2 text-sm font-semibold bg-[#1f2937] border border-[#374151] rounded-lg text-white hover:bg-[#263045] transition-colors"
+          >
+            All Accounts ({trackedCompanies.length}) {allAccountsOpen ? '▲' : '▼'}
+          </button>
+          {allAccountsOpen && (
+            <div className="absolute z-50 mt-1 w-80 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl overflow-hidden">
+              <div className="max-h-72 overflow-y-auto">
+                {trackedCompanies.length === 0 ? (
+                  <p className="px-3 py-4 text-sm text-gray-500 italic">No companies tracked yet.</p>
+                ) : trackedCompanies.map(c => (
+                  <div key={c.name} className="flex items-center gap-2 px-3 py-2 border-b border-[#374151] last:border-b-0 hover:bg-[#263045] transition-colors">
+                    <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
+                      {c.is_key_account && <span className="text-yellow-400 mr-1" title="Key account">&#9733;</span>}
+                      {c.name}
+                    </span>
+                    {!c.is_key_account && !readOnly && (
+                      <button
+                        onClick={() => setKeyAccount(c.name, true)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/20 transition-colors"
+                        title="Mark as key account"
+                      >
+                        &#9733; Key
+                      </button>
+                    )}
+                    {!readOnly && (
+                      <button
+                        onClick={() => removeCompany(c.name)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
+                        title={`Remove ${c.name}`}
+                      >
+                        &times; Remove
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {!readOnly && (
+              <div className="border-t border-[#374151] p-2 bg-[#18202e]">
+                <input
+                  ref={addSearchInputRef}
+                  type="text"
+                  value={addSearchQuery}
+                  onChange={e => setAddSearchQuery(e.target.value)}
+                  placeholder="Search to add a company..."
+                  className="w-full bg-[#111827] text-sm text-white px-3 py-2 rounded border border-[#374151] outline-none focus:border-blue-500 placeholder-gray-500"
+                />
+                {addSearchOpen && addSearchAvailable.length > 0 && typeof document !== 'undefined' && createPortal(
+                  <div
+                    ref={addSearchDropdownRef}
+                    style={{
+                      position: 'fixed',
+                      top: addSearchPos.top,
+                      left: addSearchPos.left,
+                      width: addSearchPos.width,
+                      zIndex: 1100,
+                    }}
+                    className="max-h-48 overflow-y-auto bg-[#1f2937] border border-[#374151] rounded shadow-2xl"
+                  >
+                    {addSearchAvailable.slice(0, 20).map(r => (
+                      <button
+                        key={r.name}
+                        onMouseDown={(e) => { e.preventDefault(); addCompany(r.name) }}
+                        className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-blue-600/20 hover:text-white transition-colors"
+                      >
+                        {r.name}
+                      </button>
+                    ))}
+                  </div>,
+                  document.body
+                )}
+              </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="relative" ref={keyAccountsRef}>
+          <button
+            type="button"
+            onClick={() => { setKeyAccountsOpen(v => !v); setAllAccountsOpen(false) }}
+            className="px-4 py-2 text-sm font-semibold bg-[#1f2937] border border-yellow-500/40 rounded-lg text-yellow-300 hover:bg-[#263045] transition-colors"
+          >
+            &#9733; Key Accounts ({keyCompanies.length}) {keyAccountsOpen ? '▲' : '▼'}
+          </button>
+          {keyAccountsOpen && (
+            <div className="absolute z-50 mt-1 w-80 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl overflow-hidden">
+              <div className="max-h-72 overflow-y-auto">
+                {keyCompanies.length === 0 ? (
+                  <p className="px-3 py-4 text-sm text-gray-500 italic">No key accounts yet.</p>
+                ) : keyCompanies.map(c => (
+                  <div key={c.name} className="flex items-center gap-2 px-3 py-2 border-b border-[#374151] last:border-b-0 hover:bg-[#263045] transition-colors">
+                    <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
+                      <span className="text-yellow-400 mr-1">&#9733;</span>{c.name}
+                    </span>
+                    {!readOnly && (
+                      <button
+                        onClick={() => setKeyAccount(c.name, false)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-gray-500/40 text-gray-300 hover:bg-gray-500/20 transition-colors"
+                        title="Demote to regular account"
+                      >
+                        &darr; Demote
+                      </button>
+                    )}
+                    {!readOnly && (
+                      <button
+                        onClick={() => removeCompany(c.name)}
+                        className="px-2 py-1 text-xs font-semibold rounded border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
+                        title={`Remove ${c.name}`}
+                      >
+                        &times; Remove
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── View Tab Toggle ──────────────────────────────────────────────── */}
+      <div className="inline-flex self-start rounded-md border border-[#374151] overflow-hidden">
+        <button
+          onClick={() => setAccountView('key')}
+          className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+            accountView === 'key'
+              ? 'bg-yellow-600/30 text-yellow-200'
+              : 'bg-[#1f2937] text-gray-400 hover:text-white hover:bg-[#263045]'
+          }`}
+        >
+          Key Accounts
+        </button>
+        <button
+          onClick={() => setAccountView('all')}
+          className={`px-3 py-1.5 text-xs font-semibold border-l border-[#374151] transition-colors ${
+            accountView === 'all'
+              ? 'bg-blue-600/30 text-blue-300'
+              : 'bg-[#1f2937] text-gray-400 hover:text-white hover:bg-[#263045]'
+          }`}
+        >
+          All Accounts
+        </button>
+      </div>
+
+      {loading && (
+        <div className="flex items-center justify-center py-12">
+          <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
+
+      {!loading && trackedCompanies.length === 0 && (
+        <EmptyState message="Open the All Accounts dropdown above to add your first company." />
+      )}
+
+      {!loading && trackedCompanies.length > 0 && accountView === 'key' && keyCompanies.length === 0 && (
+        <EmptyState message="No key accounts yet. Open the All Accounts dropdown and promote companies with the Key button, or switch to All Accounts." />
+      )}
+
+      {/* ── Clinical Trials Section ──────────────────────────────────────── */}
+      {!loading && viewClinicalTrials.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <SectionHeader sectionKey="clinicalTrials" label="Clinical Trials" total={viewClinicalTrials.length} newCount={sectionNewCounts.clinicalTrials} />
+          {expandedSections.has('clinicalTrials') && (<>
+          <ClearAllFiltersButton
+            hasActiveFilters={trialsFilter.hasActiveFilters || trialsDateCol.hasDateFilter}
+            onClear={() => { trialsFilter.clearAll(); trialsDateCol.clearDateFilter() }}
+          />
+          <div className="rounded-lg border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <ColumnFilterDropdown colKey="nct_id" label="NCT ID" allValues={trialAllValues.nct_id} activeValues={trialsFilter.filters.nct_id} onApply={trialsFilter.setFilter} className="w-[12%]" />
+                  <ColumnFilterDropdown colKey="company" label="Company Name" allValues={trialAllValues.company} activeValues={trialsFilter.filters.company} onApply={trialsFilter.setFilter} className="w-[22%]" />
+                  <ColumnFilterDropdown colKey="title" label="Title" allValues={trialAllValues.title} activeValues={trialsFilter.filters.title} onApply={trialsFilter.setFilter} className="w-[30%]" />
+                  <ColumnFilterDropdown colKey="phase" label="Phase" allValues={trialAllValues.phase} activeValues={trialsFilter.filters.phase} onApply={trialsFilter.setFilter} className="w-[10%]" />
+                  <ColumnFilterDropdown colKey="category" label="Category" allValues={trialAllValues.category} activeValues={trialsFilter.filters.category} onApply={trialsFilter.setFilter} className="w-[12%]" />
+                  <HierarchicalDateFilter label="Start Date" sortDir={trialsDateCol.sortDir} onCycleSort={trialsDateCol.cycleSortDir} allRawDates={trialsRawDates} activeDateKeys={trialsDateCol.dateFilter} onApplyFilter={trialsDateCol.setDateFilter} className="w-[14%]" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {filteredTrials.map((trial, i) => {
+                  const isExpanded = expandedTrialRows.has(trial.id || trial.nct_id)
+                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                  const displayName = getTrialDisplayName(trial)
+                  const isClient = isPastClient(displayName)
+                  const category = getCategory(trial)
+                  const contacts = Array.isArray(trial.central_contacts) ? trial.central_contacts : []
+                  const rowIsNew = isNewRow(trial)
+
+                  return (
+                    <Fragment key={trial.id || trial.nct_id}>
+                      <tr
+                        onClick={() => toggleTrialRow(trial.id || trial.nct_id)}
+                        className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
+                      >
+                        <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{trial.nct_id || '—'}</td>
+                        <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                          {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                          {displayName || '—'}
+                        </td>
+                        <td className="px-3 py-3 text-sm text-white" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{trial.brief_title || '—'}</td>
+                        <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{trial.phase || '—'}</td>
+                        <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{category || '—'}</td>
+                        <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                          <span className="inline-flex items-center gap-1">
+                            <span>{formatDate(trial.study_start_date)}</span>
+                            {rowIsNew && <NewBadge />}
+                          </span>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan={6} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                            <div className="flex flex-col gap-4">
+                              <div>
+                                <a href={trial.source_url} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-400 hover:text-blue-300 font-medium">
+                                  View on ClinicalTrials.gov &#8599;
+                                </a>
+                              </div>
+                              <div>
+                                <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Contact Information</h4>
+                                {contacts.length > 0 ? (
+                                  <div className="flex flex-col gap-2">
+                                    {contacts.map((c, ci) => (
+                                      <div key={ci} className="text-sm text-gray-300 flex flex-wrap gap-x-4 gap-y-1">
+                                        {c.name && <span>{c.name}</span>}
+                                        {c.email && <a href={`mailto:${c.email}`} className="text-blue-400 hover:text-blue-300" onClick={e => e.stopPropagation()}>{c.email}</a>}
+                                        {c.phone && <a href={`tel:${c.phone}`} className="text-blue-400 hover:text-blue-300" onClick={e => e.stopPropagation()}>{c.phone}</a>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="text-sm text-gray-500 italic">No contact information available</p>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          </>)}
+        </div>
+      )}
+
+      {/* ── M&A and Filings Section ──────────────────────────────────────── */}
+      {!loading && viewFilings.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <SectionHeader sectionKey="filings" label="M&A and Filings" total={viewFilings.length} newCount={sectionNewCounts.filings} />
+          {expandedSections.has('filings') && (<>
+          <ClearAllFiltersButton
+            hasActiveFilters={filingsFilter.hasActiveFilters || filingsDateCol.hasDateFilter}
+            onClear={() => { filingsFilter.clearAll(); filingsDateCol.clearDateFilter() }}
+          />
+          <div className="rounded-lg border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <ColumnFilterDropdown colKey="company" label="Company Name" allValues={filingAllValues.company} activeValues={filingsFilter.filters.company} onApply={filingsFilter.setFilter} className="w-[30%]" />
+                  <ColumnFilterDropdown colKey="transaction" label="Transaction" allValues={filingAllValues.transaction} activeValues={filingsFilter.filters.transaction} onApply={filingsFilter.setFilter} className="w-[20%]" />
+                  <HierarchicalDateFilter label="Filing Date" sortDir={filingsDateCol.sortDir} onCycleSort={filingsDateCol.cycleSortDir} allRawDates={filingsRawDates} activeDateKeys={filingsDateCol.dateFilter} onApplyFilter={filingsDateCol.setDateFilter} className="w-[20%]" />
+                  <Th className="w-[30%]">Filing Link</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {filteredFilings.map((filing, i) => {
+                  const rowKey = filing.id || filing.accession_number
+                  const isExpanded = expandedFilingRows.has(rowKey)
+                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                  const displayName = getFilingDisplayName(filing)
+                  const isClient = isPastClient(displayName)
+                  const hasExpandContent = filing._source === '8-K' && filing.agreement_summary
+                  const rowIsNew = isNewRow(filing)
+
+                  return (
+                    <Fragment key={rowKey}>
+                      <tr
+                        onClick={() => hasExpandContent && toggleFilingRow(rowKey)}
+                        className={`${rowBg} hover:bg-[#263045] ${hasExpandContent ? 'cursor-pointer' : ''} transition-colors`}
+                      >
+                        <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                          {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                          {displayName || '—'}
+                        </td>
+                        <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{filing._transaction || '—'}</td>
+                        <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(filing.filing_date)}</td>
+                        <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
+                          <span className="inline-flex items-center gap-1">
+                            {filing.filing_url ? (
+                              <a href={filing.filing_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Filing &#8599;</a>
+                            ) : <span className="text-gray-600">—</span>}
+                            {rowIsNew && <NewBadge />}
+                          </span>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan={4} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                            <div>
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Agreement Summary</h4>
+                              <p className="text-sm text-gray-300 leading-relaxed" style={{ whiteSpace: 'pre-wrap' }}>{filing.agreement_summary}</p>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          </>)}
+        </div>
+      )}
+
+      {/* ── Funding Projects Section ─────────────────────────────────────── */}
+      {!loading && viewFundingProjects.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <SectionHeader sectionKey="fundingProjects" label="Funding Projects" total={viewFundingProjects.length} newCount={sectionNewCounts.fundingProjects} />
+          {expandedSections.has('fundingProjects') && (<>
+          <ClearAllFiltersButton
+            hasActiveFilters={fundingFilter.hasActiveFilters || fundingDateCol.hasDateFilter}
+            onClear={() => { fundingFilter.clearAll(); fundingDateCol.clearDateFilter() }}
+          />
+          <div className="rounded-lg border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <ColumnFilterDropdown colKey="company" label="Company Name" allValues={fundingAllValues.company} activeValues={fundingFilter.filters.company} onApply={fundingFilter.setFilter} className="w-[30%]" />
+                  <ColumnFilterDropdown colKey="title" label="Project Title" allValues={fundingAllValues.title} activeValues={fundingFilter.filters.title} onApply={fundingFilter.setFilter} className="w-[30%]" />
+                  <Th className="w-[15%]">Award</Th>
+                  <HierarchicalDateFilter label="Award Date" sortDir={fundingDateCol.sortDir} onCycleSort={fundingDateCol.cycleSortDir} allRawDates={fundingRawDates} activeDateKeys={fundingDateCol.dateFilter} onApplyFilter={fundingDateCol.setDateFilter} className="w-[10%]" />
+                  <Th className="w-[15%]">Project Link</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {filteredFunding.map((project, i) => {
+                  const rowKey = project.id || project.appl_id
+                  const hasExpandContent = !!(project.public_health_relevance && project.public_health_relevance.trim())
+                  const isExpanded = expandedFundingRows.has(rowKey)
+                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                  const displayName = getFundingDisplayName(project)
+                  const isClient = isPastClient(displayName)
+                  const rowIsNew = isNewRow(project)
+
+                  return (
+                    <Fragment key={rowKey}>
+                      <tr
+                        onClick={() => hasExpandContent && toggleFundingRow(rowKey)}
+                        className={`${rowBg} hover:bg-[#263045] ${hasExpandContent ? 'cursor-pointer' : ''} transition-colors`}
+                      >
+                        <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                          {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                          {displayName || '—'}
+                        </td>
+                        <td className="px-3 py-3 text-sm text-white" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{project.project_title || '—'}</td>
+                        <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatAward(project.award_amount)}</td>
+                        <td className="px-3 py-3 text-sm text-gray-400" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(project.award_notice_date)}</td>
+                        <td className="px-3 py-3 text-sm" onClick={e => e.stopPropagation()}>
+                          <span className="inline-flex items-center gap-1">
+                            {project.project_url ? (
+                              <a href={project.project_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Project &#8599;</a>
+                            ) : <span className="text-gray-600">—</span>}
+                            {rowIsNew && <NewBadge />}
+                          </span>
+                        </td>
+                      </tr>
+                      {isExpanded && hasExpandContent && (
+                        <tr>
+                          <td colSpan={5} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                            <div>
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Summary:</h4>
+                              <p className="text-sm text-gray-300 leading-relaxed" style={{ whiteSpace: 'pre-wrap' }}>{project.public_health_relevance}</p>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          </>)}
+        </div>
+      )}
+
+      {/* ── Jobs Section ─────────────────────────────────────────────────── */}
+      {!loading && viewClayJobs.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <SectionHeader sectionKey="jobs" label="Jobs" total={viewClayJobs.length} newCount={sectionNewCounts.jobs} />
+          {expandedSections.has('jobs') && (<>
+          <ClearAllFiltersButton
+            hasActiveFilters={jobsFilter.hasActiveFilters || jobsDateCol.hasDateFilter || jobsSpecialtyFilter.hasFilter}
+            onClear={() => { jobsFilter.clearAll(); jobsDateCol.clearDateFilter(); jobsSpecialtyFilter.clear() }}
+          />
+          <div className="rounded-lg border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <ColumnFilterDropdown colKey="company" label="Company" allValues={jobAllValues.company} activeValues={jobsFilter.filters.company} onApply={jobsFilter.setFilter} className="w-[18%]" />
+                  <ColumnFilterDropdown colKey="title" label="Job Title" allValues={jobAllValues.title} activeValues={jobsFilter.filters.title} onApply={jobsFilter.setFilter} className="w-[22%]" />
+                  <ColumnFilterDropdown colKey="specialty" label="Specialty" allValues={SPECIALTY_OPTIONS} activeValues={jobsSpecialtyFilter.active} onApply={jobsSpecialtyFilter.setFilter} className="w-[15%]" />
+                  <ColumnFilterDropdown colKey="location" label="Location" allValues={jobAllValues.location} activeValues={jobsFilter.filters.location} onApply={jobsFilter.setFilter} className="w-[12%]" />
+                  <HierarchicalDateFilter label="Date Posted" sortDir={jobsDateCol.sortDir} onCycleSort={jobsDateCol.cycleSortDir} allRawDates={jobsRawDates} activeDateKeys={jobsDateCol.dateFilter} onApplyFilter={jobsDateCol.setDateFilter} className="w-[10%]" />
+                  <Th className="w-[15%]">Link</Th>
+                  <Th className="w-[8%]">{' '}</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {filteredJobs.map((job, i) => {
+                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                  const displayName = getJobDisplayName(job)
+                  const isClient = isPastClient(displayName)
+                  const rowIsNew = isNewRow(job)
+                  return (
+                    <tr key={job.id} className={`${rowBg} transition-colors`}>
+                      <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                        {displayName || '—'}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.job_title || '—'}</td>
+                      <SpecialtyCell job={job} table="clay_jobs" onChange={readOnly ? undefined : updateJobSpecialty} />
+                      <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{job.location || '—'}</td>
+                      <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatClayDate(job.date_posted)}</td>
+                      <td className="px-3 py-3 text-sm align-top">
+                        <span className="inline-flex items-center gap-1">
+                          {job.job_url ? (
+                            <a href={job.job_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View Job &#8599;</a>
+                          ) : <span className="text-gray-600">—</span>}
+                          {rowIsNew && <NewBadge />}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3 text-sm align-top text-center">
+                        {!readOnly && <JobDeleteButton job={job} table="clay_jobs" onDelete={removeJob} />}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          </>)}
+        </div>
+      )}
+
+      {/* ── News Section ─────────────────────────────────────────────────── */}
+      {!loading && viewNewsArticles.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <SectionHeader sectionKey="news" label="News" total={viewNewsArticles.length} newCount={sectionNewCounts.news} />
+          {expandedSections.has('news') && (<>
+          <ClearAllFiltersButton
+            hasActiveFilters={newsFilter.hasActiveFilters || newsDateCol.hasDateFilter}
+            onClear={() => { newsFilter.clearAll(); newsDateCol.clearDateFilter() }}
+          />
+          <div className="rounded-lg border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <ColumnFilterDropdown colKey="company" label="Company" allValues={newsAllValues.company} activeValues={newsFilter.filters.company} onApply={newsFilter.setFilter} className="w-[20%]" />
+                  <ColumnFilterDropdown colKey="title" label="Title" allValues={newsAllValues.title} activeValues={newsFilter.filters.title} onApply={newsFilter.setFilter} className="w-[35%]" />
+                  <HierarchicalDateFilter label="Date" sortDir={newsDateCol.sortDir} onCycleSort={newsDateCol.cycleSortDir} allRawDates={newsRawDates} activeDateKeys={newsDateCol.dateFilter} onApplyFilter={newsDateCol.setDateFilter} className="w-[15%]" />
+                  <ColumnFilterDropdown colKey="source" label="Source" allValues={newsAllValues.source} activeValues={newsFilter.filters.source} onApply={newsFilter.setFilter} className="w-[15%]" />
+                  <Th className="w-[15%]">Link</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {filteredNews.map((article, i) => {
+                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                  const names = Array.isArray(article.matched_names) ? article.matched_names : []
+                  const rowIsNew = isArticleNew(article)
+                  return (
+                    <tr key={article.url} className={`${rowBg} transition-colors`}>
+                      <td className="px-3 py-3 text-sm text-gray-200 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        <div className="flex flex-col gap-1">
+                          {names.length === 0 && <span className="text-gray-600">—</span>}
+                          {names.map(n => (
+                            <span key={n} className="text-gray-100">
+                              {isPastClient(n) && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                              {n}
+                            </span>
+                          ))}
+                          {!readOnly && (
+                            <button
+                              onClick={() => setAssignArticle(article)}
+                              className="self-start mt-1 text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30 hover:bg-blue-600/20 transition-colors"
+                            >
+                              {names.length > 0 ? 'Edit' : '+ Assign'}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        {article.title || '—'}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        {article.date ? formatDate(article.date) : '—'}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        {article._source || '—'}
+                      </td>
+                      <td className="px-3 py-3 text-sm align-top">
+                        <span className="inline-flex items-center gap-1">
+                          {article.url ? (
+                            <a
+                              href={article.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-400 hover:text-blue-300 font-medium"
+                            >
+                              Read Article &#8599;
+                            </a>
+                          ) : <span className="text-gray-600">—</span>}
+                          {rowIsNew && <NewBadge />}
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          </>)}
+        </div>
+      )}
+
+      {/* ── Hiring Managers Section ──────────────────────────────────────── */}
+      {!loading && viewHiringManagers.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <SectionHeader sectionKey="hiringManagers" label="Hiring Managers" total={viewHiringManagers.length} newCount={sectionNewCounts.hiringManagers} />
+          {expandedSections.has('hiringManagers') && (<>
+          <ClearAllFiltersButton
+            hasActiveFilters={hmFilter.hasActiveFilters || hmDateCol.hasDateFilter || hmSpecialtyFilter.hasFilter}
+            onClear={() => { hmFilter.clearAll(); hmDateCol.clearDateFilter(); hmSpecialtyFilter.clear() }}
+          />
+          <div className="rounded-lg border border-[#374151] overflow-hidden">
+            <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  <ColumnFilterDropdown colKey="company" label="Company" allValues={hmAllValues.company} activeValues={hmFilter.filters.company} onApply={hmFilter.setFilter} className="w-[15%]" />
+                  <ColumnFilterDropdown colKey="full_name" label="Full Name" allValues={hmAllValues.full_name} activeValues={hmFilter.filters.full_name} onApply={hmFilter.setFilter} className="w-[18%]" />
+                  <ColumnFilterDropdown colKey="title" label="Job Title" allValues={hmAllValues.title} activeValues={hmFilter.filters.title} onApply={hmFilter.setFilter} className="w-[22%]" />
+                  <ColumnFilterDropdown colKey="specialty" label="Specialty" allValues={SPECIALTY_OPTIONS} activeValues={hmSpecialtyFilter.active} onApply={hmSpecialtyFilter.setFilter} className="w-[12%]" />
+                  <ColumnFilterDropdown colKey="location" label="Location" allValues={hmAllValues.location} activeValues={hmFilter.filters.location} onApply={hmFilter.setFilter} className="w-[13%]" />
+                  <HierarchicalDateFilter label="Date Added" sortDir={hmDateCol.sortDir} onCycleSort={hmDateCol.cycleSortDir} allRawDates={hmRawDates} activeDateKeys={hmDateCol.dateFilter} onApplyFilter={hmDateCol.setDateFilter} className="w-[10%]" />
+                  <Th className="w-[10%]">LinkedIn</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#374151]">
+                {filteredHm.map((contact, i) => {
+                  const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                  const isClient = isPastClient(contact.company_name)
+                  const rowIsNew = isNewRow(contact)
+                  return (
+                    <tr key={contact.id} className={`${rowBg} transition-colors`}>
+                      <td className="px-3 py-3 text-sm font-semibold text-gray-100 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                        {isClient && <span className="text-yellow-400 mr-1" title="Past client">&#9733;</span>}
+                        {contact.company_name || '—'}
+                      </td>
+                      <td className="px-3 py-3 text-sm text-white align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{contact.full_name || '—'}</td>
+                      <td className="px-3 py-3 text-sm text-gray-200 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{contact.job_title || '—'}</td>
+                      <SpecialtyCell job={contact} table="leads_contacts" onChange={readOnly ? undefined : updateContactSpecialty} />
+                      <td className="px-3 py-3 text-sm text-gray-300 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{contact.location || '—'}</td>
+                      <td className="px-3 py-3 text-sm text-gray-400 align-top" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>{formatDate(contact.created_at)}</td>
+                      <td className="px-3 py-3 text-sm align-top">
+                        <span className="inline-flex items-center gap-1">
+                          {contact.linkedin_url ? (
+                            <a href={contact.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 font-medium">View &#8599;</a>
+                          ) : <span className="text-gray-600">—</span>}
+                          {rowIsNew && <NewBadge />}
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          </>)}
+        </div>
+      )}
+
+      {assignArticle && (
+        <AssignCompanyModal
+          article={assignArticle}
+          onClose={() => setAssignArticle(null)}
+          onSaved={(newMatches) => updateNewsMatches(assignArticle.url, newMatches)}
+          companyNames={companyNames}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── CRM Page ────────────────────────────────────────────────────────────────
+
+const CRM_TABS = [
+  { key: 'madison_leads', person: 'madison', label: 'Madison' },
+  { key: 'jim_leads',     person: 'jim',     label: 'Jim' },
+  { key: 'tim_leads',     person: 'tim',     label: 'Tim' },
+  { key: 'scott_leads',   person: 'scott',   label: 'Scott' },
+]
+
+const CRM_MOMENTUM_OPTIONS = ['Drive', 'Reverse', 'Neutral', 'Park']
+const CRM_DEV_STAGE_OPTIONS = ['Prospecting', 'Active', 'Engaged', 'MSA Sent', 'MSA Signed', 'Timing Out']
+const CRM_ENGAGEMENT_OPTIONS = ['DH', 'Contract', 'DH + Contract', 'FSP', 'Other']
+
+// Columns rendered in the summary table (key → summary field).
+const CRM_SUMMARY_COLS = [
+  { key: 'total_targets', label: 'Total Targets' },
+  { key: 'prospecting',   label: 'Prospecting' },
+  { key: 'engaged',       label: 'Engaged' },
+  { key: 'active',        label: 'Active' },
+  { key: 'msa_sent',      label: 'MSA Sent' },
+  { key: 'closed',        label: 'Closed' },
+  { key: 'drive',         label: 'Drive' },
+  { key: 'neutral',       label: 'Neutral' },
+  { key: 'reverse',       label: 'Reverse' },
+  { key: 'park',          label: 'Park' },
+]
+
+function formatCrmDate(value) {
+  if (!value) return '—'
+  const d = new Date(value)
+  if (isNaN(d.getTime())) return '—'
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+}
+
+// Inline dropdown cell: shows current value, click to pick, saves immediately.
+function CrmSelectCell({ value, options, onSave }) {
+  const [open, setOpen] = useState(false)
+  const [flash, setFlash] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const btnRef = useRef(null)
+  const ddRef = useRef(null)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+
+  const openDropdown = (e) => {
+    e.stopPropagation()
+    if (saving) return
+    if (btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      setPos({ top: rect.bottom + 4, left: Math.max(4, Math.min(rect.left, window.innerWidth - 200)) })
+    }
+    setOpen(true)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const handleClick = (e) => {
+      if (ddRef.current && !ddRef.current.contains(e.target) && btnRef.current && !btnRef.current.contains(e.target)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
+
+  const choose = async (opt) => {
+    setOpen(false)
+    if (opt === (value || '')) return
+    setSaving(true)
+    try {
+      await onSave(opt)
+      setFlash(true)
+      setTimeout(() => setFlash(false), 700)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <td className={`px-3 py-2 text-sm align-top transition-colors ${flash ? 'bg-green-600/25' : ''}`}>
+      <button
+        ref={btnRef}
+        onClick={openDropdown}
+        disabled={saving}
+        className="w-full text-left min-h-[24px] rounded hover:bg-[#374151]/40 px-1.5 py-1 -mx-1 transition-colors flex items-center justify-between gap-1"
+      >
+        <span className={value ? 'text-gray-200' : 'text-gray-600 italic'}>{value || '—'}</span>
+        <svg className="w-3 h-3 opacity-40 shrink-0" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+      </button>
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={ddRef}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 1000 }}
+          className="w-44 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl py-1"
+        >
+          <button
+            onClick={() => choose('')}
+            className="w-full text-left px-3 py-1.5 text-xs text-gray-500 italic hover:bg-[#374151] transition-colors"
+          >
+            — clear —
+          </button>
+          {options.map(opt => (
+            <button
+              key={opt}
+              onClick={() => choose(opt)}
+              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-blue-600/20 hover:text-white transition-colors ${opt === value ? 'text-blue-300 font-semibold' : 'text-gray-200'}`}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </td>
+  )
+}
+
+// Inline editable text cell: click to edit, save on blur or Enter.
+function CrmTextCell({ value, onSave }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value || '')
+  const [flash, setFlash] = useState(false)
+  const inputRef = useRef(null)
+
+  useEffect(() => { if (!editing) setDraft(value || '') }, [value, editing])
+  useEffect(() => { if (editing && inputRef.current) inputRef.current.focus() }, [editing])
+
+  const commit = async () => {
+    setEditing(false)
+    const next = draft.trim()
+    if (next === (value || '')) return
+    await onSave(next)
+    setFlash(true)
+    setTimeout(() => setFlash(false), 700)
+  }
+
+  return (
+    <td className={`px-3 py-2 text-sm align-top transition-colors ${flash ? 'bg-green-600/25' : ''}`}>
+      {editing ? (
+        <input
+          ref={inputRef}
+          type="text"
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { e.preventDefault(); commit() }
+            else if (e.key === 'Escape') { setDraft(value || ''); setEditing(false) }
+          }}
+          className="w-full bg-[#111827] border border-blue-500 rounded px-1.5 py-1 text-sm text-gray-200 focus:outline-none"
+        />
+      ) : (
+        <button
+          onClick={() => setEditing(true)}
+          className="w-full text-left min-h-[24px] rounded hover:bg-[#374151]/40 px-1.5 py-1 -mx-1 transition-colors"
+        >
+          {value ? <span className="text-gray-200 whitespace-pre-wrap break-words">{value}</span> : <span className="text-gray-600 italic">— add —</span>}
+        </button>
+      )}
+    </td>
+  )
+}
+
+function CRMPage({ data, setData, onRefresh }) {
+  const [activeTab, setActiveTab] = useState('madison_leads')
+  const { filters, setFilter, clearAll, applyFilters } = useColumnFilters()
+  const { cycle, dirFor } = useSortableColumns(['date_added'])
+
+  const loading = !data
+  const accounts = useMemo(() => (data?.accounts || []), [data])
+  const summary = data?.summary || {}
+
+  const tabAccounts = useMemo(
+    () => accounts.filter(a => a.leads_page === activeTab),
+    [accounts, activeTab],
+  )
+
+  const extractors = useMemo(() => ({
+    company_name:      a => a.company_name,
+    momentum:          a => a.momentum,
+    development_stage: a => a.development_stage,
+    engagement_type:   a => a.engagement_type,
+  }), [])
+
+  const dateDir = dirFor('date_added')
+  const rows = useMemo(() => {
+    let out = applyFilters(tabAccounts, extractors)
+    if (dateDir) {
+      out = [...out].sort((a, b) => {
+        const da = new Date(a.date_added || 0).getTime() || 0
+        const db = new Date(b.date_added || 0).getTime() || 0
+        return dateDir === 'asc' ? da - db : db - da
+      })
+    }
+    return out
+  }, [tabAccounts, applyFilters, extractors, dateDir])
+
+  const saveField = useCallback(async (account, field, value) => {
+    // Optimistic local update — no full refetch.
+    setData(prev => {
+      if (!prev) return prev
+      let found = false
+      const nextAccounts = prev.accounts.map(a => {
+        if (a.leads_page === account.leads_page && a.company_name === account.company_name) {
+          found = true
+          return { ...a, [field]: value }
+        }
+        return a
+      })
+      if (!found) nextAccounts.push({ ...account, [field]: value })
+      return { ...prev, accounts: nextAccounts }
+    })
+    try {
+      const res = await fetch('/api/crm', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          company_name: account.company_name,
+          leads_page: account.leads_page,
+          field,
+          value,
+        }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch (err) {
+      console.error('[CRM] save failed', err)
+    }
+  }, [setData])
+
+  const switchTab = (key) => {
+    if (key === activeTab) return
+    clearAll()
+    setActiveTab(key)
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-bold text-white">CRM</h1>
+          <p className="text-xs text-gray-500">Pipeline across all leads pages</p>
+        </div>
+        <button
+          onClick={onRefresh}
+          className="text-xs text-gray-400 hover:text-white border border-[#374151] rounded px-3 py-1.5 transition-colors"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {/* Summary table */}
+      <div className="bg-[#0f1729] border border-[#1e2d4a] rounded-lg overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-[#1e2d4a]">
+              <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">Name</th>
+              {CRM_SUMMARY_COLS.map(col => (
+                <th key={col.key} className="px-3 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">{col.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {CRM_TABS.map(tab => {
+              const s = summary[tab.person] || {}
+              return (
+                <tr key={tab.person} className="border-b border-[#1e2d4a]/60 last:border-0 hover:bg-white/[0.02]">
+                  <td className="px-3 py-2.5 text-sm font-medium text-gray-200">{tab.label}</td>
+                  {CRM_SUMMARY_COLS.map(col => (
+                    <td key={col.key} className={`px-3 py-2.5 text-center text-sm tabular-nums ${col.key === 'total_targets' ? 'text-white font-semibold' : 'text-gray-300'}`}>
+                      {loading ? '—' : (s[col.key] || 0)}
+                    </td>
+                  ))}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex items-center gap-1 border-b border-[#1e2d4a]">
+        {CRM_TABS.map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => switchTab(tab.key)}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === tab.key
+                ? 'border-blue-500 text-blue-400'
+                : 'border-transparent text-gray-400 hover:text-white'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Account table */}
+      <div className="bg-[#0f1729] border border-[#1e2d4a] rounded-lg overflow-x-auto">
+        <table className="w-full" style={{ tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: '15%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '13%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '20%' }} />
+          </colgroup>
+          <thead>
+            <tr className="border-b border-[#1e2d4a]">
+              <ColumnFilterDropdown
+                colKey="company_name"
+                label="Company"
+                allValues={tabAccounts.map(a => a.company_name)}
+                activeValues={filters.company_name || []}
+                onApply={setFilter}
+              />
+              <th
+                onClick={() => cycle('date_added')}
+                className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap cursor-pointer hover:text-gray-200 select-none"
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  Date Added
+                  {dateDir === 'asc' && <span className="text-blue-400 text-[10px]">▲</span>}
+                  {dateDir === 'desc' && <span className="text-blue-400 text-[10px]">▼</span>}
+                </span>
+              </th>
+              <ColumnFilterDropdown
+                colKey="momentum"
+                label="Momentum"
+                allValues={tabAccounts.map(a => a.momentum)}
+                activeValues={filters.momentum || []}
+                onApply={setFilter}
+              />
+              <ColumnFilterDropdown
+                colKey="development_stage"
+                label="Development Stage"
+                allValues={tabAccounts.map(a => a.development_stage)}
+                activeValues={filters.development_stage || []}
+                onApply={setFilter}
+              />
+              <ColumnFilterDropdown
+                colKey="engagement_type"
+                label="Engagement Type"
+                allValues={tabAccounts.map(a => a.engagement_type)}
+                activeValues={filters.engagement_type || []}
+                onApply={setFilter}
+              />
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">Key Contact</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">Partner</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">Additional Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr><td colSpan={8} className="px-3 py-10 text-center text-sm text-gray-500">Loading…</td></tr>
+            )}
+            {!loading && rows.length === 0 && (
+              <tr><td colSpan={8} className="px-3 py-10 text-center text-sm text-gray-500">No accounts.</td></tr>
+            )}
+            {!loading && rows.map(account => (
+              <tr key={`${account.leads_page}|${account.company_name}`} className="border-b border-[#1e2d4a]/60 last:border-0 hover:bg-white/[0.02]">
+                <td className="px-3 py-2 text-sm text-gray-200 align-top font-medium break-words">{account.company_name}</td>
+                <td className="px-3 py-2 text-sm text-gray-400 align-top whitespace-nowrap">{formatCrmDate(account.date_added)}</td>
+                <CrmSelectCell value={account.momentum} options={CRM_MOMENTUM_OPTIONS} onSave={v => saveField(account, 'momentum', v)} />
+                <CrmSelectCell value={account.development_stage} options={CRM_DEV_STAGE_OPTIONS} onSave={v => saveField(account, 'development_stage', v)} />
+                <CrmSelectCell value={account.engagement_type} options={CRM_ENGAGEMENT_OPTIONS} onSave={v => saveField(account, 'engagement_type', v)} />
+                <CrmTextCell value={account.key_contact} onSave={v => saveField(account, 'key_contact', v)} />
+                <CrmTextCell value={account.partner} onSave={v => saveField(account, 'partner', v)} />
+                <CrmTextCell value={account.notes} onSave={v => saveField(account, 'notes', v)} />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function pastBuyerCompanyChanged(row) {
   return (row.original_company || '').trim().toLowerCase() !== (row.current_company || '').trim().toLowerCase()
 }
@@ -8678,6 +10280,8 @@ export default function Home() {
   const [madisonLeadsData, setMadisonLeadsData] = useState(null)
   const [jimLeadsData, setJimLeadsData] = useState(null)
   const [timLeadsData, setTimLeadsData] = useState(null)
+  const [scottLeadsData, setScottLeadsData] = useState(null)
+  const [crmData, setCrmData] = useState(null)
   const [companyNames, setCompanyNames] = useState(null)
 
   const fetchJson = useCallback(async (url, setter, label) => {
@@ -8707,6 +10311,8 @@ export default function Home() {
   const fetchMadisonLeads = useCallback(async () => { await fetchJson('/api/madison-leads', setMadisonLeadsData, 'madison leads'); fetchSidebarCounts() }, [fetchJson, fetchSidebarCounts])
   const fetchJimLeads = useCallback(async () => { await fetchJson('/api/jim-leads', setJimLeadsData, 'jim leads'); fetchSidebarCounts() }, [fetchJson, fetchSidebarCounts])
   const fetchTimLeads = useCallback(async () => { await fetchJson('/api/tim-leads', setTimLeadsData, 'tim leads'); fetchSidebarCounts() }, [fetchJson, fetchSidebarCounts])
+  const fetchScottLeads = useCallback(async () => { await fetchJson('/api/scott-leads', setScottLeadsData, 'scott leads'); fetchSidebarCounts() }, [fetchJson, fetchSidebarCounts])
+  const fetchCrm = useCallback(() => fetchJson('/api/crm', setCrmData, 'crm'), [fetchJson])
 
   const fetchCompanyNames = useCallback(async () => {
     try {
@@ -8734,6 +10340,8 @@ export default function Home() {
       fetchJson('/api/madison-leads', setMadisonLeadsData, 'madison leads'),
       fetchJson('/api/jim-leads', setJimLeadsData, 'jim leads'),
       fetchJson('/api/tim-leads', setTimLeadsData, 'tim leads'),
+      fetchJson('/api/scott-leads', setScottLeadsData, 'scott leads'),
+      fetchJson('/api/crm', setCrmData, 'crm'),
       fetchCompanyNames(),
     ])
   }, [fetchDashboardData, fetchSidebarCounts, fetchClinicalTrials, fetchMaFunding, fetchFunding, fetchJobs, fetchCompetitorJobs, fetchNews, fetchPastBuyers, fetchPastCandidates, fetchJson, fetchCompanyNames])
@@ -8848,6 +10456,7 @@ export default function Home() {
     madison_leads:  sidebarCounts.madison_leads || 0,
     jim_leads:      sidebarCounts.jim_leads || 0,
     tim_leads:      sidebarCounts.tim_leads || 0,
+    scott_leads:    sidebarCounts.scott_leads || 0,
     clinical_new:   sidebarCounts.clinical_new || 0,
     ma_funding_new: sidebarCounts.ma_funding_new || 0,
     funding_new:    sidebarCounts.funding_new || 0,
@@ -8891,6 +10500,8 @@ export default function Home() {
           {activePage === 'madison_leads' && <MadisonLeadsPage data={madisonLeadsData} setData={setMadisonLeadsData} onRefresh={fetchMadisonLeads} companyNames={companyNames} userInfo={userInfo} />}
           {activePage === 'jim_leads' && <JimLeadsPage data={jimLeadsData} setData={setJimLeadsData} onRefresh={fetchJimLeads} companyNames={companyNames} userInfo={userInfo} />}
           {activePage === 'tim_leads' && <TimLeadsPage data={timLeadsData} setData={setTimLeadsData} onRefresh={fetchTimLeads} companyNames={companyNames} userInfo={userInfo} />}
+          {activePage === 'scott_leads' && <ScottLeadsPage data={scottLeadsData} setData={setScottLeadsData} onRefresh={fetchScottLeads} companyNames={companyNames} userInfo={userInfo} />}
+          {activePage === 'crm' && <CRMPage data={crmData} setData={setCrmData} onRefresh={fetchCrm} />}
           {activePage === 'buyers'     && <PastBuyersPage data={pastBuyersData} />}
           {activePage === 'candidates' && <PastCandidatesPage data={pastCandidatesData} />}
           {activePage === 'settings'   && <SettingsPage />}
