@@ -75,6 +75,16 @@ export default async function handler(req, res) {
 
     const { error } = await supabase.from('tim_leads').delete().eq('company_name', company_name)
     if (error) return res.status(500).json({ error: error.message })
+
+    // Drop the matching CRM row so it doesn't linger as an orphan. Fire-and-forget:
+    // a failure here is logged but must not fail the leads delete, which already succeeded.
+    const { error: crmErr } = await supabase
+      .from('crm_accounts')
+      .delete()
+      .eq('company_name', company_name)
+      .eq('leads_page', 'tim_leads')
+    if (crmErr) console.error('[CRM] failed to delete crm_accounts row', company_name, crmErr.message)
+
     return res.status(200).json({ ok: true })
   }
 
