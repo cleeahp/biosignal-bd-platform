@@ -9256,7 +9256,23 @@ const CRM_MOMENTUM_OPTIONS = ['Drive', 'Reverse', 'Neutral', 'Park']
 const CRM_DEV_STAGE_OPTIONS = ['Prospecting', 'Active', 'Engaged', 'MSA Sent', 'MSA Signed', 'Timing Out']
 const CRM_ENGAGEMENT_OPTIONS = ['DH', 'Contract', 'DH + Contract', 'FSP', 'Other']
 
+// Row tint per momentum value. Kept at 8% so text stays legible on the dark theme.
+// Hover deepens the same tint to 12% rather than falling back to the default white
+// hover, which would otherwise override the tint and drop the row's color.
+const CRM_MOMENTUM_ROW_BG = {
+  Drive:   'bg-green-500/[0.08] hover:bg-green-500/[0.12]',
+  Neutral: 'bg-yellow-500/[0.08] hover:bg-yellow-500/[0.12]',
+  Reverse: 'bg-red-500/[0.08] hover:bg-red-500/[0.12]',
+  Park:    'bg-gray-400/[0.08] hover:bg-gray-400/[0.12]',
+}
+
+// Falls back to the standard white hover for rows with no momentum set.
+function crmMomentumRowClass(momentum) {
+  return CRM_MOMENTUM_ROW_BG[String(momentum || '').trim()] || 'hover:bg-white/[0.02]'
+}
+
 // Columns rendered in the summary table (key → summary field).
+// headerClass tints the momentum column headers; the rest use the default gray.
 const CRM_SUMMARY_COLS = [
   { key: 'total_targets', label: 'Total Targets' },
   { key: 'prospecting',   label: 'Prospecting' },
@@ -9264,10 +9280,10 @@ const CRM_SUMMARY_COLS = [
   { key: 'active',        label: 'Active' },
   { key: 'msa_sent',      label: 'MSA Sent' },
   { key: 'msa_signed',    label: 'MSA Signed' },
-  { key: 'drive',         label: 'Drive' },
-  { key: 'neutral',       label: 'Neutral' },
-  { key: 'reverse',       label: 'Reverse' },
-  { key: 'park',          label: 'Park' },
+  { key: 'drive',         label: 'Drive',   headerClass: 'text-green-400' },
+  { key: 'neutral',       label: 'Neutral', headerClass: 'text-yellow-400' },
+  { key: 'reverse',       label: 'Reverse', headerClass: 'text-red-400' },
+  { key: 'park',          label: 'Park',    headerClass: 'text-gray-400' },
 ]
 
 function formatCrmDate(value) {
@@ -9538,7 +9554,7 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
             <tr className="border-b border-[#1e2d4a]">
               <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234]">Name</th>
               {CRM_SUMMARY_COLS.map(col => (
-                <th key={col.key} className="px-3 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">{col.label}</th>
+                <th key={col.key} className={`px-3 py-2.5 text-center text-xs font-semibold uppercase tracking-wider bg-[#1a2234] whitespace-nowrap ${col.headerClass || 'text-gray-400'}`}>{col.label}</th>
               ))}
             </tr>
           </thead>
@@ -9660,7 +9676,7 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
               <tr><td colSpan={8} className="px-3 py-10 text-center text-sm text-gray-500">No accounts.</td></tr>
             )}
             {!loading && rows.map(account => (
-              <tr key={`${account.leads_page}|${account.company_name}`} className="border-b border-[#1e2d4a]/60 last:border-0 hover:bg-white/[0.02]">
+              <tr key={`${account.leads_page}|${account.company_name}`} className={`border-b border-[#1e2d4a]/60 last:border-0 ${crmMomentumRowClass(account.momentum)}`}>
                 <td className="px-3 py-2 text-sm text-gray-200 align-top font-medium break-words">{account.company_name}</td>
                 <td className="px-3 py-2 text-sm text-gray-400 align-top whitespace-nowrap">{formatCrmDate(account.date_added)}</td>
                 <CrmSelectCell value={account.momentum} options={CRM_MOMENTUM_OPTIONS} onSave={v => saveField(account, 'momentum', v)} editable={isEditable} />
