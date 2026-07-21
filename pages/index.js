@@ -9287,7 +9287,16 @@ function CrmSelectCell({ value, options, onSave, editable = true }) {
     if (saving) return
     if (btnRef.current) {
       const rect = btnRef.current.getBoundingClientRect()
-      setPos({ top: rect.bottom + 4, left: Math.max(4, Math.min(rect.left, window.innerWidth - 200)) })
+      const left = Math.max(4, Math.min(rect.left, window.innerWidth - 200))
+      const spaceBelow = window.innerHeight - rect.bottom
+      const spaceAbove = rect.top
+      // Rows near the bottom of the table don't have room underneath — anchor the
+      // dropdown to the top of the trigger instead so it grows upward on screen.
+      if (spaceBelow < 200 && spaceAbove > spaceBelow) {
+        setPos({ bottom: window.innerHeight - rect.top + 4, left, maxHeight: Math.max(120, spaceAbove - 12) })
+      } else {
+        setPos({ top: rect.bottom + 4, left, maxHeight: Math.max(120, spaceBelow - 12) })
+      }
     }
     setOpen(true)
   }
@@ -9339,7 +9348,7 @@ function CrmSelectCell({ value, options, onSave, editable = true }) {
       {open && typeof document !== 'undefined' && createPortal(
         <div
           ref={ddRef}
-          style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 1000 }}
+          style={{ position: 'fixed', top: pos.top, bottom: pos.bottom, left: pos.left, maxHeight: pos.maxHeight, overflowY: 'auto', zIndex: 1000 }}
           className="w-44 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl py-1"
         >
           <button
