@@ -32,6 +32,14 @@ const MOMENTUM_KEYS = {
   'Park':    'park',
 }
 
+// engagement_type is a text[] column and can hold several values at once.
+// Accepts an array, tolerates a legacy single string, and clears to NULL when empty.
+function normalizeEngagementType(value) {
+  const arr = Array.isArray(value) ? value : (value === null || value === undefined || value === '' ? [] : [value])
+  const cleaned = arr.map(v => String(v).trim()).filter(Boolean)
+  return cleaned.length > 0 ? cleaned : null
+}
+
 async function fetchAll(table, select) {
   const rows = []
   let offset = 0
@@ -67,6 +75,8 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'invalid field' })
     }
 
+    const writeValue = field === 'engagement_type' ? normalizeEngagementType(value) : value
+
     const { data: existing, error: findErr } = await supabase
       .from('crm_accounts')
       .select('id')
@@ -78,13 +88,13 @@ export default async function handler(req, res) {
     if (existing) {
       const { error } = await supabase
         .from('crm_accounts')
-        .update({ [field]: value, updated_at: new Date().toISOString() })
+        .update({ [field]: writeValue, updated_at: new Date().toISOString() })
         .eq('id', existing.id)
       if (error) return res.status(500).json({ error: error.message })
     } else {
       const { error } = await supabase
         .from('crm_accounts')
-        .insert({ company_name, leads_page, [field]: value })
+        .insert({ company_name, leads_page, [field]: writeValue })
       if (error) return res.status(500).json({ error: error.message })
     }
     return res.status(200).json({ ok: true })

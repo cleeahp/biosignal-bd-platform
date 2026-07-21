@@ -171,8 +171,14 @@ function useColumnFilters() {
       for (const [colKey, allowedValues] of Object.entries(filters)) {
         const extractor = extractors[colKey]
         if (!extractor) continue
-        const cellValue = String(extractor(row) || '').toLowerCase()
-        const match = allowedValues.some(v => cellValue === v.toLowerCase())
+        // Array-valued columns (e.g. CRM engagement_type, a text[]) match when ANY
+        // of the row's values is selected; scalars keep the original behavior.
+        const raw = extractor(row)
+        const cellValues = Array.isArray(raw) ? raw : [raw]
+        const match = cellValues.some(cv => {
+          const cellValue = String(cv || '').toLowerCase()
+          return cellValue !== '' && allowedValues.some(v => cellValue === v.toLowerCase())
+        })
         if (!match) return false
       }
       return true
@@ -9254,7 +9260,8 @@ const CRM_STICKY_TH = 'sticky top-14 z-10 shadow-[inset_0_-1px_0_#1e2d4a]'
 
 const CRM_MOMENTUM_OPTIONS = ['Drive', 'Reverse', 'Neutral', 'Park']
 const CRM_DEV_STAGE_OPTIONS = ['Prospecting', 'Active', 'Engaged', 'MSA Sent', 'MSA Signed', 'Timing Out']
-const CRM_ENGAGEMENT_OPTIONS = ['DH', 'Contract', 'DH + Contract', 'FSP', 'Other']
+// Multi-select: "DH + Contract" is now expressed as ['DH', 'Contract'].
+const CRM_ENGAGEMENT_OPTIONS = ['DH', 'Contract', 'FSP', 'Other']
 
 // Row tint per momentum value. Kept at 8% so text stays legible on the dark theme.
 // Hover deepens the same tint to 12% rather than falling back to the default white
@@ -9387,6 +9394,116 @@ function CrmSelectCell({ value, options, onSave, editable = true }) {
               {opt}
             </button>
           ))}
+        </div>,
+        document.body,
+      )}
+    </td>
+  )
+}
+
+// Inline multi-select cell (checkbox list): each toggle saves the whole array
+// immediately and leaves the dropdown open so several options can be picked.
+// Backed by a text[] column, so `value` is an array (a bare string is tolerated).
+function CrmMultiSelectCell({ value, options, onSave, editable = true }) {
+  const [open, setOpen] = useState(false)
+  const [flash, setFlash] = useState(false)
+  const btnRef = useRef(null)
+  const ddRef = useRef(null)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+
+  const values = useMemo(
+    () => (Array.isArray(value) ? value.filter(Boolean) : (value ? [value] : [])),
+    [value],
+  )
+  const label = values.join(', ')
+
+  const openDropdown = (e) => {
+    e.stopPropagation()
+    if (btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      const left = Math.max(4, Math.min(rect.left, window.innerWidth - 200))
+      const spaceBelow = window.innerHeight - rect.bottom
+      const spaceAbove = rect.top
+      // Same viewport flip as CrmSelectCell: open upward when the row sits near
+      // the bottom of the table and there's no room underneath.
+      if (spaceBelow < 200 && spaceAbove > spaceBelow) {
+        setPos({ bottom: window.innerHeight - rect.top + 4, left, maxHeight: Math.max(120, spaceAbove - 12) })
+      } else {
+        setPos({ top: rect.bottom + 4, left, maxHeight: Math.max(120, spaceBelow - 12) })
+      }
+    }
+    setOpen(true)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const handleClick = (e) => {
+      if (ddRef.current && !ddRef.current.contains(e.target) && btnRef.current && !btnRef.current.contains(e.target)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
+
+  const save = async (next) => {
+    await onSave(next)
+    setFlash(true)
+    setTimeout(() => setFlash(false), 700)
+  }
+
+  const toggle = (opt) => {
+    const picked = new Set(values)
+    picked.has(opt) ? picked.delete(opt) : picked.add(opt)
+    // Emit in canonical option order so the display stays stable across edits.
+    save(options.filter(o => picked.has(o)))
+  }
+
+  // Read-only: render the current values as plain text (not clickable).
+  if (!editable) {
+    return (
+      <td className="px-3 py-2 text-sm align-top">
+        <span className={values.length ? 'text-gray-200' : 'text-gray-600'}>{label || '—'}</span>
+      </td>
+    )
+  }
+
+  return (
+    <td className={`px-3 py-2 text-sm align-top transition-colors ${flash ? 'bg-green-600/25' : ''}`}>
+      <button
+        ref={btnRef}
+        onClick={openDropdown}
+        className="w-full text-left min-h-[24px] rounded hover:bg-[#374151]/40 px-1.5 py-1 -mx-1 transition-colors flex items-center justify-between gap-1"
+      >
+        <span className={values.length ? 'text-gray-200 break-words' : 'text-gray-600 italic'}>{label || '—'}</span>
+        <svg className="w-3 h-3 opacity-40 shrink-0" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+      </button>
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={ddRef}
+          style={{ position: 'fixed', top: pos.top, bottom: pos.bottom, left: pos.left, maxHeight: pos.maxHeight, overflowY: 'auto', zIndex: 1000 }}
+          className="w-44 bg-[#1f2937] border border-[#374151] rounded-lg shadow-2xl py-1"
+        >
+          {options.map(opt => (
+            <label
+              key={opt}
+              className="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-200 hover:bg-blue-600/20 hover:text-white transition-colors cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={values.includes(opt)}
+                onChange={() => toggle(opt)}
+                className="rounded border-gray-600 bg-[#111827] text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+              />
+              <span>{opt}</span>
+            </label>
+          ))}
+          <button
+            onClick={() => save([])}
+            className="w-full text-left px-3 py-1.5 text-xs text-gray-500 italic hover:bg-[#374151] transition-colors border-t border-[#374151] mt-1"
+          >
+            — clear —
+          </button>
         </div>,
         document.body,
       )}
@@ -9658,7 +9775,7 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
               <ColumnFilterDropdown
                 colKey="engagement_type"
                 label="Engagement Type"
-                allValues={tabAccounts.map(a => a.engagement_type)}
+                allValues={tabAccounts.flatMap(a => (Array.isArray(a.engagement_type) ? a.engagement_type : (a.engagement_type ? [a.engagement_type] : [])))}
                 activeValues={filters.engagement_type || []}
                 onApply={setFilter}
                 className={CRM_STICKY_TH}
@@ -9681,7 +9798,7 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
                 <td className="px-3 py-2 text-sm text-gray-400 align-top whitespace-nowrap">{formatCrmDate(account.date_added)}</td>
                 <CrmSelectCell value={account.momentum} options={CRM_MOMENTUM_OPTIONS} onSave={v => saveField(account, 'momentum', v)} editable={isEditable} />
                 <CrmSelectCell value={account.development_stage} options={CRM_DEV_STAGE_OPTIONS} onSave={v => saveField(account, 'development_stage', v)} editable={isEditable} />
-                <CrmSelectCell value={account.engagement_type} options={CRM_ENGAGEMENT_OPTIONS} onSave={v => saveField(account, 'engagement_type', v)} editable={isEditable} />
+                <CrmMultiSelectCell value={account.engagement_type} options={CRM_ENGAGEMENT_OPTIONS} onSave={v => saveField(account, 'engagement_type', v)} editable={isEditable} />
                 <CrmTextCell value={account.key_contact} onSave={v => saveField(account, 'key_contact', v)} editable={isEditable} />
                 <CrmTextCell value={account.partner} onSave={v => saveField(account, 'partner', v)} editable={isEditable} />
                 <CrmTextCell value={account.notes} onSave={v => saveField(account, 'notes', v)} editable={isEditable} />
