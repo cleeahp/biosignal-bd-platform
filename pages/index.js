@@ -9247,6 +9247,11 @@ const CRM_TABS = [
   { key: 'scott_leads',   person: 'scott',   label: 'Scott' },
 ]
 
+// Header cells pin below the (56px tall, z-30) sticky TopBar as the page scrolls.
+// Each th already carries a solid bg-[#1a2234]; the inset shadow stands in for the
+// row's bottom border, which border-collapse won't paint on a stuck cell.
+const CRM_STICKY_TH = 'sticky top-14 z-10 shadow-[inset_0_-1px_0_#1e2d4a]'
+
 const CRM_MOMENTUM_OPTIONS = ['Drive', 'Reverse', 'Neutral', 'Park']
 const CRM_DEV_STAGE_OPTIONS = ['Prospecting', 'Active', 'Engaged', 'MSA Sent', 'MSA Signed', 'Timing Out']
 const CRM_ENGAGEMENT_OPTIONS = ['DH', 'Contract', 'DH + Contract', 'FSP', 'Other']
@@ -9432,7 +9437,7 @@ function CrmTextCell({ value, onSave, editable = true }) {
 function CRMPage({ data, setData, onRefresh, userInfo }) {
   const [activeTab, setActiveTab] = useState('madison_leads')
   const { filters, setFilter, clearAll, applyFilters } = useColumnFilters()
-  const { cycle, dirFor } = useSortableColumns(['date_added'])
+  const { cycle, dirFor } = useSortableColumns(['date_added', 'company_name'])
 
   // Admins can edit every tab; a regular user can edit only their own leads page.
   // activeTab holds the leads-page key (e.g. 'madison_leads'), matching userInfo.leadsPage.
@@ -9455,9 +9460,14 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
   }), [])
 
   const dateDir = dirFor('date_added')
+  const companyDir = dirFor('company_name')
   const rows = useMemo(() => {
     let out = applyFilters(tabAccounts, extractors)
-    if (dateDir) {
+    // Only one column can be active at a time; with neither set we keep the
+    // default (date_added) ordering the API returns.
+    if (companyDir) {
+      out = [...out].sort((a, b) => compareForSort(a.company_name, b.company_name, companyDir))
+    } else if (dateDir) {
       out = [...out].sort((a, b) => {
         const da = new Date(a.date_added || 0).getTime() || 0
         const db = new Date(b.date_added || 0).getTime() || 0
@@ -9465,7 +9475,7 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
       })
     }
     return out
-  }, [tabAccounts, applyFilters, extractors, dateDir])
+  }, [tabAccounts, applyFilters, extractors, dateDir, companyDir])
 
   const saveField = useCallback(async (account, field, value) => {
     // Optimistic local update — no full refetch.
@@ -9575,8 +9585,11 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
         )}
       </div>
 
-      {/* Account table */}
-      <div className="bg-[#0f1729] border border-[#1e2d4a] rounded-lg overflow-x-auto">
+      {/* Account table.
+          No overflow on the wrapper: an overflow container would become the
+          scrollport for the sticky header and stop it pinning to the page
+          scroll. The fixed layout + percentage colgroup never overflows anyway. */}
+      <div className="bg-[#0f1729] border border-[#1e2d4a] rounded-lg">
         <table className="w-full" style={{ tableLayout: 'fixed' }}>
           <colgroup>
             <col style={{ width: '15%' }} />
@@ -9596,10 +9609,13 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
                 allValues={tabAccounts.map(a => a.company_name)}
                 activeValues={filters.company_name || []}
                 onApply={setFilter}
+                className={CRM_STICKY_TH}
+                sortDir={companyDir}
+                onCycleSort={cycle}
               />
               <th
                 onClick={() => cycle('date_added')}
-                className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap cursor-pointer hover:text-gray-200 select-none"
+                className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap cursor-pointer hover:text-gray-200 select-none ${CRM_STICKY_TH}`}
               >
                 <span className="inline-flex items-center gap-1.5">
                   Date Added
@@ -9613,6 +9629,7 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
                 allValues={tabAccounts.map(a => a.momentum)}
                 activeValues={filters.momentum || []}
                 onApply={setFilter}
+                className={CRM_STICKY_TH}
               />
               <ColumnFilterDropdown
                 colKey="development_stage"
@@ -9620,6 +9637,7 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
                 allValues={tabAccounts.map(a => a.development_stage)}
                 activeValues={filters.development_stage || []}
                 onApply={setFilter}
+                className={CRM_STICKY_TH}
               />
               <ColumnFilterDropdown
                 colKey="engagement_type"
@@ -9627,10 +9645,11 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
                 allValues={tabAccounts.map(a => a.engagement_type)}
                 activeValues={filters.engagement_type || []}
                 onApply={setFilter}
+                className={CRM_STICKY_TH}
               />
-              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">Key Contact</th>
-              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">Partner</th>
-              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap">Additional Notes</th>
+              <th className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap ${CRM_STICKY_TH}`}>Key Contact</th>
+              <th className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap ${CRM_STICKY_TH}`}>Partner</th>
+              <th className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap ${CRM_STICKY_TH}`}>Additional Notes</th>
             </tr>
           </thead>
           <tbody>
