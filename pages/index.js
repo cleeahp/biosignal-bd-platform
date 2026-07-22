@@ -1245,6 +1245,13 @@ function TdTruncate({ children, className = '', title }) {
   )
 }
 
+// Case-insensitive A–Z sort of {name} company objects (returns a new array).
+function sortCompaniesByName(companies) {
+  return [...(companies || [])].sort((a, b) =>
+    String(a?.name || '').localeCompare(String(b?.name || ''), undefined, { sensitivity: 'base' }),
+  )
+}
+
 function EmptyState({ message }) {
   return (
     <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -4443,8 +4450,9 @@ function NewsPage({ data, setData, companyNames }) {
 // ─── Madison Leads Page ──────────────────────────────────────────────────────
 
 function MadisonLeadsPage(props) {
-  const { setData, onRefresh, companyNames, userInfo } = props
+  const { setData, onRefresh, onCrmRefresh, companyNames, userInfo } = props
   const readOnly = userInfo?.role === 'user' && userInfo?.leadsPage !== 'madison_leads'
+  const leadsPageKey = 'madison_leads'
   const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], hiringManagers: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0, hiringManagers: 0 }, cutoffIso: null }
   const loading = !props.data
   const [accountView, setAccountView] = useState('key')
@@ -4484,6 +4492,11 @@ function MadisonLeadsPage(props) {
   const keyCompanies = useMemo(() => trackedCompanies.filter(c => c.is_key_account), [trackedCompanies])
   const keyNameSet = useMemo(() => new Set(keyCompanies.map(c => (c.name || '').toLowerCase())), [keyCompanies])
   const trackedNameSet = useMemo(() => new Set(trackedCompanies.map(c => (c.name || '').toLowerCase())), [trackedCompanies])
+
+  // Dropdown menus list companies A–Z (case-insensitive); the underlying
+  // trackedCompanies order (most recently added first) is left alone.
+  const sortedTracked = useMemo(() => sortCompaniesByName(trackedCompanies), [trackedCompanies])
+  const sortedKeyCompanies = useMemo(() => sortCompaniesByName(keyCompanies), [keyCompanies])
 
   const matchesView = useCallback((name) => {
     if (accountView === 'all') return true
@@ -5052,7 +5065,7 @@ function MadisonLeadsPage(props) {
               <div className="max-h-72 overflow-y-auto">
                 {trackedCompanies.length === 0 ? (
                   <p className="px-3 py-4 text-sm text-gray-500 italic">No companies tracked yet.</p>
-                ) : trackedCompanies.map(c => (
+                ) : sortedTracked.map(c => (
                   <div key={c.name} className="flex items-center gap-2 px-3 py-2 border-b border-[#374151] last:border-b-0 hover:bg-[#263045] transition-colors">
                     <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
                       {c.is_key_account && <span className="text-yellow-400 mr-1" title="Key account">&#9733;</span>}
@@ -5066,6 +5079,14 @@ function MadisonLeadsPage(props) {
                       >
                         &#9733; Key
                       </button>
+                    )}
+                    {!readOnly && (
+                      <CrmPushButton
+                        companyName={c.name}
+                        leadsPage={leadsPageKey}
+                        dateAdded={c.added_at}
+                        onPushed={onCrmRefresh}
+                      />
                     )}
                     {!readOnly && (
                       <button
@@ -5132,11 +5153,19 @@ function MadisonLeadsPage(props) {
               <div className="max-h-72 overflow-y-auto">
                 {keyCompanies.length === 0 ? (
                   <p className="px-3 py-4 text-sm text-gray-500 italic">No key accounts yet.</p>
-                ) : keyCompanies.map(c => (
+                ) : sortedKeyCompanies.map(c => (
                   <div key={c.name} className="flex items-center gap-2 px-3 py-2 border-b border-[#374151] last:border-b-0 hover:bg-[#263045] transition-colors">
                     <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
                       <span className="text-yellow-400 mr-1">&#9733;</span>{c.name}
                     </span>
+                    {!readOnly && (
+                      <CrmPushButton
+                        companyName={c.name}
+                        leadsPage={leadsPageKey}
+                        dateAdded={c.added_at}
+                        onPushed={onCrmRefresh}
+                      />
+                    )}
                     {!readOnly && (
                       <button
                         onClick={() => setKeyAccount(c.name, false)}
@@ -5644,8 +5673,9 @@ function MadisonLeadsPage(props) {
 // ─── Jim Leads Page ──────────────────────────────────────────────────────────
 
 function JimLeadsPage(props) {
-  const { setData, onRefresh, companyNames, userInfo } = props
+  const { setData, onRefresh, onCrmRefresh, companyNames, userInfo } = props
   const readOnly = userInfo?.role === 'user' && userInfo?.leadsPage !== 'jim_leads'
+  const leadsPageKey = 'jim_leads'
   const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], hiringManagers: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0, hiringManagers: 0 }, cutoffIso: null }
   const loading = !props.data
   const [accountView, setAccountView] = useState('key')
@@ -5685,6 +5715,11 @@ function JimLeadsPage(props) {
   const keyCompanies = useMemo(() => trackedCompanies.filter(c => c.is_key_account), [trackedCompanies])
   const keyNameSet = useMemo(() => new Set(keyCompanies.map(c => (c.name || '').toLowerCase())), [keyCompanies])
   const trackedNameSet = useMemo(() => new Set(trackedCompanies.map(c => (c.name || '').toLowerCase())), [trackedCompanies])
+
+  // Dropdown menus list companies A–Z (case-insensitive); the underlying
+  // trackedCompanies order (most recently added first) is left alone.
+  const sortedTracked = useMemo(() => sortCompaniesByName(trackedCompanies), [trackedCompanies])
+  const sortedKeyCompanies = useMemo(() => sortCompaniesByName(keyCompanies), [keyCompanies])
 
   const matchesView = useCallback((name) => {
     if (accountView === 'all') return true
@@ -6253,7 +6288,7 @@ function JimLeadsPage(props) {
               <div className="max-h-72 overflow-y-auto">
                 {trackedCompanies.length === 0 ? (
                   <p className="px-3 py-4 text-sm text-gray-500 italic">No companies tracked yet.</p>
-                ) : trackedCompanies.map(c => (
+                ) : sortedTracked.map(c => (
                   <div key={c.name} className="flex items-center gap-2 px-3 py-2 border-b border-[#374151] last:border-b-0 hover:bg-[#263045] transition-colors">
                     <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
                       {c.is_key_account && <span className="text-yellow-400 mr-1" title="Key account">&#9733;</span>}
@@ -6267,6 +6302,14 @@ function JimLeadsPage(props) {
                       >
                         &#9733; Key
                       </button>
+                    )}
+                    {!readOnly && (
+                      <CrmPushButton
+                        companyName={c.name}
+                        leadsPage={leadsPageKey}
+                        dateAdded={c.added_at}
+                        onPushed={onCrmRefresh}
+                      />
                     )}
                     {!readOnly && (
                       <button
@@ -6333,11 +6376,19 @@ function JimLeadsPage(props) {
               <div className="max-h-72 overflow-y-auto">
                 {keyCompanies.length === 0 ? (
                   <p className="px-3 py-4 text-sm text-gray-500 italic">No key accounts yet.</p>
-                ) : keyCompanies.map(c => (
+                ) : sortedKeyCompanies.map(c => (
                   <div key={c.name} className="flex items-center gap-2 px-3 py-2 border-b border-[#374151] last:border-b-0 hover:bg-[#263045] transition-colors">
                     <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
                       <span className="text-yellow-400 mr-1">&#9733;</span>{c.name}
                     </span>
+                    {!readOnly && (
+                      <CrmPushButton
+                        companyName={c.name}
+                        leadsPage={leadsPageKey}
+                        dateAdded={c.added_at}
+                        onPushed={onCrmRefresh}
+                      />
+                    )}
                     {!readOnly && (
                       <button
                         onClick={() => setKeyAccount(c.name, false)}
@@ -6845,8 +6896,9 @@ function JimLeadsPage(props) {
 // ─── Tim Leads Page ──────────────────────────────────────────────────────────
 
 function TimLeadsPage(props) {
-  const { setData, onRefresh, companyNames, userInfo } = props
+  const { setData, onRefresh, onCrmRefresh, companyNames, userInfo } = props
   const readOnly = userInfo?.role === 'user' && userInfo?.leadsPage !== 'tim_leads'
+  const leadsPageKey = 'tim_leads'
   const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], hiringManagers: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0, hiringManagers: 0 }, cutoffIso: null }
   const loading = !props.data
   const [accountView, setAccountView] = useState('key')
@@ -6886,6 +6938,11 @@ function TimLeadsPage(props) {
   const keyCompanies = useMemo(() => trackedCompanies.filter(c => c.is_key_account), [trackedCompanies])
   const keyNameSet = useMemo(() => new Set(keyCompanies.map(c => (c.name || '').toLowerCase())), [keyCompanies])
   const trackedNameSet = useMemo(() => new Set(trackedCompanies.map(c => (c.name || '').toLowerCase())), [trackedCompanies])
+
+  // Dropdown menus list companies A–Z (case-insensitive); the underlying
+  // trackedCompanies order (most recently added first) is left alone.
+  const sortedTracked = useMemo(() => sortCompaniesByName(trackedCompanies), [trackedCompanies])
+  const sortedKeyCompanies = useMemo(() => sortCompaniesByName(keyCompanies), [keyCompanies])
 
   const matchesView = useCallback((name) => {
     if (accountView === 'all') return true
@@ -7454,7 +7511,7 @@ function TimLeadsPage(props) {
               <div className="max-h-72 overflow-y-auto">
                 {trackedCompanies.length === 0 ? (
                   <p className="px-3 py-4 text-sm text-gray-500 italic">No companies tracked yet.</p>
-                ) : trackedCompanies.map(c => (
+                ) : sortedTracked.map(c => (
                   <div key={c.name} className="flex items-center gap-2 px-3 py-2 border-b border-[#374151] last:border-b-0 hover:bg-[#263045] transition-colors">
                     <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
                       {c.is_key_account && <span className="text-yellow-400 mr-1" title="Key account">&#9733;</span>}
@@ -7468,6 +7525,14 @@ function TimLeadsPage(props) {
                       >
                         &#9733; Key
                       </button>
+                    )}
+                    {!readOnly && (
+                      <CrmPushButton
+                        companyName={c.name}
+                        leadsPage={leadsPageKey}
+                        dateAdded={c.added_at}
+                        onPushed={onCrmRefresh}
+                      />
                     )}
                     {!readOnly && (
                       <button
@@ -7534,11 +7599,19 @@ function TimLeadsPage(props) {
               <div className="max-h-72 overflow-y-auto">
                 {keyCompanies.length === 0 ? (
                   <p className="px-3 py-4 text-sm text-gray-500 italic">No key accounts yet.</p>
-                ) : keyCompanies.map(c => (
+                ) : sortedKeyCompanies.map(c => (
                   <div key={c.name} className="flex items-center gap-2 px-3 py-2 border-b border-[#374151] last:border-b-0 hover:bg-[#263045] transition-colors">
                     <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
                       <span className="text-yellow-400 mr-1">&#9733;</span>{c.name}
                     </span>
+                    {!readOnly && (
+                      <CrmPushButton
+                        companyName={c.name}
+                        leadsPage={leadsPageKey}
+                        dateAdded={c.added_at}
+                        onPushed={onCrmRefresh}
+                      />
+                    )}
                     {!readOnly && (
                       <button
                         onClick={() => setKeyAccount(c.name, false)}
@@ -8046,8 +8119,9 @@ function TimLeadsPage(props) {
 // ─── Scott Leads Page ──────────────────────────────────────────────────────────
 
 function ScottLeadsPage(props) {
-  const { setData, onRefresh, companyNames, userInfo } = props
+  const { setData, onRefresh, onCrmRefresh, companyNames, userInfo } = props
   const readOnly = userInfo?.role === 'user' && userInfo?.leadsPage !== 'scott_leads'
+  const leadsPageKey = 'scott_leads'
   const data = props.data || { trackedCompanies: [], clinicalTrials: [], filings: [], fundingProjects: [], newsArticles: [], clayJobs: [], hiringManagers: [], pastClients: [], newCounts: { clinicalTrials: 0, filings: 0, fundingProjects: 0, jobs: 0, news: 0, hiringManagers: 0 }, cutoffIso: null }
   const loading = !props.data
   const [accountView, setAccountView] = useState('key')
@@ -8087,6 +8161,11 @@ function ScottLeadsPage(props) {
   const keyCompanies = useMemo(() => trackedCompanies.filter(c => c.is_key_account), [trackedCompanies])
   const keyNameSet = useMemo(() => new Set(keyCompanies.map(c => (c.name || '').toLowerCase())), [keyCompanies])
   const trackedNameSet = useMemo(() => new Set(trackedCompanies.map(c => (c.name || '').toLowerCase())), [trackedCompanies])
+
+  // Dropdown menus list companies A–Z (case-insensitive); the underlying
+  // trackedCompanies order (most recently added first) is left alone.
+  const sortedTracked = useMemo(() => sortCompaniesByName(trackedCompanies), [trackedCompanies])
+  const sortedKeyCompanies = useMemo(() => sortCompaniesByName(keyCompanies), [keyCompanies])
 
   const matchesView = useCallback((name) => {
     if (accountView === 'all') return true
@@ -8655,7 +8734,7 @@ function ScottLeadsPage(props) {
               <div className="max-h-72 overflow-y-auto">
                 {trackedCompanies.length === 0 ? (
                   <p className="px-3 py-4 text-sm text-gray-500 italic">No companies tracked yet.</p>
-                ) : trackedCompanies.map(c => (
+                ) : sortedTracked.map(c => (
                   <div key={c.name} className="flex items-center gap-2 px-3 py-2 border-b border-[#374151] last:border-b-0 hover:bg-[#263045] transition-colors">
                     <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
                       {c.is_key_account && <span className="text-yellow-400 mr-1" title="Key account">&#9733;</span>}
@@ -8669,6 +8748,14 @@ function ScottLeadsPage(props) {
                       >
                         &#9733; Key
                       </button>
+                    )}
+                    {!readOnly && (
+                      <CrmPushButton
+                        companyName={c.name}
+                        leadsPage={leadsPageKey}
+                        dateAdded={c.added_at}
+                        onPushed={onCrmRefresh}
+                      />
                     )}
                     {!readOnly && (
                       <button
@@ -8735,11 +8822,19 @@ function ScottLeadsPage(props) {
               <div className="max-h-72 overflow-y-auto">
                 {keyCompanies.length === 0 ? (
                   <p className="px-3 py-4 text-sm text-gray-500 italic">No key accounts yet.</p>
-                ) : keyCompanies.map(c => (
+                ) : sortedKeyCompanies.map(c => (
                   <div key={c.name} className="flex items-center gap-2 px-3 py-2 border-b border-[#374151] last:border-b-0 hover:bg-[#263045] transition-colors">
                     <span className="flex-1 text-sm text-gray-100 truncate" title={c.name}>
                       <span className="text-yellow-400 mr-1">&#9733;</span>{c.name}
                     </span>
+                    {!readOnly && (
+                      <CrmPushButton
+                        companyName={c.name}
+                        leadsPage={leadsPageKey}
+                        dateAdded={c.added_at}
+                        onPushed={onCrmRefresh}
+                      />
+                    )}
                     {!readOnly && (
                       <button
                         onClick={() => setKeyAccount(c.name, false)}
@@ -9300,6 +9395,95 @@ function formatCrmDate(value) {
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
+// Leads-page dropdown button: pushes one company into the CRM on click and
+// flashes the outcome for a moment before returning to its idle label.
+function CrmPushButton({ companyName, leadsPage, dateAdded, onPushed }) {
+  const [status, setStatus] = useState(null) // 'added' | 'exists' | 'error'
+  const timerRef = useRef(null)
+
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+
+  const push = async () => {
+    if (status) return
+    let next = 'error'
+    try {
+      const res = await fetch('/api/crm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          company_name: companyName,
+          leads_page: leadsPage,
+          date_added: dateAdded || null,
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (json?.inserted) next = 'added'
+      else if (json?.error === 'already_exists') next = 'exists'
+    } catch (err) {
+      console.error('[CRM] push failed', err)
+    }
+    setStatus(next)
+    if (next === 'added' && onPushed) onPushed()
+    timerRef.current = setTimeout(() => setStatus(null), 1500)
+  }
+
+  const label = status === 'added' ? '✓ Added'
+    : status === 'exists' ? 'Already in CRM'
+    : status === 'error' ? '✕ Failed'
+    : '→ CRM'
+  const tone = status === 'added' ? 'border-green-500/40 text-green-300'
+    : status === 'exists' ? 'border-gray-500/40 text-gray-400'
+    : status === 'error' ? 'border-red-500/40 text-red-300'
+    : 'border-blue-500/40 text-blue-300 hover:bg-blue-500/20'
+
+  return (
+    <button
+      onClick={push}
+      disabled={!!status}
+      className={`px-2 py-1 text-xs font-semibold rounded border whitespace-nowrap transition-colors ${tone}`}
+      title={`Push ${companyName} to the CRM`}
+    >
+      {label}
+    </button>
+  )
+}
+
+// CRM table remove button. First click arms the confirmation, second click
+// (within 3s) deletes the crm_accounts row — the leads-page entry is untouched.
+function CrmRemoveButton({ companyName, onConfirm, busy }) {
+  const [armed, setArmed] = useState(false)
+  const timerRef = useRef(null)
+
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+
+  const handleClick = () => {
+    if (busy) return
+    if (!armed) {
+      setArmed(true)
+      timerRef.current = setTimeout(() => setArmed(false), 3000)
+      return
+    }
+    if (timerRef.current) clearTimeout(timerRef.current)
+    setArmed(false)
+    onConfirm()
+  }
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={busy}
+      className={`px-1.5 py-0.5 text-xs font-semibold rounded border transition-colors ${
+        busy ? 'border-green-500/40 text-green-300'
+          : armed ? 'border-red-500 text-red-200 bg-red-500/20'
+          : 'border-transparent text-gray-600 hover:text-red-300 hover:border-red-500/40'
+      }`}
+      title={busy ? 'Removing…' : armed ? `Click again to remove ${companyName} from the CRM` : `Remove ${companyName} from the CRM`}
+    >
+      {busy ? '✓' : armed ? 'Sure?' : '✕'}
+    </button>
+  )
+}
+
 // Inline dropdown cell: shows current value, click to pick, saves immediately.
 // When editable is false, renders the current value as plain text.
 function CrmSelectCell({ value, options, onSave, editable = true }) {
@@ -9569,6 +9753,7 @@ function CrmTextCell({ value, onSave, editable = true }) {
 
 function CRMPage({ data, setData, onRefresh, userInfo }) {
   const [activeTab, setActiveTab] = useState('madison_leads')
+  const [removing, setRemoving] = useState(() => new Set())
   const { filters, setFilter, clearAll, applyFilters } = useColumnFilters()
   const { cycle, dirFor } = useSortableColumns(['date_added', 'company_name'])
 
@@ -9641,6 +9826,35 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
       console.error('[CRM] save failed', err)
     }
   }, [setData])
+
+  // Drop the crm_accounts row only — the company stays on its leads page.
+  const removeAccount = useCallback(async (account) => {
+    const rowKey = `${account.leads_page}|${account.company_name}`
+    setRemoving(prev => new Set(prev).add(rowKey))
+    try {
+      const res = await fetch('/api/crm', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          company_name: account.company_name,
+          leads_page: account.leads_page,
+        }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setData(prev => prev ? {
+        ...prev,
+        accounts: prev.accounts.filter(
+          a => !(a.leads_page === account.leads_page && a.company_name === account.company_name),
+        ),
+      } : prev)
+      // Resync the summary counts at the top of the page.
+      if (onRefresh) onRefresh()
+    } catch (err) {
+      console.error('[CRM] delete failed', err)
+    } finally {
+      setRemoving(prev => { const next = new Set(prev); next.delete(rowKey); return next })
+    }
+  }, [setData, onRefresh])
 
   const switchTab = (key) => {
     if (key === activeTab) return
@@ -9732,7 +9946,8 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
             <col style={{ width: '10%' }} />
             <col style={{ width: '13%' }} />
             <col style={{ width: '10%' }} />
-            <col style={{ width: '20%' }} />
+            <col style={{ width: '16%' }} />
+            <col style={{ width: '4%' }} />
           </colgroup>
           <thead>
             <tr className="border-b border-[#1e2d4a]">
@@ -9783,17 +9998,18 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
               <th className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap ${CRM_STICKY_TH}`}>Key Contact</th>
               <th className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap ${CRM_STICKY_TH}`}>Partner</th>
               <th className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap ${CRM_STICKY_TH}`}>Additional Notes</th>
+              <th className={`px-1 py-3 bg-[#1a2234] ${CRM_STICKY_TH}`}><span className="sr-only">Remove</span></th>
             </tr>
           </thead>
           <tbody>
             {loading && (
-              <tr><td colSpan={8} className="px-3 py-10 text-center text-sm text-gray-500">Loading…</td></tr>
+              <tr><td colSpan={9} className="px-3 py-10 text-center text-sm text-gray-500">Loading…</td></tr>
             )}
             {!loading && rows.length === 0 && (
-              <tr><td colSpan={8} className="px-3 py-10 text-center text-sm text-gray-500">No accounts.</td></tr>
+              <tr><td colSpan={9} className="px-3 py-10 text-center text-sm text-gray-500">No accounts.</td></tr>
             )}
             {!loading && rows.map(account => (
-              <tr key={`${account.leads_page}|${account.company_name}`} className={`border-b border-[#1e2d4a]/60 last:border-0 ${crmMomentumRowClass(account.momentum)}`}>
+              <tr key={`${account.leads_page}|${account.company_name}`} className={`border-b border-[#1e2d4a]/60 last:border-0 transition-opacity ${crmMomentumRowClass(account.momentum)} ${removing.has(`${account.leads_page}|${account.company_name}`) ? 'opacity-40' : ''}`}>
                 <td className="px-3 py-2 text-sm text-gray-200 align-top font-medium break-words">{account.company_name}</td>
                 <td className="px-3 py-2 text-sm text-gray-400 align-top whitespace-nowrap">{formatCrmDate(account.date_added)}</td>
                 <CrmSelectCell value={account.momentum} options={CRM_MOMENTUM_OPTIONS} onSave={v => saveField(account, 'momentum', v)} editable={isEditable} />
@@ -9802,6 +10018,15 @@ function CRMPage({ data, setData, onRefresh, userInfo }) {
                 <CrmTextCell value={account.key_contact} onSave={v => saveField(account, 'key_contact', v)} editable={isEditable} />
                 <CrmTextCell value={account.partner} onSave={v => saveField(account, 'partner', v)} editable={isEditable} />
                 <CrmTextCell value={account.notes} onSave={v => saveField(account, 'notes', v)} editable={isEditable} />
+                <td className="px-1 py-2 text-center align-top">
+                  {isEditable && (
+                    <CrmRemoveButton
+                      companyName={account.company_name}
+                      busy={removing.has(`${account.leads_page}|${account.company_name}`)}
+                      onConfirm={() => removeAccount(account)}
+                    />
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -10688,10 +10913,10 @@ export default function Home() {
           {activePage === 'jobs_new' && <JobsNewPage data={jobsData} setData={setJobsData} />}
           {activePage === 'competitor_jobs_new' && <CompetitorJobsNewPage data={competitorJobsData} setData={setCompetitorJobsData} />}
           {activePage === 'news' && <NewsPage data={newsData} setData={setNewsData} companyNames={companyNames} />}
-          {activePage === 'madison_leads' && <MadisonLeadsPage data={madisonLeadsData} setData={setMadisonLeadsData} onRefresh={fetchMadisonLeads} companyNames={companyNames} userInfo={userInfo} />}
-          {activePage === 'jim_leads' && <JimLeadsPage data={jimLeadsData} setData={setJimLeadsData} onRefresh={fetchJimLeads} companyNames={companyNames} userInfo={userInfo} />}
-          {activePage === 'tim_leads' && <TimLeadsPage data={timLeadsData} setData={setTimLeadsData} onRefresh={fetchTimLeads} companyNames={companyNames} userInfo={userInfo} />}
-          {activePage === 'scott_leads' && <ScottLeadsPage data={scottLeadsData} setData={setScottLeadsData} onRefresh={fetchScottLeads} companyNames={companyNames} userInfo={userInfo} />}
+          {activePage === 'madison_leads' && <MadisonLeadsPage data={madisonLeadsData} setData={setMadisonLeadsData} onRefresh={fetchMadisonLeads} onCrmRefresh={fetchCrm} companyNames={companyNames} userInfo={userInfo} />}
+          {activePage === 'jim_leads' && <JimLeadsPage data={jimLeadsData} setData={setJimLeadsData} onRefresh={fetchJimLeads} onCrmRefresh={fetchCrm} companyNames={companyNames} userInfo={userInfo} />}
+          {activePage === 'tim_leads' && <TimLeadsPage data={timLeadsData} setData={setTimLeadsData} onRefresh={fetchTimLeads} onCrmRefresh={fetchCrm} companyNames={companyNames} userInfo={userInfo} />}
+          {activePage === 'scott_leads' && <ScottLeadsPage data={scottLeadsData} setData={setScottLeadsData} onRefresh={fetchScottLeads} onCrmRefresh={fetchCrm} companyNames={companyNames} userInfo={userInfo} />}
           {activePage === 'crm' && <CRMPage data={crmData} setData={setCrmData} onRefresh={fetchCrm} userInfo={userInfo} />}
           {activePage === 'buyers'     && <PastBuyersPage data={pastBuyersData} />}
           {activePage === 'candidates' && <PastCandidatesPage data={pastCandidatesData} />}

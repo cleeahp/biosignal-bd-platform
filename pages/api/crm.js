@@ -10,6 +10,8 @@ const LEADS_TABLES = [
   { table: 'scott_leads',   person: 'scott' },
 ]
 
+const LEADS_TABLE_SET = new Set(LEADS_TABLES.map(t => t.table))
+
 // Fields a PATCH is allowed to write.
 const EDITABLE_FIELDS = new Set([
   'momentum', 'development_stage', 'engagement_type', 'key_contact', 'partner', 'notes',
@@ -65,6 +67,60 @@ function emptySummary() {
 }
 
 export default async function handler(req, res) {
+  // ── POST: manually push one company from a leads page into the CRM ───────────
+  if (req.method === 'POST') {
+    const { company_name, leads_page, date_added } = req.body || {}
+    if (!company_name || !leads_page) {
+      return res.status(400).json({ success: false, error: 'company_name and leads_page required' })
+    }
+    if (!LEADS_TABLE_SET.has(leads_page)) {
+      return res.status(400).json({ success: false, error: 'invalid leads_page' })
+    }
+
+    const { data: existing, error: findErr } = await supabase
+      .from('crm_accounts')
+      .select('id')
+      .eq('company_name', company_name)
+      .eq('leads_page', leads_page)
+      .limit(1)
+      .maybeSingle()
+    if (findErr) return res.status(500).json({ success: false, error: findErr.message })
+    if (existing) return res.status(200).json({ success: false, error: 'already_exists' })
+
+    // Prefer the caller-supplied date; otherwise read added_at off the leads row.
+    let dateAdded = date_added || null
+    if (!dateAdded) {
+      const { data: lead } = await supabase
+        .from(leads_page)
+        .select('added_at')
+        .eq('company_name', company_name)
+        .limit(1)
+        .maybeSingle()
+      dateAdded = lead?.added_at || null
+    }
+
+    const { error } = await supabase
+      .from('crm_accounts')
+      .insert({ company_name, leads_page, date_added: dateAdded })
+    if (error) return res.status(500).json({ success: false, error: error.message })
+    return res.status(200).json({ success: true, inserted: true })
+  }
+
+  // ── DELETE: drop one CRM row (leaves the leads-page entry untouched) ─────────
+  if (req.method === 'DELETE') {
+    const { company_name, leads_page } = req.body || {}
+    if (!company_name || !leads_page) {
+      return res.status(400).json({ success: false, error: 'company_name and leads_page required' })
+    }
+    const { error } = await supabase
+      .from('crm_accounts')
+      .delete()
+      .eq('company_name', company_name)
+      .eq('leads_page', leads_page)
+    if (error) return res.status(500).json({ success: false, error: error.message })
+    return res.status(200).json({ success: true, deleted: true })
+  }
+
   // ── PATCH: upsert a single field for a (company_name, leads_page) row ────────
   if (req.method === 'PATCH') {
     const { company_name, leads_page, field, value } = req.body || {}
@@ -100,52 +156,20 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true })
   }
 
-  // ── GET: sync missing leads → crm_accounts, then return accounts + summary ───
+  // ── GET: return accounts + summary ───────────────────────────────────────────
+  // Companies land in crm_accounts only when pushed explicitly from a leads page
+  // (POST above) — nothing is auto-created here.
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
   try {
-    // Load every leads row (company_name + added_at) per table.
+    // Load every leads row per table (used for the total_targets counts).
     const leadsByTable = {}
     for (const { table } of LEADS_TABLES) {
-      leadsByTable[table] = await fetchAll(table, 'company_name, added_at')
+      leadsByTable[table] = await fetchAll(table, 'company_name')
     }
 
-    // Load existing crm_accounts rows so we can detect which leads are missing.
-    const existingRows = await fetchAll(
-      'crm_accounts',
-      'company_name, leads_page, momentum, development_stage, engagement_type, key_contact, partner, notes, date_added',
-    )
-    const existingKeys = new Set(
-      existingRows.map(r => `${r.leads_page}||${String(r.company_name).toLowerCase()}`),
-    )
-
-    // Auto-create crm_accounts entries for leads that don't have one yet.
-    const toInsert = []
-    for (const { table } of LEADS_TABLES) {
-      for (const lead of leadsByTable[table]) {
-        const key = `${table}||${String(lead.company_name).toLowerCase()}`
-        if (existingKeys.has(key)) continue
-        existingKeys.add(key)
-        toInsert.push({
-          company_name: lead.company_name,
-          leads_page: table,
-          date_added: lead.added_at || null,
-        })
-      }
-    }
-
-    if (toInsert.length > 0) {
-      // Insert in chunks to stay well under any payload limits.
-      for (let i = 0; i < toInsert.length; i += 500) {
-        const chunk = toInsert.slice(i, i + 500)
-        const { error } = await supabase.from('crm_accounts').insert(chunk)
-        if (error) throw new Error(`crm_accounts insert: ${error.message}`)
-      }
-    }
-
-    // Re-fetch the full account set (now including any freshly-synced rows).
     const accounts = await fetchAll(
       'crm_accounts',
       'company_name, leads_page, momentum, development_stage, engagement_type, key_contact, partner, notes, date_added',
@@ -171,7 +195,7 @@ export default async function handler(req, res) {
 
     const responseData = { accounts, summary }
     const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
-    console.log(`[API] ${req.url}: ${sizeMB} MB (${accounts.length} accounts, ${toInsert.length} synced)`)
+    console.log(`[API] ${req.url}: ${sizeMB} MB (${accounts.length} accounts)`)
     return res.status(200).json(responseData)
   } catch (err) {
     return res.status(500).json({ error: err.message })
