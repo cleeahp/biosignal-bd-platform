@@ -10435,8 +10435,49 @@ function formatTargetLocation(city, stateProvince) {
   return ''
 }
 
-function TargetsPage({ data }) {
+function TargetDeleteButton({ id, onDelete }) {
+  const [busy, setBusy] = useState(false)
+  const handle = async () => {
+    if (!confirm('Delete this target company?')) return
+    setBusy(true)
+    try {
+      const { data: sessionData } = supabase ? await supabase.auth.getSession() : { data: null }
+      const token = sessionData?.session?.access_token
+      const res = await fetch('/api/targets-delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ id }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.error || `HTTP ${res.status}`)
+      }
+      onDelete(id)
+    } catch (err) {
+      console.error('[TargetDeleteButton] delete failed', err)
+      alert(`Failed to delete target company: ${err.message || 'unknown error'}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <button
+      onClick={handle}
+      disabled={busy}
+      title="Delete target company"
+      className="text-gray-500 hover:text-red-400 transition-colors disabled:opacity-50"
+    >
+      ✕
+    </button>
+  )
+}
+
+function TargetsPage({ data, setData, userInfo }) {
   const rows = Array.isArray(data?.rows) ? data.rows : []
+  const isAdmin = userInfo?.role === 'admin'
   const [expandedIds, setExpandedIds] = useState(new Set())
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
   const sortable = useSortableColumns(['name', 'location', 'size'])
@@ -10449,6 +10490,10 @@ function TargetsPage({ data }) {
       return next
     })
   }, [])
+
+  const removeTarget = useCallback((id) => {
+    setData(prev => prev ? { ...prev, rows: (prev.rows || []).filter(r => r.id !== id) } : prev)
+  }, [setData])
 
   const extractors = useMemo(() => ({
     name: r => r.name || '',
@@ -10490,11 +10535,12 @@ function TargetsPage({ data }) {
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
-              <ColumnFilterDropdown colKey="name" label="Name" allValues={allValues.name} activeValues={filters.name} onApply={setFilter} className="w-[33%]" sortDir={sortable.dirFor('name')} onCycleSort={sortable.cycle} />
-              <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[28%]" sortDir={sortable.dirFor('location')} onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="name" label="Name" allValues={allValues.name} activeValues={filters.name} onApply={setFilter} className="w-[30%]" sortDir={sortable.dirFor('name')} onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[25%]" sortDir={sortable.dirFor('location')} onCycleSort={sortable.cycle} />
               <ColumnFilterDropdown colKey="size" label="Size" allValues={allValues.size} activeValues={filters.size} onApply={setFilter} className="w-[15%]" sortDir={sortable.dirFor('size')} onCycleSort={sortable.cycle} />
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[12%]">Domain</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[12%]">LinkedIn</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[6%]">{' '}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#374151]">
@@ -10543,10 +10589,13 @@ function TargetsPage({ data }) {
                         </a>
                       ) : null}
                     </td>
+                    <td className="px-3 py-3 text-sm align-top text-center" onClick={e => e.stopPropagation()}>
+                      {isAdmin && <TargetDeleteButton id={row.id} onDelete={removeTarget} />}
+                    </td>
                   </tr>
                   {isExpanded && (
                     <tr>
-                      <td colSpan={5} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                      <td colSpan={6} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
                         <div className="flex flex-col gap-2">
                           <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Description</h4>
                           {row.description ? (
@@ -11077,7 +11126,7 @@ export default function Home() {
           {activePage === 'crm' && <CRMPage data={crmData} setData={setCrmData} onRefresh={fetchCrm} userInfo={userInfo} />}
           {activePage === 'buyers'     && <PastBuyersPage data={pastBuyersData} />}
           {activePage === 'candidates' && <PastCandidatesPage data={pastCandidatesData} />}
-          {activePage === 'targets'    && <TargetsPage data={targetsData} />}
+          {activePage === 'targets'    && <TargetsPage data={targetsData} setData={setTargetsData} userInfo={userInfo} />}
           {activePage === 'settings'   && <SettingsPage />}
         </main>
       </div>

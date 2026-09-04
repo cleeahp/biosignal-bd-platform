@@ -43,6 +43,24 @@ export default async function handler(req, res) {
     linkedin_url: cleanString(body.linkedin_url),
   }
 
+  let deletedQuery = supabase
+    .from('targets_companies_deleted')
+    .select('id')
+    .eq('name', name)
+  deletedQuery = record.linkedin_url
+    ? deletedQuery.eq('linkedin_url', record.linkedin_url)
+    : deletedQuery.is('linkedin_url', null)
+
+  const { data: deletedMatch, error: deletedErr } = await deletedQuery.maybeSingle()
+  if (deletedErr) {
+    console.error(`[ClayTargetsWebhook] Deleted-check error: ${deletedErr.message}`)
+    return res.status(500).json({ error: deletedErr.message })
+  }
+  if (deletedMatch) {
+    console.log(`[ClayTargetsWebhook] skipped (previously deleted): ${name} (${record.linkedin_url || 'no linkedin'})`)
+    return res.status(200).json({ skipped: true, reason: 'deleted' })
+  }
+
   const { error: upsertErr } = await supabase
     .from(TABLE)
     .upsert(record, { onConflict: 'name,linkedin_url' })
