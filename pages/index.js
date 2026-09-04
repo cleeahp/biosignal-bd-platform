@@ -10426,11 +10426,144 @@ function PastCandidatesPage({ data }) {
 
 // ─── Targets Page ────────────────────────────────────────────────────────────
 
-function TargetsPage() {
+function formatTargetLocation(city, stateProvince) {
+  const c = (city || '').trim()
+  const s = (stateProvince || '').trim()
+  if (c && s) return `${c}, ${s}`
+  if (c) return c
+  if (s) return s
+  return ''
+}
+
+function TargetsPage({ data }) {
+  const rows = Array.isArray(data?.rows) ? data.rows : []
+  const [expandedIds, setExpandedIds] = useState(new Set())
+  const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
+  const sortable = useSortableColumns(['name', 'location', 'size'])
+
+  const toggleRow = useCallback(id => {
+    setExpandedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const extractors = useMemo(() => ({
+    name: r => r.name || '',
+    location: r => formatTargetLocation(r.city, r.state_province),
+    size: r => r.company_size || '',
+  }), [])
+
+  const allValues = useMemo(() => ({
+    name: rows.map(r => r.name || ''),
+    location: rows.map(r => formatTargetLocation(r.city, r.state_province)),
+    size: rows.map(r => r.company_size || ''),
+  }), [rows])
+
+  const sorted = useMemo(() => {
+    const arr = [...rows]
+    if (sortable.sortCol && sortable.sortDir) {
+      const extractor = extractors[sortable.sortCol]
+      arr.sort((a, b) => compareForSort(extractor(a), extractor(b), sortable.sortDir))
+    }
+    return arr
+  }, [rows, sortable.sortCol, sortable.sortDir, extractors])
+
+  const filtered = useMemo(() => applyFilters(sorted, extractors), [sorted, applyFilters, extractors])
+
+  if (!data) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  if (rows.length === 0) return <EmptyState message="No target companies found." />
+
   return (
-    <div className="flex flex-col gap-3">
-      <h2 className="text-white text-base font-semibold">Targets</h2>
-      <p className="text-gray-400 text-sm">Coming soon</p>
+    <div className="flex flex-col gap-2">
+      <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
+      <div className="rounded-lg border border-[#374151] overflow-hidden">
+        <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              <ColumnFilterDropdown colKey="name" label="Name" allValues={allValues.name} activeValues={filters.name} onApply={setFilter} className="w-[25%]" sortDir={sortable.dirFor('name')} onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[20%]" sortDir={sortable.dirFor('location')} onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="size" label="Size" allValues={allValues.size} activeValues={filters.size} onApply={setFilter} className="w-[15%]" sortDir={sortable.dirFor('size')} onCycleSort={sortable.cycle} />
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[20%]">Domain</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[20%]">LinkedIn</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#374151]">
+            {filtered.map((row, i) => {
+              const isExpanded = expandedIds.has(row.id)
+              const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+              const location = formatTargetLocation(row.city, row.state_province)
+              return (
+                <Fragment key={row.id}>
+                  <tr
+                    onClick={() => toggleRow(row.id)}
+                    className={`${rowBg} hover:bg-[#263045] cursor-pointer transition-colors`}
+                  >
+                    <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {row.name || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {location}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {row.company_size || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {row.domain ? (
+                        <a
+                          href={`https://${row.domain}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={e => e.stopPropagation()}
+                          className="text-blue-400 hover:text-blue-300 hover:underline break-all"
+                        >
+                          {row.domain}
+                        </a>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {row.linkedin_url ? (
+                        <a
+                          href={row.linkedin_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={e => e.stopPropagation()}
+                          className="text-blue-400 hover:text-blue-300 hover:underline break-all"
+                        >
+                          {row.linkedin_url}
+                        </a>
+                      ) : null}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr>
+                      <td colSpan={5} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                        <div className="flex flex-col gap-2">
+                          <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Description</h4>
+                          {row.description ? (
+                            <p className="text-sm text-gray-300 whitespace-pre-wrap">{row.description}</p>
+                          ) : (
+                            <p className="text-sm text-gray-500 italic">No description</p>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -10720,6 +10853,7 @@ export default function Home() {
   const [scottLeadsData, setScottLeadsData] = useState(null)
   const [crmData, setCrmData] = useState(null)
   const [companyNames, setCompanyNames] = useState(null)
+  const [targetsData, setTargetsData] = useState(null)
 
   const fetchJson = useCallback(async (url, setter, label) => {
     try {
@@ -10750,6 +10884,7 @@ export default function Home() {
   const fetchTimLeads = useCallback(async () => { await fetchJson('/api/tim-leads', setTimLeadsData, 'tim leads'); fetchSidebarCounts() }, [fetchJson, fetchSidebarCounts])
   const fetchScottLeads = useCallback(async () => { await fetchJson('/api/scott-leads', setScottLeadsData, 'scott leads'); fetchSidebarCounts() }, [fetchJson, fetchSidebarCounts])
   const fetchCrm = useCallback(() => fetchJson('/api/crm', setCrmData, 'crm'), [fetchJson])
+  const fetchTargets = useCallback(() => fetchJson('/api/targets', setTargetsData, 'targets'), [fetchJson])
 
   const fetchCompanyNames = useCallback(async () => {
     try {
@@ -10780,8 +10915,9 @@ export default function Home() {
       fetchJson('/api/scott-leads', setScottLeadsData, 'scott leads'),
       fetchJson('/api/crm', setCrmData, 'crm'),
       fetchCompanyNames(),
+      fetchTargets(),
     ])
-  }, [fetchDashboardData, fetchSidebarCounts, fetchClinicalTrials, fetchMaFunding, fetchFunding, fetchJobs, fetchCompetitorJobs, fetchNews, fetchPastBuyers, fetchPastCandidates, fetchJson, fetchCompanyNames])
+  }, [fetchDashboardData, fetchSidebarCounts, fetchClinicalTrials, fetchMaFunding, fetchFunding, fetchJobs, fetchCompetitorJobs, fetchNews, fetchPastBuyers, fetchPastCandidates, fetchJson, fetchCompanyNames, fetchTargets])
 
   const handleGlobalRefresh = useCallback(async () => {
     setRefreshing(true)
@@ -10941,7 +11077,7 @@ export default function Home() {
           {activePage === 'crm' && <CRMPage data={crmData} setData={setCrmData} onRefresh={fetchCrm} userInfo={userInfo} />}
           {activePage === 'buyers'     && <PastBuyersPage data={pastBuyersData} />}
           {activePage === 'candidates' && <PastCandidatesPage data={pastCandidatesData} />}
-          {activePage === 'targets'    && <TargetsPage />}
+          {activePage === 'targets'    && <TargetsPage data={targetsData} />}
           {activePage === 'settings'   && <SettingsPage />}
         </main>
       </div>
