@@ -10490,11 +10490,11 @@ function TargetsPage({ data }) {
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
-              <ColumnFilterDropdown colKey="name" label="Name" allValues={allValues.name} activeValues={filters.name} onApply={setFilter} className="w-[25%]" sortDir={sortable.dirFor('name')} onCycleSort={sortable.cycle} />
-              <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[20%]" sortDir={sortable.dirFor('location')} onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="name" label="Name" allValues={allValues.name} activeValues={filters.name} onApply={setFilter} className="w-[33%]" sortDir={sortable.dirFor('name')} onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[28%]" sortDir={sortable.dirFor('location')} onCycleSort={sortable.cycle} />
               <ColumnFilterDropdown colKey="size" label="Size" allValues={allValues.size} activeValues={filters.size} onApply={setFilter} className="w-[15%]" sortDir={sortable.dirFor('size')} onCycleSort={sortable.cycle} />
-              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[20%]">Domain</th>
-              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[20%]">LinkedIn</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[12%]">Domain</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[12%]">LinkedIn</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#374151]">
@@ -10517,29 +10517,29 @@ function TargetsPage({ data }) {
                     <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
                       {row.company_size || '—'}
                     </td>
-                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                    <td className="px-3 py-3 text-sm align-top">
                       {row.domain ? (
                         <a
                           href={`https://${row.domain}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={e => e.stopPropagation()}
-                          className="text-blue-400 hover:text-blue-300 hover:underline break-all"
+                          className="text-blue-400 hover:text-blue-300 font-medium"
                         >
-                          {row.domain}
+                          Website &#8599;
                         </a>
                       ) : null}
                     </td>
-                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                    <td className="px-3 py-3 text-sm align-top">
                       {row.linkedin_url ? (
                         <a
                           href={row.linkedin_url}
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={e => e.stopPropagation()}
-                          className="text-blue-400 hover:text-blue-300 hover:underline break-all"
+                          className="text-blue-400 hover:text-blue-300 font-medium"
                         >
-                          {row.linkedin_url}
+                          LinkedIn &#8599;
                         </a>
                       ) : null}
                     </td>
