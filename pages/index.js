@@ -1478,6 +1478,14 @@ function NavIcon({ type, className = 'w-5 h-5' }) {
           <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
         </svg>
       )
+    case 'target':
+      return (
+        <svg {...props}>
+          <circle cx="12" cy="12" r="10"/>
+          <circle cx="12" cy="12" r="6"/>
+          <circle cx="12" cy="12" r="2"/>
+        </svg>
+      )
     case 'settings':
       return (
         <svg {...props}>
@@ -1507,6 +1515,7 @@ const MAIN_NAV = [
   { key: 'news',           label: 'News',                   icon: 'file-text', countKey: 'news' },
   { key: 'buyers',         label: 'Past Buyers',            icon: 'users',     countKey: 'past_buyers_changes' },
   { key: 'candidates',     label: 'Past Candidates',        icon: 'user',      countKey: 'past_candidates_changes' },
+  { key: 'targets',        label: 'Targets',                icon: 'target' },
 ]
 
 const LEADS_PAGE_KEYS = new Set(['madison_leads', 'jim_leads', 'tim_leads', 'scott_leads'])
@@ -1614,6 +1623,7 @@ const PAGE_TITLES = {
   news:            'News',
   buyers:          'Past Buyers',
   candidates:      'Past Candidates',
+  targets:         'Targets',
   settings:        'Settings',
 }
 
@@ -10414,6 +10424,17 @@ function PastCandidatesPage({ data }) {
   )
 }
 
+// ─── Targets Page ────────────────────────────────────────────────────────────
+
+function TargetsPage() {
+  return (
+    <div className="flex flex-col gap-3">
+      <h2 className="text-white text-base font-semibold">Targets</h2>
+      <p className="text-gray-400 text-sm">Coming soon</p>
+    </div>
+  )
+}
+
 
 function SettingsPage() {
   const [rules, setRules] = useState([])
@@ -10920,6 +10941,7 @@ export default function Home() {
           {activePage === 'crm' && <CRMPage data={crmData} setData={setCrmData} onRefresh={fetchCrm} userInfo={userInfo} />}
           {activePage === 'buyers'     && <PastBuyersPage data={pastBuyersData} />}
           {activePage === 'candidates' && <PastCandidatesPage data={pastCandidatesData} />}
+          {activePage === 'targets'    && <TargetsPage />}
           {activePage === 'settings'   && <SettingsPage />}
         </main>
       </div>
