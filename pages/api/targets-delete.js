@@ -37,9 +37,23 @@ export default async function handler(req, res) {
   if (fetchErr) return res.status(500).json({ error: fetchErr.message })
   if (!row) return res.status(404).json({ error: 'Target company not found' })
 
+  const archiveRecord = {
+    name: row.name,
+    domain: row.domain,
+    description: row.description,
+    industry: row.industry,
+    company_size: row.company_size,
+    company_type: row.company_type,
+    city: row.city,
+    state_province: row.state_province,
+    country: row.country,
+    linkedin_url: row.linkedin_url,
+    created_at: row.created_at,
+  }
+
   const { error: archiveErr } = await supabase
     .from('targets_companies_deleted')
-    .upsert(row, { onConflict: 'name,linkedin_url' })
+    .upsert(archiveRecord, { onConflict: 'name,linkedin_url' })
 
   if (archiveErr) {
     console.error(`[TargetsDelete] Archive upsert error: ${archiveErr.message}`)

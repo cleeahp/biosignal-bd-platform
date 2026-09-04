@@ -10435,50 +10435,13 @@ function formatTargetLocation(city, stateProvince) {
   return ''
 }
 
-function TargetDeleteButton({ id, onDelete }) {
-  const [busy, setBusy] = useState(false)
-  const handle = async () => {
-    if (!confirm('Delete this target company?')) return
-    setBusy(true)
-    try {
-      const { data: sessionData } = supabase ? await supabase.auth.getSession() : { data: null }
-      const token = sessionData?.session?.access_token
-      const res = await fetch('/api/targets-delete', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ id }),
-      })
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}))
-        throw new Error(j.error || `HTTP ${res.status}`)
-      }
-      onDelete(id)
-    } catch (err) {
-      console.error('[TargetDeleteButton] delete failed', err)
-      alert(`Failed to delete target company: ${err.message || 'unknown error'}`)
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <button
-      onClick={handle}
-      disabled={busy}
-      title="Delete target company"
-      className="text-gray-500 hover:text-red-400 transition-colors disabled:opacity-50"
-    >
-      ✕
-    </button>
-  )
-}
-
 function TargetsPage({ data, setData, userInfo }) {
   const rows = Array.isArray(data?.rows) ? data.rows : []
   const isAdmin = userInfo?.role === 'admin'
   const [expandedIds, setExpandedIds] = useState(new Set())
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null)
+  const [deleteError, setDeleteError] = useState(null)
+  const [deleting, setDeleting] = useState(false)
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
   const sortable = useSortableColumns(['name', 'location', 'size'])
 
@@ -10494,6 +10457,34 @@ function TargetsPage({ data, setData, userInfo }) {
   const removeTarget = useCallback((id) => {
     setData(prev => prev ? { ...prev, rows: (prev.rows || []).filter(r => r.id !== id) } : prev)
   }, [setData])
+
+  const handleDeleteConfirmed = useCallback(async (id) => {
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      const { data: sessionData } = supabase ? await supabase.auth.getSession() : { data: null }
+      const token = sessionData?.session?.access_token
+      const res = await fetch('/api/targets-delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ id }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.error || `HTTP ${res.status}`)
+      }
+      setConfirmDeleteId(null)
+      removeTarget(id)
+    } catch (err) {
+      console.error('[TargetsPage] delete failed', err)
+      setDeleteError(err.message || 'Delete failed')
+    } finally {
+      setDeleting(false)
+    }
+  }, [removeTarget])
 
   const extractors = useMemo(() => ({
     name: r => r.name || '',
@@ -10590,9 +10581,41 @@ function TargetsPage({ data, setData, userInfo }) {
                       ) : null}
                     </td>
                     <td className="px-3 py-3 text-sm align-top text-center" onClick={e => e.stopPropagation()}>
-                      {isAdmin && <TargetDeleteButton id={row.id} onDelete={removeTarget} />}
+                      {isAdmin && (
+                        <button
+                          onClick={() => { setConfirmDeleteId(row.id); setDeleteError(null) }}
+                          title="Delete target company"
+                          className="text-gray-500 hover:text-red-400 transition-colors"
+                        >
+                          ✕
+                        </button>
+                      )}
                     </td>
                   </tr>
+                  {confirmDeleteId === row.id && (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-3 border-b border-red-900/40" style={{ background: 'rgba(127,29,29,0.18)' }}>
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <span className="text-sm text-red-300">Delete <strong className="text-red-200">{row.name || 'this company'}</strong>? This cannot be undone.</span>
+                          <button
+                            onClick={() => handleDeleteConfirmed(row.id)}
+                            disabled={deleting}
+                            className="px-3 py-1 text-xs font-semibold bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white rounded transition-colors"
+                          >
+                            {deleting ? 'Deleting…' : 'Confirm'}
+                          </button>
+                          <button
+                            onClick={() => { setConfirmDeleteId(null); setDeleteError(null) }}
+                            disabled={deleting}
+                            className="px-3 py-1 text-xs bg-[#374151] hover:bg-[#4b5563] disabled:opacity-50 text-gray-300 rounded transition-colors"
+                          >
+                            Cancel
+                          </button>
+                          {deleteError && <span className="text-xs text-red-400">{deleteError}</span>}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                   {isExpanded && (
                     <tr>
                       <td colSpan={6} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
