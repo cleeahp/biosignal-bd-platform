@@ -13,7 +13,7 @@ export default async function handler(req, res) {
     while (true) {
       const { data, error } = await supabase
         .from('targets_companies')
-        .select('id, name, city, state_province, company_size, domain, linkedin_url, description')
+        .select('id, name, city, state_province, company_size, domain, linkedin_url, description, is_target')
         .order('name', { ascending: true })
         .range(offset, offset + PAGE - 1)
       if (error) throw new Error(`targets_companies: ${error.message}`)

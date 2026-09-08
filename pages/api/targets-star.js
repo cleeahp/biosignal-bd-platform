@@ -23,55 +23,34 @@ export default async function handler(req, res) {
     return res.status(403).json({ error: 'Forbidden — admin only' })
   }
 
-  const { id } = req.body || {}
+  const { id, is_target } = req.body || {}
   if (!id) {
     return res.status(400).json({ error: 'id required' })
+  }
+  if (typeof is_target !== 'boolean') {
+    return res.status(400).json({ error: 'is_target must be a boolean' })
   }
 
   const { data: row, error: fetchErr } = await supabase
     .from('targets_companies')
-    .select('*')
+    .select('id')
     .eq('id', id)
     .maybeSingle()
 
   if (fetchErr) return res.status(500).json({ error: fetchErr.message })
   if (!row) return res.status(404).json({ error: 'Target company not found' })
 
-  const archiveRecord = {
-    name: row.name,
-    domain: row.domain,
-    description: row.description,
-    industry: row.industry,
-    company_size: row.company_size,
-    company_type: row.company_type,
-    city: row.city,
-    state_province: row.state_province,
-    country: row.country,
-    linkedin_url: row.linkedin_url,
-    created_at: row.created_at,
-    is_target: row.is_target,
-  }
-
-  const { error: archiveErr } = await supabase
-    .from('targets_companies_deleted')
-    .upsert(archiveRecord, { onConflict: 'name,linkedin_url' })
-
-  if (archiveErr) {
-    console.error(`[TargetsDelete] Archive upsert error: ${archiveErr.message}`)
-    return res.status(500).json({ error: archiveErr.message })
-  }
-
-  const { error: deleteErr } = await supabase
+  const { error: updateErr } = await supabase
     .from('targets_companies')
-    .delete()
+    .update({ is_target })
     .eq('id', id)
 
-  if (deleteErr) {
-    console.error(`[TargetsDelete] Delete error: ${deleteErr.message}`)
-    return res.status(500).json({ error: deleteErr.message })
+  if (updateErr) {
+    console.error(`[TargetsStar] Update error: ${updateErr.message}`)
+    return res.status(500).json({ error: updateErr.message })
   }
 
-  const responseData = { success: true, id }
+  const responseData = { success: true, id, is_target }
   const sizeMB = (Buffer.byteLength(JSON.stringify(responseData), 'utf8') / (1024 * 1024)).toFixed(2)
   console.log(`[API] ${req.url}: ${sizeMB} MB (1 row)`)
   return res.status(200).json(responseData)

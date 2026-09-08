@@ -10556,6 +10556,8 @@ function TargetsPage({ data, setData, jobsData, userInfo }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [deleteError, setDeleteError] = useState(null)
   const [deleting, setDeleting] = useState(false)
+  const [starErrorId, setStarErrorId] = useState(null)
+  const [starErrorMsg, setStarErrorMsg] = useState(null)
   const [selectedJobsCompany, setSelectedJobsCompany] = useState(null)
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
   const sortable = useSortableColumns(['name', 'location', 'size', 'jobs'])
@@ -10588,6 +10590,39 @@ function TargetsPage({ data, setData, jobsData, userInfo }) {
   const removeTarget = useCallback((id) => {
     setData(prev => prev ? { ...prev, rows: (prev.rows || []).filter(r => r.id !== id) } : prev)
   }, [setData])
+
+  const setRowIsTarget = useCallback((id, value) => {
+    setData(prev => prev ? { ...prev, rows: (prev.rows || []).map(r => r.id === id ? { ...r, is_target: value } : r) } : prev)
+  }, [setData])
+
+  const handleToggleStar = useCallback(async (row) => {
+    const previous = !!row.is_target
+    const next = !previous
+    setStarErrorId(null)
+    setStarErrorMsg(null)
+    setRowIsTarget(row.id, next)
+    try {
+      const { data: sessionData } = supabase ? await supabase.auth.getSession() : { data: null }
+      const token = sessionData?.session?.access_token
+      const res = await fetch('/api/targets-star', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ id: row.id, is_target: next }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.error || `HTTP ${res.status}`)
+      }
+    } catch (err) {
+      console.error('[TargetsPage] star toggle failed', err)
+      setRowIsTarget(row.id, previous)
+      setStarErrorId(row.id)
+      setStarErrorMsg(err.message || 'Update failed')
+    }
+  }, [setRowIsTarget])
 
   const handleDeleteConfirmed = useCallback(async (id) => {
     setDeleting(true)
@@ -10646,6 +10681,7 @@ function TargetsPage({ data, setData, jobsData, userInfo }) {
   const summaryStats = useMemo(() => ({
     companies: filtered.length,
     jobs: filtered.reduce((sum, r) => sum + getJobsCount(r), 0),
+    targets: filtered.filter(r => r.is_target).length,
   }), [filtered, getJobsCount])
 
   if (selectedJobsCompany) {
@@ -10672,7 +10708,7 @@ function TargetsPage({ data, setData, jobsData, userInfo }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:max-w-md">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
           <div className="text-xs uppercase tracking-wider text-gray-500">Companies</div>
           <div className="text-2xl font-bold text-white tabular-nums">{summaryStats.companies.toLocaleString()}</div>
@@ -10680,6 +10716,10 @@ function TargetsPage({ data, setData, jobsData, userInfo }) {
         <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
           <div className="text-xs uppercase tracking-wider text-gray-500">Jobs</div>
           <div className="text-2xl font-bold text-white tabular-nums">{summaryStats.jobs.toLocaleString()}</div>
+        </div>
+        <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+          <div className="text-xs uppercase tracking-wider text-yellow-400">Targets</div>
+          <div className="text-2xl font-bold text-white tabular-nums">{summaryStats.targets.toLocaleString()}</div>
         </div>
       </div>
       <div className="flex flex-col gap-2">
@@ -10768,16 +10808,40 @@ function TargetsPage({ data, setData, jobsData, userInfo }) {
                     </td>
                     <td className="px-3 py-3 text-sm align-top text-center" onClick={e => e.stopPropagation()}>
                       {isAdmin && (
-                        <button
-                          onClick={() => { setConfirmDeleteId(row.id); setDeleteError(null) }}
-                          title="Delete target company"
-                          className="text-gray-500 hover:text-red-400 transition-colors"
-                        >
-                          ✕
-                        </button>
+                        <div className="inline-flex items-center gap-2">
+                          <button
+                            onClick={() => handleToggleStar(row)}
+                            title={row.is_target ? 'Unmark as target' : 'Mark as target'}
+                            className={row.is_target ? 'text-yellow-400 hover:text-yellow-300 transition-colors' : 'text-gray-600 hover:text-yellow-400 transition-colors'}
+                          >
+                            {row.is_target ? '★' : '☆'}
+                          </button>
+                          <button
+                            onClick={() => { setConfirmDeleteId(row.id); setDeleteError(null) }}
+                            title="Delete target company"
+                            className="text-gray-500 hover:text-red-400 transition-colors"
+                          >
+                            ✕
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
+                  {starErrorId === row.id && (
+                    <tr>
+                      <td colSpan={7} className="px-6 py-3 border-b border-red-900/40" style={{ background: 'rgba(127,29,29,0.18)' }}>
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <span className="text-sm text-red-300">Failed to update target star for <strong className="text-red-200">{row.name || 'this company'}</strong>: {starErrorMsg}</span>
+                          <button
+                            onClick={() => { setStarErrorId(null); setStarErrorMsg(null) }}
+                            className="px-3 py-1 text-xs bg-[#374151] hover:bg-[#4b5563] text-gray-300 rounded transition-colors"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                   {confirmDeleteId === row.id && (
                     <tr>
                       <td colSpan={7} className="px-6 py-3 border-b border-red-900/40" style={{ background: 'rgba(127,29,29,0.18)' }}>
