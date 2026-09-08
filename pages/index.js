@@ -10558,7 +10558,7 @@ function TargetsPage({ data, setData, jobsData, userInfo }) {
   const [deleting, setDeleting] = useState(false)
   const [selectedJobsCompany, setSelectedJobsCompany] = useState(null)
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
-  const sortable = useSortableColumns(['name', 'location', 'size'])
+  const sortable = useSortableColumns(['name', 'location', 'size', 'jobs'])
 
   const jobsByDomain = useMemo(() => {
     const map = new Map()
@@ -10570,6 +10570,11 @@ function TargetsPage({ data, setData, jobsData, userInfo }) {
     }
     return map
   }, [jobs])
+
+  const getJobsCount = useCallback(row => {
+    const dom = normalizeDomain(row.domain)
+    return dom ? (jobsByDomain.get(dom) || []).length : 0
+  }, [jobsByDomain])
 
   const toggleRow = useCallback(id => {
     setExpandedIds(prev => {
@@ -10626,14 +10631,22 @@ function TargetsPage({ data, setData, jobsData, userInfo }) {
 
   const sorted = useMemo(() => {
     const arr = [...rows]
-    if (sortable.sortCol && sortable.sortDir) {
+    if (sortable.sortCol === 'jobs' && sortable.sortDir) {
+      const mul = sortable.sortDir === 'asc' ? 1 : -1
+      arr.sort((a, b) => (getJobsCount(a) - getJobsCount(b)) * mul)
+    } else if (sortable.sortCol && sortable.sortDir) {
       const extractor = extractors[sortable.sortCol]
       arr.sort((a, b) => compareForSort(extractor(a), extractor(b), sortable.sortDir))
     }
     return arr
-  }, [rows, sortable.sortCol, sortable.sortDir, extractors])
+  }, [rows, sortable.sortCol, sortable.sortDir, extractors, getJobsCount])
 
   const filtered = useMemo(() => applyFilters(sorted, extractors), [sorted, applyFilters, extractors])
+
+  const summaryStats = useMemo(() => ({
+    companies: filtered.length,
+    jobs: filtered.reduce((sum, r) => sum + getJobsCount(r), 0),
+  }), [filtered, getJobsCount])
 
   if (selectedJobsCompany) {
     const dom = normalizeDomain(selectedJobsCompany.domain)
@@ -10658,7 +10671,18 @@ function TargetsPage({ data, setData, jobsData, userInfo }) {
   if (rows.length === 0) return <EmptyState message="No target companies found." />
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:max-w-md">
+        <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+          <div className="text-xs uppercase tracking-wider text-gray-500">Companies</div>
+          <div className="text-2xl font-bold text-white tabular-nums">{summaryStats.companies.toLocaleString()}</div>
+        </div>
+        <div className="bg-[#1f2937] border border-[#374151] rounded-lg px-4 py-3">
+          <div className="text-xs uppercase tracking-wider text-gray-500">Jobs</div>
+          <div className="text-2xl font-bold text-white tabular-nums">{summaryStats.jobs.toLocaleString()}</div>
+        </div>
+      </div>
+      <div className="flex flex-col gap-2">
       <ClearAllFiltersButton hasActiveFilters={hasActiveFilters} onClear={clearAll} />
       <div className="rounded-lg border border-[#374151] overflow-hidden">
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
@@ -10669,7 +10693,16 @@ function TargetsPage({ data, setData, jobsData, userInfo }) {
               <ColumnFilterDropdown colKey="size" label="Size" allValues={allValues.size} activeValues={filters.size} onApply={setFilter} className="w-[15%]" sortDir={sortable.dirFor('size')} onCycleSort={sortable.cycle} />
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[12%]">Domain</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[12%]">LinkedIn</th>
-              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[8%]">Jobs</th>
+              <th
+                onClick={() => sortable.cycle('jobs')}
+                className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider bg-[#1a2234] whitespace-nowrap cursor-pointer select-none w-[8%] ${sortable.dirFor('jobs') ? 'text-blue-300' : 'text-gray-400 hover:text-gray-200'}`}
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  Jobs
+                  {sortable.dirFor('jobs') === 'asc' && <span className="text-[10px]">▲</span>}
+                  {sortable.dirFor('jobs') === 'desc' && <span className="text-[10px]">▼</span>}
+                </span>
+              </th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[6%]">{' '}</th>
             </tr>
           </thead>
@@ -10788,6 +10821,7 @@ function TargetsPage({ data, setData, jobsData, userInfo }) {
             })}
           </tbody>
         </table>
+      </div>
       </div>
     </div>
   )
