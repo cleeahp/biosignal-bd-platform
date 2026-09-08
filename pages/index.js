@@ -10435,15 +10435,141 @@ function formatTargetLocation(city, stateProvince) {
   return ''
 }
 
-function TargetsPage({ data, setData, userInfo }) {
+function normalizeDomain(domain) {
+  const d = (domain || '').trim().toLowerCase()
+  return d === '' ? null : d
+}
+
+function sortJobsByPostedOn(jobs, dir) {
+  const arr = [...jobs]
+  arr.sort((a, b) => {
+    const ta = a.posted_on ? new Date(a.posted_on).getTime() : null
+    const tb = b.posted_on ? new Date(b.posted_on).getTime() : null
+    if (ta == null && tb == null) return 0
+    if (ta == null) return 1
+    if (tb == null) return -1
+    return dir === 'desc' ? tb - ta : ta - tb
+  })
+  return arr
+}
+
+function CompanyJobsDetailView({ companyName, jobs, onBack }) {
+  const sortable = useSortableColumns(['title', 'location', 'posted_on'])
+
+  const extractors = useMemo(() => ({
+    title: j => j.job_title || '',
+    location: j => j.location || '',
+  }), [])
+
+  const sorted = useMemo(() => {
+    if (!sortable.sortCol || !sortable.sortDir) return sortJobsByPostedOn(jobs, 'desc')
+    if (sortable.sortCol === 'posted_on') return sortJobsByPostedOn(jobs, sortable.sortDir)
+    const arr = [...jobs]
+    const extractor = extractors[sortable.sortCol]
+    arr.sort((a, b) => compareForSort(extractor(a), extractor(b), sortable.sortDir))
+    return arr
+  }, [jobs, sortable.sortCol, sortable.sortDir, extractors])
+
+  const SortableTh = ({ colKey, label, className }) => {
+    const active = sortable.sortCol === colKey
+    const arrow = active ? (sortable.sortDir === 'desc' ? '▼' : '▲') : ''
+    return (
+      <th
+        onClick={() => sortable.cycle(colKey)}
+        className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider bg-[#1a2234] cursor-pointer select-none whitespace-nowrap ${active ? 'text-blue-300' : 'text-gray-400 hover:text-gray-200'} ${className}`}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          {label}
+          {active && <span className="text-[10px]">{arrow}</span>}
+        </span>
+      </th>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onBack}
+          className="text-sm text-blue-400 hover:text-blue-300 font-medium px-3 py-1.5 rounded bg-blue-900/30 hover:bg-blue-900/50 transition-colors"
+        >
+          ← Back to Targets
+        </button>
+      </div>
+      <h1 className="text-2xl font-bold text-white">{companyName}</h1>
+
+      {jobs.length === 0 ? (
+        <EmptyState message={`No jobs found for ${companyName}.`} />
+      ) : (
+        <div className="rounded-lg border border-[#374151] overflow-hidden">
+          <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
+            <thead>
+              <tr>
+                <SortableTh colKey="title" label="Job Title" className="w-[35%]" />
+                <SortableTh colKey="location" label="Location" className="w-[25%]" />
+                <Th className="w-[15%]">Link</Th>
+                <SortableTh colKey="posted_on" label="Posted On" className="w-[25%]" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#374151]">
+              {sorted.map((job, i) => {
+                const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
+                return (
+                  <tr key={job.id} className={`${rowBg} transition-colors`}>
+                    <td className="px-3 py-3 text-sm font-semibold text-gray-100" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {job.job_title || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300" style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+                      {job.location || '—'}
+                    </td>
+                    <td className="px-3 py-3 text-sm align-top">
+                      {job.job_linkedin_url ? (
+                        <a
+                          href={job.job_linkedin_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-400 hover:text-blue-300 font-medium"
+                        >
+                          View Job &#8599;
+                        </a>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-300 align-top">
+                      {job.posted_on ? formatDate(job.posted_on) : null}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TargetsPage({ data, setData, jobsData, userInfo }) {
   const rows = Array.isArray(data?.rows) ? data.rows : []
+  const jobs = Array.isArray(jobsData?.rows) ? jobsData.rows : []
   const isAdmin = userInfo?.role === 'admin'
   const [expandedIds, setExpandedIds] = useState(new Set())
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
   const [deleteError, setDeleteError] = useState(null)
   const [deleting, setDeleting] = useState(false)
+  const [selectedJobsCompany, setSelectedJobsCompany] = useState(null)
   const { filters, setFilter, clearAll, hasActiveFilters, applyFilters } = useColumnFilters()
   const sortable = useSortableColumns(['name', 'location', 'size'])
+
+  const jobsByDomain = useMemo(() => {
+    const map = new Map()
+    for (const job of jobs) {
+      const dom = normalizeDomain(job.company_domain)
+      if (!dom) continue
+      if (!map.has(dom)) map.set(dom, [])
+      map.get(dom).push(job)
+    }
+    return map
+  }, [jobs])
 
   const toggleRow = useCallback(id => {
     setExpandedIds(prev => {
@@ -10509,6 +10635,18 @@ function TargetsPage({ data, setData, userInfo }) {
 
   const filtered = useMemo(() => applyFilters(sorted, extractors), [sorted, applyFilters, extractors])
 
+  if (selectedJobsCompany) {
+    const dom = normalizeDomain(selectedJobsCompany.domain)
+    const companyJobs = dom ? (jobsByDomain.get(dom) || []) : []
+    return (
+      <CompanyJobsDetailView
+        companyName={selectedJobsCompany.name}
+        jobs={companyJobs}
+        onBack={() => setSelectedJobsCompany(null)}
+      />
+    )
+  }
+
   if (!data) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -10526,11 +10664,12 @@ function TargetsPage({ data, setData, userInfo }) {
         <table className="w-full divide-y divide-[#374151]" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
-              <ColumnFilterDropdown colKey="name" label="Name" allValues={allValues.name} activeValues={filters.name} onApply={setFilter} className="w-[30%]" sortDir={sortable.dirFor('name')} onCycleSort={sortable.cycle} />
-              <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[25%]" sortDir={sortable.dirFor('location')} onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="name" label="Name" allValues={allValues.name} activeValues={filters.name} onApply={setFilter} className="w-[26%]" sortDir={sortable.dirFor('name')} onCycleSort={sortable.cycle} />
+              <ColumnFilterDropdown colKey="location" label="Location" allValues={allValues.location} activeValues={filters.location} onApply={setFilter} className="w-[21%]" sortDir={sortable.dirFor('location')} onCycleSort={sortable.cycle} />
               <ColumnFilterDropdown colKey="size" label="Size" allValues={allValues.size} activeValues={filters.size} onApply={setFilter} className="w-[15%]" sortDir={sortable.dirFor('size')} onCycleSort={sortable.cycle} />
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[12%]">Domain</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[12%]">LinkedIn</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[8%]">Jobs</th>
               <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 bg-[#1a2234] whitespace-nowrap w-[6%]">{' '}</th>
             </tr>
           </thead>
@@ -10539,6 +10678,8 @@ function TargetsPage({ data, setData, userInfo }) {
               const isExpanded = expandedIds.has(row.id)
               const rowBg = i % 2 === 0 ? 'bg-[#1f2937]' : 'bg-[#18202e]'
               const location = formatTargetLocation(row.city, row.state_province)
+              const rowDomain = normalizeDomain(row.domain)
+              const jobsCount = rowDomain ? (jobsByDomain.get(rowDomain) || []).length : 0
               return (
                 <Fragment key={row.id}>
                   <tr
@@ -10580,6 +10721,18 @@ function TargetsPage({ data, setData, userInfo }) {
                         </a>
                       ) : null}
                     </td>
+                    <td className="px-3 py-3 text-sm align-top" onClick={e => e.stopPropagation()}>
+                      {jobsCount > 0 ? (
+                        <button
+                          onClick={() => setSelectedJobsCompany({ name: row.name || 'this company', domain: row.domain })}
+                          className="text-blue-400 hover:text-blue-300 font-medium hover:underline"
+                        >
+                          {jobsCount}
+                        </button>
+                      ) : (
+                        <span className="text-gray-500">0</span>
+                      )}
+                    </td>
                     <td className="px-3 py-3 text-sm align-top text-center" onClick={e => e.stopPropagation()}>
                       {isAdmin && (
                         <button
@@ -10594,7 +10747,7 @@ function TargetsPage({ data, setData, userInfo }) {
                   </tr>
                   {confirmDeleteId === row.id && (
                     <tr>
-                      <td colSpan={6} className="px-6 py-3 border-b border-red-900/40" style={{ background: 'rgba(127,29,29,0.18)' }}>
+                      <td colSpan={7} className="px-6 py-3 border-b border-red-900/40" style={{ background: 'rgba(127,29,29,0.18)' }}>
                         <div className="flex items-center gap-3 flex-wrap">
                           <span className="text-sm text-red-300">Delete <strong className="text-red-200">{row.name || 'this company'}</strong>? This cannot be undone.</span>
                           <button
@@ -10618,7 +10771,7 @@ function TargetsPage({ data, setData, userInfo }) {
                   )}
                   {isExpanded && (
                     <tr>
-                      <td colSpan={6} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
+                      <td colSpan={7} className="bg-[#263045] px-8 py-5 border-b border-[#374151]">
                         <div className="flex flex-col gap-2">
                           <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Description</h4>
                           {row.description ? (
@@ -10926,6 +11079,7 @@ export default function Home() {
   const [crmData, setCrmData] = useState(null)
   const [companyNames, setCompanyNames] = useState(null)
   const [targetsData, setTargetsData] = useState(null)
+  const [targetsJobsData, setTargetsJobsData] = useState(null)
 
   const fetchJson = useCallback(async (url, setter, label) => {
     try {
@@ -10957,6 +11111,7 @@ export default function Home() {
   const fetchScottLeads = useCallback(async () => { await fetchJson('/api/scott-leads', setScottLeadsData, 'scott leads'); fetchSidebarCounts() }, [fetchJson, fetchSidebarCounts])
   const fetchCrm = useCallback(() => fetchJson('/api/crm', setCrmData, 'crm'), [fetchJson])
   const fetchTargets = useCallback(() => fetchJson('/api/targets', setTargetsData, 'targets'), [fetchJson])
+  const fetchTargetsJobs = useCallback(() => fetchJson('/api/targets-jobs', setTargetsJobsData, 'targets jobs'), [fetchJson])
 
   const fetchCompanyNames = useCallback(async () => {
     try {
@@ -10988,8 +11143,9 @@ export default function Home() {
       fetchJson('/api/crm', setCrmData, 'crm'),
       fetchCompanyNames(),
       fetchTargets(),
+      fetchTargetsJobs(),
     ])
-  }, [fetchDashboardData, fetchSidebarCounts, fetchClinicalTrials, fetchMaFunding, fetchFunding, fetchJobs, fetchCompetitorJobs, fetchNews, fetchPastBuyers, fetchPastCandidates, fetchJson, fetchCompanyNames, fetchTargets])
+  }, [fetchDashboardData, fetchSidebarCounts, fetchClinicalTrials, fetchMaFunding, fetchFunding, fetchJobs, fetchCompetitorJobs, fetchNews, fetchPastBuyers, fetchPastCandidates, fetchJson, fetchCompanyNames, fetchTargets, fetchTargetsJobs])
 
   const handleGlobalRefresh = useCallback(async () => {
     setRefreshing(true)
@@ -11149,7 +11305,7 @@ export default function Home() {
           {activePage === 'crm' && <CRMPage data={crmData} setData={setCrmData} onRefresh={fetchCrm} userInfo={userInfo} />}
           {activePage === 'buyers'     && <PastBuyersPage data={pastBuyersData} />}
           {activePage === 'candidates' && <PastCandidatesPage data={pastCandidatesData} />}
-          {activePage === 'targets'    && <TargetsPage data={targetsData} setData={setTargetsData} userInfo={userInfo} />}
+          {activePage === 'targets'    && <TargetsPage data={targetsData} setData={setTargetsData} jobsData={targetsJobsData} userInfo={userInfo} />}
           {activePage === 'settings'   && <SettingsPage />}
         </main>
       </div>
